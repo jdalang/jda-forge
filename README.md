@@ -186,3 +186,9 @@ forge self-update [--version v3.1.0]         # update the CLI itself
 **Reference:** [Advanced](docs/advanced.md) · [Libraries](docs/libraries.md) · [Overriding](docs/overriding.md)
 
 Full index: [docs/README.md](docs/README.md)
+
+---
+
+## Contributing
+
+Contributions are welcome — bug reports, documentation fixes, examples, and new features. See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
