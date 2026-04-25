@@ -69,17 +69,28 @@ jda build --include forge.jda app.jda -o app
 
 ---
 
-## Examples
+## Example App — Blog
 
-| Example | What it shows |
-|---|---|
-| [`examples/hello.jda`](examples/hello.jda) | Route groups, middleware, request-id |
-| [`examples/crud.jda`](examples/crud.jda) | JWT-protected API, login, /me endpoint |
-| [`examples/websocket.jda`](examples/websocket.jda) | WebSocket echo chat server |
-| [`examples/static_files.jda`](examples/static_files.jda) | SPA shell + static file serving |
-| [`examples/blog/`](examples/blog/) | Full multi-file app — posts + comments CRUD, sessions, CSRF, flash, migrations, tests, multi-environment config |
+[`examples/blog/`](examples/blog/) is a complete multi-file application. Start here for a real project.
 
-The blog example is the best starting point for a real application.
+**What it demonstrates:**
+- Posts + comments CRUD (index, show, new, create, edit, update, delete)
+- Sessions, flash messages, CSRF tokens
+- Model validations and soft delete
+- Multi-environment config — development / staging / production / test
+- Database migrations (SQL files, auto-run on boot)
+- Request tests with `forge_test_get` / `forge_test_post`
+- Full middleware stack
+
+```bash
+cd examples/blog
+forge install                          # downloads forge.jda → libs/
+cp .env.example .env.development       # set DATABASE_URL, APP_SECRET
+make run                               # build + start on :8080
+make test                              # run test suite
+```
+
+**Full walkthrough:** [docs/blog-example.md](docs/blog-example.md)
 
 ---
 
@@ -140,11 +151,12 @@ forge generate migration AddPublishedToPosts published:boolean
 ### Library management
 
 ```bash
-forge add forge-markdown          # add from github.com/jdalang/forge-markdown
-forge add mylib https://github.com/org/jda-mylib   # custom URL
-forge install                     # install all from Forgefile
-forge update                      # update all libs
-forge list                        # show installed libs
+forge install                                  # install all from Forgefile
+forge install --locked                         # install exact versions from lock (CI)
+forge add forge-markdown --version v1.2.0     # add specific version
+forge add mylib https://github.com/org/jda-mylib
+forge update                                   # update all libs
+forge list                                     # show installed libs + versions
 ```
 
 ---
@@ -795,11 +807,11 @@ app_use(app, fn_addr(forge_etag_middleware))
 
 ---
 
-## Third-Party Libraries (Forgefile)
+## Third-Party Libraries
 
-Libraries are plain `.jda` files declared in a `Forgefile` and installed into `libs/` — the same idea as Gemfile / package.json. The Makefile auto-discovers everything in `libs/*.jda`.
+Libraries are plain `.jda` files declared in a `Forgefile`, installed into `libs/`, and auto-discovered by the Makefile — same idea as Gemfile / package.json.
 
-### Forgefile — declare dependencies + pin versions
+### Forgefile
 
 ```
 # Forgefile
@@ -808,88 +820,99 @@ forge "github.com/jdalang/jda-forge"        version "3.0.0"
 
 lib   "github.com/jdalang/forge-markdown"   version "1.2.0"
 lib   "github.com/jdalang/forge-slugify"    version "1.0.0"
-lib   "github.com/myorg/jda-payments"                        # latest
+lib   "github.com/myorg/jda-payments"                         # no version = latest
 ```
-
-Omitting `version` always pulls the latest default branch. Pinning a version checks out that exact git tag.
-
-### Forgefile.lock — reproducible installs
-
-`forge install` writes a `Forgefile.lock` recording the exact git SHA of every installed library:
-
-```
-# Forgefile.lock — commit this file
-forge jda-forge   github.com/jdalang/jda-forge   v3.0.0  abc1234
-lib   forge-markdown  github.com/jdalang/forge-markdown  v1.2.0  def5678
-lib   forge-slugify   github.com/jdalang/forge-slugify   v1.0.0  9a8b7c6
-```
-
-Teammates run `forge install --locked` to get byte-for-byte the same versions. CI always uses `--locked`.
 
 ### Commands
 
 ```bash
-forge install                                  # install from Forgefile, write lock
-forge install --locked                         # install exact versions from lock (CI)
-forge add forge-markdown                       # add + install from github.com/jdalang/
-forge add forge-markdown --version v1.2.0     # add at a specific version
+forge install                                   # install from Forgefile, write lock
+forge install --locked                          # exact versions from lock (CI/deploy)
+forge add forge-markdown                        # add latest from github.com/jdalang/
+forge add forge-markdown --version v1.2.0      # add a specific version
 forge add mylib https://github.com/org/jda-mylib --version v2.0.0
-forge update                                   # update all to latest/pinned
-forge update forge-markdown                    # update one library
-forge list                                     # show installed libs + lock info
+forge update                                    # update all
+forge update forge-markdown                     # update one library
+forge list                                      # show installed libs + lock
 ```
 
-### How it works
+### Install a specific version
 
-`forge install` clones each library into `libs/.src/<name>/`, checks out the pinned tag, copies the `.jda` file to `libs/<name>.jda`. The Makefile auto-discovers it:
-
-```makefile
-FORGE = libs/forge.jda
-LIBS  = $(filter-out $(FORGE), $(wildcard libs/*.jda))
-LINCS = $(addprefix --include ,$(LIBS))
-
-build:
-    jda build --include $(FORGE) $(LINCS) $(OUT) -o app
+```bash
+forge add forge-markdown --version v1.2.0
 ```
 
-### Writing a library
+Or edit `Forgefile` directly and run `forge install`:
 
-A library is a single `.jda` file at the root of a GitHub repo. Tag releases with `git tag v1.0.0`.
+```
+lib "github.com/jdalang/forge-markdown" version "1.2.0"
+```
+
+To see what versions are available:
+
+```bash
+git -C libs/.src/forge-markdown tag | sort -V
+```
+
+### Forgefile.lock — reproducible installs
+
+`forge install` writes `Forgefile.lock` with the exact git SHA of every dependency. **Commit this file.** Teammates and CI use `forge install --locked` to get the exact same code.
+
+### Full library guide
+
+[docs/libraries.md](docs/libraries.md) — version pinning, private repos, writing and publishing a library.
+
+---
+
+## Overriding Library Behavior
+
+Because app source is compiled after `--include` files, redefining a function in your app shadows the library's version.
+
+### Wrapper functions (safest)
 
 ```jda
-// forge-slugify.jda  →  github.com/jdalang/forge-slugify
-
-fn slugify(src: []i8, dst: &i8) -> i64 {
-    let pos = 0i64
-    loop i in 0..src.len {
-        let c = src[i]
-        if c >= 'A' && c <= 'Z' { dst[pos] = c + 32    pos = pos + 1 }
-        else if c >= 'a' && c <= 'z' { dst[pos] = c     pos = pos + 1 }
-        else if c >= '0' && c <= '9' { dst[pos] = c     pos = pos + 1 }
-        else if pos > 0 && dst[pos-1] != '-' { dst[pos] = '-'  pos = pos + 1 }
+fn my_validate_email(e: &ForgeErrors, field: []i8, val: []i8) -> bool {
+    if !forge_validate_format_email(e, field, val) { ret false }
+    // additional custom rule
+    loop i in 0..val.len {
+        if val[i] == '+' {
+            forge_errors_add(e, field, "plus addresses not allowed")
+            ret false
+        }
     }
-    ret pos
+    ret true
 }
 ```
 
+### Patch files (redefine a library function)
+
+Create a `patches/` directory. Files there are concatenated last, so they shadow library definitions.
+
+```makefile
+# Makefile
+PATCHES = $(wildcard patches/*.jda)
+SRC = $(CONFIG) $(MW) $(MODELS) $(VIEWS) $(ROUTES) $(PATCHES) $(MAIN)
+```
+
 ```jda
-// in your app after: forge add forge-slugify
-let buf = [256]i8
-let len = slugify(title, buf)
-let slug = buf[0..len]
+// patches/forge_rate_limit.jda — raise limit to 500 req/min
+fn forge_rate_limit(ctx_ptr: i64) {
+    // custom implementation
+}
 ```
 
-### Releasing a new Forge version (maintainers)
+### Middleware override
 
-```bash
-forge release 3.1.0
-# → updates version string, commits, tags v3.1.0, pushes, creates GitHub release
+Skip the library middleware and register your own:
+
+```jda
+// app_use(app, fn_addr(forge_cors))   ← removed
+app_use(app, fn_addr(my_cors))         // custom CORS logic
 ```
 
-### Naming convention
+### Full override guide
 
-Official libraries: `github.com/jdalang/forge-<name>`  
-Community libraries: any git URL, pass it directly to `forge add`.
+[docs/overriding.md](docs/overriding.md) — all four patterns, patch file checklist, keeping patches maintainable.
 
 ---
 
