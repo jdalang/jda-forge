@@ -1,12 +1,11 @@
 fn forge_controllers_init() {
-    forge_action_register("posts", "index",  fn_addr(posts_index))
-    forge_action_register("posts", "new",    fn_addr(posts_new))
-    forge_action_register("posts", "create", fn_addr(posts_create))
-    forge_action_register("posts", "show",   fn_addr(posts_show))
-    forge_action_register("posts", "edit",   fn_addr(posts_edit))
-    forge_action_register("posts", "update", fn_addr(posts_update))
-    forge_action_register("posts", "delete", fn_addr(posts_delete))
-
     forge_action_register("comments", "create", fn_addr(comments_create))
     forge_action_register("comments", "delete", fn_addr(comments_delete))
+    forge_action_register("posts", "index", fn_addr(posts_index))
+    forge_action_register("posts", "new", fn_addr(posts_new))
+    forge_action_register("posts", "create", fn_addr(posts_create))
+    forge_action_register("posts", "show", fn_addr(posts_show))
+    forge_action_register("posts", "edit", fn_addr(posts_edit))
+    forge_action_register("posts", "update", fn_addr(posts_update))
+    forge_action_register("posts", "delete", fn_addr(posts_delete))
 }

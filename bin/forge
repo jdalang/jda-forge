@@ -280,6 +280,23 @@ compile_routes() {
 
     rm -f "$fh" "$fb"
     ok "compiled config/routes → config/routes.jda"
+
+    # Auto-generate config/controllers.jda by scanning app/controllers/*.jda
+    # Picks up every fn name(ctx: i64) { handler (no return type = it's a route handler)
+    local ctrl_out="config/controllers.jda"
+    local ft; ft=$(mktemp)
+    printf 'fn forge_controllers_init() {\n' > "$ft"
+    for f in app/controllers/*.jda; do
+        [ -f "$f" ] || continue
+        while IFS= read -r fname; do
+            local action="${fname##*_}"
+            local ctrl="${fname%_*}"
+            printf '    forge_action_register("%s", "%s", fn_addr(%s))\n' "$ctrl" "$action" "$fname"
+        done < <(grep -E '^fn [a-z][a-z0-9_]+\(ctx: i64\) \{' "$f" | grep -oE 'fn [a-z][a-z0-9_]+' | sed 's/^fn //')
+    done >> "$ft"
+    printf '}\n' >> "$ft"
+    mv "$ft" "$ctrl_out"
+    ok "scanned controllers → config/controllers.jda"
 }
 
 # Normalise version tag: "3.0.0" → "v3.0.0"
@@ -777,12 +794,6 @@ root "pages#home"
 DSL
     ok "created config/routes"
 
-    cat > "$name/config/controllers.jda" <<'JDA'
-fn forge_controllers_init() {
-    // forge_action_register("pages", "home", fn_addr(pages_home))
-}
-JDA
-    ok "created config/controllers.jda"
 
     cat > "$name/app/controllers/application_controller.jda" <<'JDA'
 // ApplicationController — shared helpers for all controllers
@@ -1275,26 +1286,6 @@ DSL
     printf '\nresources "%s"\n' "$table" >> "config/routes"
     ok "appended resources \"${table}\" to config/routes"
 
-    # Register actions in config/controllers.jda
-    if [ ! -f "config/controllers.jda" ]; then
-        printf 'fn forge_controllers_init() {\n}\n' > "config/controllers.jda"
-        ok "created config/controllers.jda"
-    fi
-    # Insert registrations before the closing brace
-    local ctrl_tmp; ctrl_tmp=$(mktemp)
-    grep -v '^}$' "config/controllers.jda" > "$ctrl_tmp"
-    cat >> "$ctrl_tmp" <<JDA
-    forge_action_register("${table}", "index",  fn_addr(${table}_index))
-    forge_action_register("${table}", "new",    fn_addr(${table}_new))
-    forge_action_register("${table}", "create", fn_addr(${table}_create))
-    forge_action_register("${table}", "show",   fn_addr(${table}_show))
-    forge_action_register("${table}", "edit",   fn_addr(${table}_edit))
-    forge_action_register("${table}", "update", fn_addr(${table}_update))
-    forge_action_register("${table}", "delete", fn_addr(${table}_delete))
-}
-JDA
-    mv "$ctrl_tmp" "config/controllers.jda"
-    ok "registered ${name} actions in config/controllers.jda"
 
     mkdir -p test
     cat > "test/test_${snake}s.jda" <<JDA
@@ -1314,8 +1305,7 @@ JDA
     echo "  app/views/${table}/show.html.jda"
     echo "  app/views/${table}/new.html.jda"
     echo "  app/views/${table}/edit.html.jda"
-    echo "  config/routes         (appended)"
-    echo "  config/controllers.jda (appended)"
+    echo "  config/routes  (appended — run forge build to recompile)"
     echo "  test/test_${snake}s.jda"
 }
 

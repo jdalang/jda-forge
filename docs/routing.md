@@ -127,9 +127,7 @@ A wildcard matches across `/` boundaries and must appear at the end of the patte
 
 ### 2.5 The routes DSL
 
-Forge uses a two-file convention to achieve Rails-like routing. Scaffold generates both files automatically.
-
-**`config/routes`** — the DSL file you edit (never the generated `.jda`):
+**`config/routes`** is the only routing file you ever edit:
 
 ```
 root "posts#index"
@@ -151,28 +149,12 @@ post "/login" "sessions#create"
 delete "/logout" "sessions#delete" as "logout"
 ```
 
-Run `forge build` (or `forge server`, `forge test`) — Forge compiles `config/routes` into `config/routes.jda` automatically before calling make. The generated file contains path helpers and the `routes()` function. **Do not edit `config/routes.jda` directly.**
+When you run `forge build` (or `forge server`, `forge test`), Forge automatically:
 
-**`config/controllers.jda`** — registers every controller action once, using `fn_addr`:
+1. Compiles `config/routes` → `config/routes.jda` (path helpers + `routes()` function)
+2. Scans `app/controllers/*.jda` for handler functions → `config/controllers.jda`
 
-```jda
-fn forge_controllers_init() {
-    forge_action_register("posts", "index",  fn_addr(posts_index))
-    forge_action_register("posts", "new",    fn_addr(posts_new))
-    forge_action_register("posts", "create", fn_addr(posts_create))
-    forge_action_register("posts", "show",   fn_addr(posts_show))
-    forge_action_register("posts", "edit",   fn_addr(posts_edit))
-    forge_action_register("posts", "update", fn_addr(posts_update))
-    forge_action_register("posts", "delete", fn_addr(posts_delete))
-
-    forge_action_register("comments", "create", fn_addr(comments_create))
-    forge_action_register("comments", "delete", fn_addr(comments_delete))
-}
-```
-
-`main.jda` calls `forge_controllers_init()` once before `routes(app)`. Scaffold appends to this file automatically.
-
-`app.resources("posts")` looks up `posts_index`, `posts_new`, … `posts_delete` from the registry. If an action is not registered (e.g. `comments` only has `create` and `delete`), that route is simply skipped.
+Both generated files are wired into the build by the Makefile. **You never read or edit them.** If an action defined in `config/routes` has no matching handler function in a controller, that route is silently skipped at runtime.
 
 ### 2.6 `app.resources` — 7 RESTful routes
 
@@ -899,7 +881,7 @@ app/views/posts/edit.html.jda
 test/test_posts.jda
 ```
 
-It also appends `resources "posts"` to `config/routes` and registers all actions in `config/controllers.jda` automatically. No manual wiring required.
+It also appends `resources "posts"` to `config/routes`. The next `forge build` auto-scans controllers and wires everything. No manual registration needed.
 
 Generated controller actions for a `Post` resource:
 
