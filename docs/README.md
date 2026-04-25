@@ -11,8 +11,9 @@
 
 | Guide | Description |
 |---|---|
+| [generators.md](generators.md) | `forge generate scaffold/model/controller/migration`, field types, `forge db:migrate/rollback/status` |
 | [routing.md](routing.md) | Routes, request/response API, middleware, before/after filters |
-| [models.md](models.md) | Query builder, declarative validations, callbacks, transactions, associations, migrations, multiple databases, migration rollback |
+| [models.md](models.md) | Query builder, declarative validations, callbacks, transactions, associations, multiple databases |
 | [serializers.md](serializers.md) | JSON serializers — auto-render, selective fields, computed fields, conditions |
 | [views.md](views.md) | HTML helpers, forms, layout, partials, escaping |
 | [security.md](security.md) | SQL injection, XSS, CSRF, authentication, bcrypt passwords, secure headers |
