@@ -14,6 +14,7 @@ fn main() {
 
     app_static(app, "/static", "./public")
 
+    forge_controllers_init()
     routes(app)
 
     app_listen(app, str_to_i32(forge_env_get("APP_PORT")))

@@ -1,17 +1,10 @@
 let posts_path: []i8    = "/posts"
 let new_post_path: []i8 = "/posts/new"
-fn post_path(id: []i8) -> []i8           { ret forge_path_id("posts", id) }
-fn edit_post_path(id: []i8) -> []i8      { ret forge_path_edit("posts", id) }
+fn post_path(id: []i8) -> []i8               { ret forge_path_id("posts", id) }
+fn edit_post_path(id: []i8) -> []i8          { ret forge_path_edit("posts", id) }
 fn post_comments_path(post_id: []i8) -> []i8 { ret forge_nested_path("posts", post_id, "comments") }
 
 fn routes(app: &ForgeApp) {
-    app_root(app, fn_addr(posts_index))
-
-    let posts = forge_resources(app, "posts",
-        fn_addr(posts_index), fn_addr(posts_new),    fn_addr(posts_create),
-        fn_addr(posts_show),  fn_addr(posts_edit),   fn_addr(posts_update),
-        fn_addr(posts_delete))
-
-    posts.post("/comments",       fn_addr(comments_create))
-    posts.delete("/comments/:id", fn_addr(comments_delete))
+    app.root("posts#index")
+    app.resources("posts").resources("comments")
 }

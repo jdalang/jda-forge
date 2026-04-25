@@ -419,69 +419,237 @@ fn forge__resources_nested_scope(app: &ForgeApp, base: []i8, res: []i8) -> &Forg
     ret forge_scope(app, buf.done())
 }
 
-// Register 7 RESTful routes. Returns a &ForgeScope prefixed at /{res}/:{sing}_id
-// for registering nested routes via scope.post / scope.delete / forge_scope_resources.
-fn forge_resources(app: &ForgeApp, res: []i8,
-                   index_h: i64, new_h: i64,  create_h: i64,
-                   show_h:  i64, edit_h: i64,  update_h: i64, delete_h: i64) -> &ForgeScope {
+// =============================================================================
+// Explicit resource registration — pass fn_addr for each handler.
+// Pass 0 to skip a route. Returns nested &ForgeScope at /{res}/:{sing}_id.
+// =============================================================================
+
+fn forge_resources_explicit(app: &ForgeApp, res: []i8,
+                             index_h: i64, new_h: i64,  create_h: i64,
+                             show_h:  i64, edit_h: i64,  update_h: i64, delete_h: i64) -> &ForgeScope {
     let base = forge__scope_join("/", res)
-    app_get   (app, base,                                   index_h)
-    app_get   (app, forge__scope_join(base, "/new"),        new_h)
-    app_post  (app, base,                                   create_h)
-    app_get   (app, forge__scope_join(base, "/:id"),        show_h)
-    app_get   (app, forge__scope_join(base, "/:id/edit"),   edit_h)
-    app_put   (app, forge__scope_join(base, "/:id"),        update_h)
-    app_delete(app, forge__scope_join(base, "/:id"),        delete_h)
+    if index_h  != 0 { app_get   (app, base,                                 index_h)  }
+    if new_h    != 0 { app_get   (app, forge__scope_join(base, "/new"),       new_h)    }
+    if create_h != 0 { app_post  (app, base,                                  create_h) }
+    if show_h   != 0 { app_get   (app, forge__scope_join(base, "/:id"),       show_h)   }
+    if edit_h   != 0 { app_get   (app, forge__scope_join(base, "/:id/edit"),  edit_h)   }
+    if update_h != 0 { app_put   (app, forge__scope_join(base, "/:id"),       update_h) }
+    if delete_h != 0 { app_delete(app, forge__scope_join(base, "/:id"),       delete_h) }
     ret forge__resources_nested_scope(app, base, res)
 }
 
-// Register 7 RESTful routes on a scope (nested resources). Returns nested scope.
-// Pass 0 for any handler to skip that route.
-fn forge_scope_resources(s: &ForgeScope, res: []i8,
-                         index_h: i64, new_h: i64,  create_h: i64,
-                         show_h:  i64, edit_h: i64,  update_h: i64, delete_h: i64) -> &ForgeScope {
+fn forge_scope_resources_explicit(s: &ForgeScope, res: []i8,
+                                   index_h: i64, new_h: i64,  create_h: i64,
+                                   show_h:  i64, edit_h: i64,  update_h: i64, delete_h: i64) -> &ForgeScope {
     let base = forge__scope_join(s.prefix, forge__scope_join("/", res))
-    if index_h  != 0 { app_get   (s.app, base,                                  index_h)  }
-    if new_h    != 0 { app_get   (s.app, forge__scope_join(base, "/new"),        new_h)    }
-    if create_h != 0 { app_post  (s.app, base,                                   create_h) }
-    if show_h   != 0 { app_get   (s.app, forge__scope_join(base, "/:id"),        show_h)   }
-    if edit_h   != 0 { app_get   (s.app, forge__scope_join(base, "/:id/edit"),   edit_h)   }
-    if update_h != 0 { app_put   (s.app, forge__scope_join(base, "/:id"),        update_h) }
-    if delete_h != 0 { app_delete(s.app, forge__scope_join(base, "/:id"),        delete_h) }
+    if index_h  != 0 { app_get   (s.app, base,                                 index_h)  }
+    if new_h    != 0 { app_get   (s.app, forge__scope_join(base, "/new"),       new_h)    }
+    if create_h != 0 { app_post  (s.app, base,                                  create_h) }
+    if show_h   != 0 { app_get   (s.app, forge__scope_join(base, "/:id"),       show_h)   }
+    if edit_h   != 0 { app_get   (s.app, forge__scope_join(base, "/:id/edit"),  edit_h)   }
+    if update_h != 0 { app_put   (s.app, forge__scope_join(base, "/:id"),       update_h) }
+    if delete_h != 0 { app_delete(s.app, forge__scope_join(base, "/:id"),       delete_h) }
     ret forge__resources_nested_scope(s.app, base, res)
 }
 
-// Singular resource — 6 routes, no index, no :id in paths.
-// GET /res/new, POST /res, GET /res, GET /res/edit, PUT /res, DELETE /res
-fn forge_resource(app: &ForgeApp, res: []i8,
-                  new_h: i64, create_h: i64,
-                  show_h: i64, edit_h: i64, update_h: i64, delete_h: i64) {
+fn forge_resource_explicit(app: &ForgeApp, res: []i8,
+                            new_h: i64, create_h: i64,
+                            show_h: i64, edit_h: i64, update_h: i64, delete_h: i64) {
     let base = forge__scope_join("/", res)
-    app_get   (app, forge__scope_join(base, "/new"),  new_h)
-    app_post  (app, base,                              create_h)
-    app_get   (app, base,                              show_h)
-    app_get   (app, forge__scope_join(base, "/edit"),  edit_h)
-    app_put   (app, base,                              update_h)
-    app_delete(app, base,                              delete_h)
+    if new_h    != 0 { app_get   (app, forge__scope_join(base, "/new"),  new_h)    }
+    if create_h != 0 { app_post  (app, base,                              create_h) }
+    if show_h   != 0 { app_get   (app, base,                              show_h)   }
+    if edit_h   != 0 { app_get   (app, forge__scope_join(base, "/edit"),  edit_h)   }
+    if update_h != 0 { app_put   (app, base,                              update_h) }
+    if delete_h != 0 { app_delete(app, base,                              delete_h) }
 }
 
-// Singular resource on a scope (e.g., nested profile under a user scope).
-fn forge_scope_resource(s: &ForgeScope, res: []i8,
-                        new_h: i64, create_h: i64,
-                        show_h: i64, edit_h: i64, update_h: i64, delete_h: i64) {
+fn forge_scope_resource_explicit(s: &ForgeScope, res: []i8,
+                                  new_h: i64, create_h: i64,
+                                  show_h: i64, edit_h: i64, update_h: i64, delete_h: i64) {
     let base = forge__scope_join(s.prefix, forge__scope_join("/", res))
-    app_get   (s.app, forge__scope_join(base, "/new"),  new_h)
-    app_post  (s.app, base,                              create_h)
-    app_get   (s.app, base,                              show_h)
-    app_get   (s.app, forge__scope_join(base, "/edit"),  edit_h)
-    app_put   (s.app, base,                              update_h)
-    app_delete(s.app, base,                              delete_h)
+    if new_h    != 0 { app_get   (s.app, forge__scope_join(base, "/new"),  new_h)    }
+    if create_h != 0 { app_post  (s.app, base,                              create_h) }
+    if show_h   != 0 { app_get   (s.app, base,                              show_h)   }
+    if edit_h   != 0 { app_get   (s.app, forge__scope_join(base, "/edit"),  edit_h)   }
+    if update_h != 0 { app_put   (s.app, base,                              update_h) }
+    if delete_h != 0 { app_delete(s.app, base,                              delete_h) }
 }
 
-// Namespace — path-prefix scope with Rails :namespace semantics.
-// forge_namespace(app, "admin") → scope at /admin
+// =============================================================================
+// Action registry — maps ("controller", "action") → fn_ptr.
+// forge_controllers_init() (generated by scaffold in config/controllers.jda)
+// calls forge_action_register once per action. Then forge_resources("posts")
+// and app.resources("posts") auto-discover handlers by naming convention.
+// =============================================================================
+
+struct ForgeActionEntry {
+    ctrl:     &i8
+    ctrl_len: i64
+    act:      &i8
+    act_len:  i64
+    fn_ptr:   i64
+}
+
+let FORGE_MAX_ACTIONS = 512
+
+let forge__action_data:  &ForgeActionEntry = 0 as &ForgeActionEntry
+let forge__action_count: i64 = 0
+let forge__action_pool:  &i8 = 0 as &i8
+let forge__action_pool_pos: i64 = 0
+
+fn forge__action_ensure_init() {
+    if forge__action_data == (0 as &ForgeActionEntry) {
+        forge__action_data  = alloc_pages(6) as &ForgeActionEntry
+        forge__action_pool  = alloc_pages(4)
+        forge__action_pool_pos = 0
+        forge__action_count = 0
+    }
+}
+
+fn forge__action_pool_copy(s: []i8) -> &i8 {
+    let dst = forge__action_pool + forge__action_pool_pos
+    loop i in 0..s.len { dst[i] = s[i] }
+    forge__action_pool_pos = forge__action_pool_pos + s.len
+    ret dst
+}
+
+fn forge_action_register(ctrl: []i8, action: []i8, h: i64) {
+    forge__action_ensure_init()
+    let n = forge__action_count
+    if n >= FORGE_MAX_ACTIONS { ret }
+    let e: &ForgeActionEntry = (forge__action_data as i64 + n * 40) as &ForgeActionEntry
+    e.ctrl     = forge__action_pool_copy(ctrl)
+    e.ctrl_len = ctrl.len
+    e.act      = forge__action_pool_copy(action)
+    e.act_len  = action.len
+    e.fn_ptr   = h
+    forge__action_count = n + 1
+}
+
+fn forge_action_get(ctrl: []i8, action: []i8) -> i64 {
+    if forge__action_data == (0 as &ForgeActionEntry) { ret 0 }
+    loop i in 0..forge__action_count {
+        let e: &ForgeActionEntry = (forge__action_data as i64 + i * 40) as &ForgeActionEntry
+        if e.ctrl_len == ctrl.len && e.act_len == action.len {
+            let ok = true
+            loop j in 0..ctrl.len {
+                if e.ctrl[j] != ctrl[j] { ok = false  break }
+            }
+            if ok {
+                loop j in 0..action.len {
+                    if e.act[j] != action[j] { ok = false  break }
+                }
+            }
+            if ok { ret e.fn_ptr }
+        }
+    }
+    ret 0
+}
+
+// Parse "controller#action" — returns controller part
+fn forge__ctrl_from_str(s: []i8) -> []i8 {
+    loop i in 0..s.len { if s[i] == '#' { ret s[0..i] } }
+    ret s
+}
+
+// Parse "controller#action" — returns action part
+fn forge__act_from_str(s: []i8) -> []i8 {
+    loop i in 0..s.len { if s[i] == '#' { ret s[i+1..s.len] } }
+    ret ""
+}
+
+// =============================================================================
+// Rails-style auto-discovery API — looks up actions from the registry.
+// Use after forge_controllers_init() has been called in main().
+//
+// UFCS on &ForgeApp:   app.resources("posts")   app.root("posts#index")
+//                      app.namespace("admin")    app.get("/login", "sessions#new")
+// UFCS on &ForgeScope: scope.resources("comments")   scope.resource("profile")
+// =============================================================================
+
+fn forge_resources(app: &ForgeApp, res: []i8) -> &ForgeScope {
+    ret forge_resources_explicit(app, res,
+        forge_action_get(res, "index"),
+        forge_action_get(res, "new"),
+        forge_action_get(res, "create"),
+        forge_action_get(res, "show"),
+        forge_action_get(res, "edit"),
+        forge_action_get(res, "update"),
+        forge_action_get(res, "delete"))
+}
+
+fn forge_scope_resources(s: &ForgeScope, res: []i8) -> &ForgeScope {
+    ret forge_scope_resources_explicit(s, res,
+        forge_action_get(res, "index"),
+        forge_action_get(res, "new"),
+        forge_action_get(res, "create"),
+        forge_action_get(res, "show"),
+        forge_action_get(res, "edit"),
+        forge_action_get(res, "update"),
+        forge_action_get(res, "delete"))
+}
+
+fn forge_resource(app: &ForgeApp, res: []i8) {
+    forge_resource_explicit(app, res,
+        forge_action_get(res, "new"),
+        forge_action_get(res, "create"),
+        forge_action_get(res, "show"),
+        forge_action_get(res, "edit"),
+        forge_action_get(res, "update"),
+        forge_action_get(res, "delete"))
+}
+
+fn forge_scope_resource(s: &ForgeScope, res: []i8) {
+    forge_scope_resource_explicit(s, res,
+        forge_action_get(res, "new"),
+        forge_action_get(res, "create"),
+        forge_action_get(res, "show"),
+        forge_action_get(res, "edit"),
+        forge_action_get(res, "update"),
+        forge_action_get(res, "delete"))
+}
+
 fn forge_namespace(app: &ForgeApp, ns: []i8) -> &ForgeScope {
     ret forge_scope(app, forge__scope_join("/", ns))
+}
+
+// UFCS on &ForgeApp — Rails app.root / app.resources / app.namespace / app.get etc.
+fn forge_app_root(app: &ForgeApp, s: []i8) {
+    let h = forge_action_get(forge__ctrl_from_str(s), forge__act_from_str(s))
+    if h != 0 { app_get(app, "/", h) }
+}
+
+fn forge_app_resources(app: &ForgeApp, res: []i8) -> &ForgeScope {
+    ret forge_resources(app, res)
+}
+
+fn forge_app_resource(app: &ForgeApp, res: []i8) {
+    forge_resource(app, res)
+}
+
+fn forge_app_namespace(app: &ForgeApp, ns: []i8) -> &ForgeScope {
+    ret forge_namespace(app, ns)
+}
+
+fn forge_app_get(app: &ForgeApp, path: []i8, s: []i8) {
+    let h = forge_action_get(forge__ctrl_from_str(s), forge__act_from_str(s))
+    if h != 0 { app_get(app, path, h) }
+}
+
+fn forge_app_post(app: &ForgeApp, path: []i8, s: []i8) {
+    let h = forge_action_get(forge__ctrl_from_str(s), forge__act_from_str(s))
+    if h != 0 { app_post(app, path, h) }
+}
+
+fn forge_app_put(app: &ForgeApp, path: []i8, s: []i8) {
+    let h = forge_action_get(forge__ctrl_from_str(s), forge__act_from_str(s))
+    if h != 0 { app_put(app, path, h) }
+}
+
+fn forge_app_delete(app: &ForgeApp, path: []i8, s: []i8) {
+    let h = forge_action_get(forge__ctrl_from_str(s), forge__act_from_str(s))
+    if h != 0 { app_delete(app, path, h) }
 }
 
 fn app_ws(app: &ForgeApp, pattern: []i8, handler: i64) {

@@ -7,12 +7,13 @@ HELPERS     = $(shell find app/helpers     -name "*.jda"      2>/dev/null | sort
 MODELS      = $(shell find app/models      -name "*.jda"      2>/dev/null | sort)
 VIEWS       = $(shell find app/views       -name "*.html.jda" 2>/dev/null | sort)
 CONTROLLERS = $(shell find app/controllers -name "*.jda"      2>/dev/null | sort)
-ROUTES      = config/routes.jda
+CONTROLLERS_INIT = config/controllers.jda
+ROUTES           = config/routes.jda
 MAIN        = main.jda
 
-SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) $(MAIN)
+SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CONTROLLERS_INIT) $(ROUTES) $(MAIN)
 
-TEST_SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) \
+TEST_SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CONTROLLERS_INIT) $(ROUTES) \
            $(shell find test -name "*.jda" 2>/dev/null | sort)
 TEST_OUT = _build/test.jda
 

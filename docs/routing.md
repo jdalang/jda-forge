@@ -125,119 +125,137 @@ fn handle_files(ctx: i64) {
 
 A wildcard matches across `/` boundaries and must appear at the end of the pattern.
 
-### 2.5 RESTful resources — `forge_resources`
+### 2.5 The action registry
 
-`forge_resources` registers all 7 RESTful routes in one call and returns a `&ForgeScope` prefixed at `/{res}/:{singular}_id` for nesting child resources.
+Forge uses a two-file convention to achieve Rails-like routing. Scaffold generates both files automatically; you only edit them when adding custom routes.
+
+**`config/controllers.jda`** — registers every controller action once, using `fn_addr`:
 
 ```jda
-// config/routes.jda
+fn forge_controllers_init() {
+    forge_action_register("posts", "index",  fn_addr(posts_index))
+    forge_action_register("posts", "new",    fn_addr(posts_new))
+    forge_action_register("posts", "create", fn_addr(posts_create))
+    forge_action_register("posts", "show",   fn_addr(posts_show))
+    forge_action_register("posts", "edit",   fn_addr(posts_edit))
+    forge_action_register("posts", "update", fn_addr(posts_update))
+    forge_action_register("posts", "delete", fn_addr(posts_delete))
 
-fn routes(app: &ForgeApp) {
-    app_root(app, fn_addr(posts_index))
-
-    let posts = forge_resources(app, "posts",
-        fn_addr(posts_index), fn_addr(posts_new),    fn_addr(posts_create),
-        fn_addr(posts_show),  fn_addr(posts_edit),   fn_addr(posts_update),
-        fn_addr(posts_delete))
-
-    // Nested comments — uses the scope returned by forge_resources
-    posts.post("/comments",       fn_addr(comments_create))
-    posts.delete("/comments/:id", fn_addr(comments_delete))
+    forge_action_register("comments", "create", fn_addr(comments_create))
+    forge_action_register("comments", "delete", fn_addr(comments_delete))
 }
 ```
 
-Routes registered by `forge_resources(app, "posts", ...)`:
+`main.jda` calls `forge_controllers_init()` once before `routes(app)`.
 
-| Method | Path | Arg position |
-|---|---|---|
-| GET | `/posts` | `index_h` |
-| GET | `/posts/new` | `new_h` |
-| POST | `/posts` | `create_h` |
-| GET | `/posts/:id` | `show_h` |
-| GET | `/posts/:id/edit` | `edit_h` |
-| PUT | `/posts/:id` | `update_h` |
-| DELETE | `/posts/:id` | `delete_h` |
-
-The returned scope prefix is `/posts/:post_id`. Any `scope.get/post/put/delete` call on it prepends that prefix automatically.
-
-### 2.6 Singular resource — `forge_resource`
-
-For resources with no index and no `:id` in paths (profile, settings, cart):
+**`config/routes.jda`** — looks up handlers by name, no `fn_addr` needed:
 
 ```jda
-forge_resource(app, "profile",
-    fn_addr(profile_new),    fn_addr(profile_create),
-    fn_addr(profile_show),   fn_addr(profile_edit),
-    fn_addr(profile_update), fn_addr(profile_delete))
+fn routes(app: &ForgeApp) {
+    app.root("posts#index")
+    app.resources("posts").resources("comments")
+}
+```
+
+`app.resources("posts")` looks up `posts_index`, `posts_new`, … `posts_delete` from the registry. If an action is not registered (e.g. `comments` only has `create` and `delete`), that route is simply skipped.
+
+### 2.6 `app.resources` — 7 RESTful routes
+
+```jda
+app.resources("posts")
 ```
 
 Routes registered:
 
 | Method | Path |
 |---|---|
-| GET | `/profile/new` |
-| POST | `/profile` |
-| GET | `/profile` |
-| GET | `/profile/edit` |
-| PUT | `/profile` |
-| DELETE | `/profile` |
+| GET | `/posts` |
+| GET | `/posts/new` |
+| POST | `/posts` |
+| GET | `/posts/:id` |
+| GET | `/posts/:id/edit` |
+| PUT | `/posts/:id` |
+| DELETE | `/posts/:id` |
 
-### 2.7 Namespace — `forge_namespace`
+Returns a `&ForgeScope` prefixed at `/posts/:post_id` for nesting.
+
+### 2.7 Nested resources
+
+Chain `.resources()` off the returned scope:
 
 ```jda
+app.resources("posts").resources("comments")
+```
+
+Three levels deep:
+
+```jda
+app.resources("users").resources("posts").resources("comments")
+```
+
+Registered paths: `/users`, `/users/:user_id/posts`, `/users/:user_id/posts/:post_id/comments/…`
+
+### 2.8 Singular resource — `app.resource`
+
+For resources with no index and no `:id` (profile, settings, cart):
+
+```jda
+app.resource("profile")
+```
+
+Routes registered: `GET /profile/new`, `POST /profile`, `GET /profile`, `GET /profile/edit`, `PUT /profile`, `DELETE /profile`.
+
+### 2.9 Namespace — `app.namespace`
+
+```jda
+let admin = app.namespace("admin")
+admin.resources("users")
+admin.resources("posts")
+```
+
+Registered paths: `/admin/users`, `/admin/users/:user_id`, `/admin/posts`, etc.
+
+### 2.10 Custom routes — `app.get / app.post / app.put / app.delete`
+
+```jda
+app.get("/login",  "sessions#new")
+app.post("/login", "sessions#create")
+app.delete("/logout", "sessions#delete")
+```
+
+These use the registry to look up the handler — same `"controller#action"` string as Rails.
+
+### 2.11 Concerns
+
+A concern is a plain function that takes a `&ForgeScope`. Apply it to multiple parent scopes:
+
+```jda
+fn concern_commentable(s: &ForgeScope) {
+    s.resources("comments")
+}
+
 fn routes(app: &ForgeApp) {
-    let admin = forge_namespace(app, "admin")
-    admin.get("/dashboard",  fn_addr(admin_dashboard))
-    admin.get("/users",      fn_addr(admin_users_index))
-    admin.get("/users/:id",  fn_addr(admin_users_show))
-    admin.post("/users",     fn_addr(admin_users_create))
-    admin.delete("/users/:id", fn_addr(admin_users_delete))
+    concern_commentable(app.resources("posts"))
+    concern_commentable(app.resources("articles"))
 }
 ```
 
-Registered paths: `/admin/dashboard`, `/admin/users`, `/admin/users/:id`, etc.
+### 2.12 Explicit `fn_addr` form (power users)
 
-`forge_namespace` is equivalent to `forge_scope(app, "/ns")` — it exists as an alias for Rails-style terminology.
-
-### 2.8 Nested resources — `forge_scope_resources`
-
-For full CRUD on a nested resource:
+When you need precise control — partial action sets, non-conventional handlers — use the explicit variants directly:
 
 ```jda
-let posts = forge_resources(app, "posts", ...)
-forge_scope_resources(posts, "comments",
-    fn_addr(comments_index), fn_addr(comments_new),    fn_addr(comments_create),
-    fn_addr(comments_show),  fn_addr(comments_edit),   fn_addr(comments_update),
-    fn_addr(comments_delete))
-```
+forge_resources_explicit(app, "posts",
+    fn_addr(posts_index), fn_addr(posts_new),    fn_addr(posts_create),
+    fn_addr(posts_show),  fn_addr(posts_edit),   fn_addr(posts_update),
+    fn_addr(posts_delete))
 
-Pass `0` for any handler to skip that route:
-
-```jda
-forge_scope_resources(posts, "comments",
+forge_scope_resources_explicit(posts_scope, "comments",
     0, 0, fn_addr(comments_create),
     0, 0, 0, fn_addr(comments_delete))
 ```
 
-### 2.9 Concerns
-
-A concern is a plain function that takes a `&ForgeScope` and registers shared routes on it. Apply it to multiple parent scopes:
-
-```jda
-fn concern_commentable(s: &ForgeScope) {
-    s.post("/comments",       fn_addr(comments_create))
-    s.delete("/comments/:id", fn_addr(comments_delete))
-}
-
-fn routes(app: &ForgeApp) {
-    let posts    = forge_resources(app, "posts",    ...)
-    let articles = forge_resources(app, "articles", ...)
-    concern_commentable(posts)
-    concern_commentable(articles)
-}
-```
-
-This is idiomatic Jda — a concern is nothing more than a function.
+Pass `0` for any handler to skip that route.
 
 ### 2.6 Route matching rules
 

@@ -363,7 +363,21 @@ app/views/posts/edit.html.jda            # view_posts_edit
 test/test_posts.jda                      # request tests for each handler
 ```
 
-It also appends a `forge_resources` call to `config/routes.jda` automatically — no manual wiring needed.
+It also updates two config files automatically — no manual wiring needed.
+
+`config/controllers.jda` after scaffolding (append-only, one entry per scaffold):
+
+```jda
+fn forge_controllers_init() {
+    forge_action_register("posts", "index",  fn_addr(posts_index))
+    forge_action_register("posts", "new",    fn_addr(posts_new))
+    forge_action_register("posts", "create", fn_addr(posts_create))
+    forge_action_register("posts", "show",   fn_addr(posts_show))
+    forge_action_register("posts", "edit",   fn_addr(posts_edit))
+    forge_action_register("posts", "update", fn_addr(posts_update))
+    forge_action_register("posts", "delete", fn_addr(posts_delete))
+}
+```
 
 `config/routes.jda` after scaffolding:
 
@@ -374,10 +388,7 @@ fn post_path(id: []i8) -> []i8      { ret forge_path_id("posts", id) }
 fn edit_post_path(id: []i8) -> []i8 { ret forge_path_edit("posts", id) }
 
 fn routes(app: &ForgeApp) {
-    forge_resources(app, "posts",
-        fn_addr(posts_index), fn_addr(posts_new),    fn_addr(posts_create),
-        fn_addr(posts_show),  fn_addr(posts_edit),   fn_addr(posts_update),
-        fn_addr(posts_delete))
+    app.resources("posts")
 }
 ```
 
