@@ -289,29 +289,56 @@ compile_routes() {
     rm -f "$fh" "$fb"
     ok "compiled config/routes.jda → _build/routes.jda"
 
-    # Auto-generate _build/controllers.jda by scanning app/controllers/*.jda
-    # Picks up every fn name(ctx: i64) { handler (no return type = it's a route handler).
-    # Each action gets a dispatch shim that routes through forge_ctrl_run so that
-    # before/after filters registered via forge_ctrl_register fire automatically.
+    # Auto-generate _build/controllers.jda by scanning app/controllers/*.jda.
+    #
+    # Controller name comes from the FILENAME (posts_controller.jda → posts),
+    # not from a function name prefix.  This means controller files can use
+    # bare action names (fn index, fn create …) without any controller prefix —
+    # compile_routes renames them to fn posts_index, fn posts_create … in the
+    # generated output so there are no name collisions across controllers.
+    # Functions that already carry the controller prefix are kept as-is.
+    #
+    # _build/controllers.jda now contains:
+    #   1. processed controller implementations (renamed bare actions)
+    #   2. dispatch shims (forge_ctrl_run wrappers)
+    #   3. forge_controllers_init()
+    # Raw app/controllers/*.jda files are NOT included separately in the build.
     local ctrl_out="_build/controllers.jda"
-    local ft; ft=$(mktemp)
+    local fimpl; fimpl=$(mktemp)
+    local fshims; fshims=$(mktemp)
     local finit; finit=$(mktemp)
     printf 'fn forge_controllers_init() {\n' > "$finit"
     for f in app/controllers/*.jda; do
         [ -f "$f" ] || continue
-        while IFS= read -r fname; do
-            local action="${fname##*_}"
-            local ctrl="${fname%_*}"
-            # dispatch shim — transparent wrapper; zero cost if no controller registered
-            printf 'fn forge__dispatch_%s_%s(ctx: i64) { forge_ctrl_run("%s", "%s", fn_addr(%s), ctx) }\n' \
-                "$ctrl" "$action" "$ctrl" "$action" "$fname" >> "$ft"
-            printf '    forge_action_register("%s", "%s", fn_addr(forge__dispatch_%s_%s))\n' \
-                "$ctrl" "$action" "$ctrl" "$action" >> "$finit"
-        done < <(grep -E '^fn [a-z][a-z0-9_]+\(ctx: i64\) \{' "$f" | grep -oE 'fn [a-z][a-z0-9_]+' | sed 's/^fn //')
+        local bname; bname=$(basename "$f" .jda)
+        # Derive controller name: posts_controller → posts
+        # Files that don't follow *_controller.jda (e.g. application_controller.jda)
+        # are still processed; application_controller.jda → ctrl=application.
+        local ctrl="${bname%_controller}"
+        printf '// --- %s ---\n' "$bname" >> "$fimpl"
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            # Detect action-function declarations: fn NAME(ctx: i64) {
+            if [[ "$line" =~ ^fn[[:space:]]([a-z][a-z0-9_]*)\(ctx:[[:space:]]i64\)[[:space:]]\{ ]]; then
+                local orig="${BASH_REMATCH[1]}"
+                local fname="$orig"
+                if [[ "$fname" != "${ctrl}_"* ]]; then
+                    # Bare action name — prefix with controller name
+                    fname="${ctrl}_${fname}"
+                    line="fn ${fname}(ctx: i64) {"
+                fi
+                local action="${fname#${ctrl}_}"
+                printf 'fn forge__dispatch_%s_%s(ctx: i64) { forge_ctrl_run("%s", "%s", fn_addr(%s), ctx) }\n' \
+                    "$ctrl" "$action" "$ctrl" "$action" "$fname" >> "$fshims"
+                printf '    forge_action_register("%s", "%s", fn_addr(forge__dispatch_%s_%s))\n' \
+                    "$ctrl" "$action" "$ctrl" "$action" >> "$finit"
+            fi
+            printf '%s\n' "$line" >> "$fimpl"
+        done < "$f"
+        printf '\n' >> "$fimpl"
     done
     printf '}\n' >> "$finit"
-    cat "$ft" "$finit" > "$ctrl_out"
-    rm -f "$ft" "$finit"
+    cat "$fimpl" "$fshims" "$finit" > "$ctrl_out"
+    rm -f "$fimpl" "$fshims" "$finit"
     ok "scanned controllers → _build/controllers.jda"
 }
 
@@ -1581,17 +1608,16 @@ LINCS = $(addprefix --include ,$(LIBS))
 CONFIG      = config/application.jda
 HELPERS     = $(shell find app/helpers     -name "*.jda"      2>/dev/null | sort)
 MODELS      = $(shell find app/models      -name "*.jda"      2>/dev/null | sort)
-CONTROLLERS = $(shell find app/controllers -name "*.jda"      2>/dev/null | sort)
 ROUTES      = _build/routes.jda
-CTRL_INIT   = _build/controllers.jda
+CTRL_INIT   = _build/controllers.jda   # implementations + dispatch shims (from compile-routes)
 MODELS_GEN  = _build/models.jda
 VIEWS_GEN   = _build/views.jda
 ASSETS_GEN  = _build/assets.jda
 MAIN        = main.jda
 
-SRC = $(ASSETS_GEN) $(CONFIG) $(HELPERS) $(MODELS_GEN) $(VIEWS_GEN) $(MODELS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) $(MAIN)
+SRC = $(ASSETS_GEN) $(CONFIG) $(HELPERS) $(MODELS_GEN) $(VIEWS_GEN) $(MODELS) $(CTRL_INIT) $(ROUTES) $(MAIN)
 
-TEST_SRC = $(ASSETS_GEN) $(CONFIG) $(HELPERS) $(MODELS_GEN) $(VIEWS_GEN) $(MODELS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) \
+TEST_SRC = $(ASSETS_GEN) $(CONFIG) $(HELPERS) $(MODELS_GEN) $(VIEWS_GEN) $(MODELS) $(CTRL_INIT) $(ROUTES) \
            $(shell find test -name "*.jda" 2>/dev/null | sort)
 TEST_OUT = _build/test.jda
 
@@ -1898,39 +1924,41 @@ gen_controller() {
     # Rails convention: app/controllers/<resource>_controller.jda
     local out="app/controllers/${snake}_controller.jda"
     cat > "$out" <<JDA
-// Controller: ${name}sController
+// Controller: ${name}
+// Action functions use bare names (index, show, …) — compile-routes
+// prefixes them with the controller name in the generated build.
 
-fn ${table}_index(ctx: i64) {
+fn index(ctx: i64) {
     ctx_render(ctx, view_${table}_index(ctx, forge_all("${table}")))
 }
 
-fn ${table}_new(ctx: i64) {
+fn new(ctx: i64) {
     ctx_render(ctx, view_${snake}_new(ctx))
 }
 
-fn ${table}_create(ctx: i64) {
+fn create(ctx: i64) {
     ctx_flash_set(ctx, "notice", "Created.")
     ctx_redirect(ctx, ${table}_path)
 }
 
-fn ${table}_show(ctx: i64) {
+fn show(ctx: i64) {
     let row = forge_find("${table}", ctx_param(ctx, "id"))
     if row.count == 0 { ctx_not_found(ctx)  ret }
     ctx_render(ctx, view_${snake}_show(ctx, row))
 }
 
-fn ${table}_edit(ctx: i64) {
+fn edit(ctx: i64) {
     let row = forge_find("${table}", ctx_param(ctx, "id"))
     if row.count == 0 { ctx_not_found(ctx)  ret }
     ctx_render(ctx, view_${snake}_edit(ctx, row))
 }
 
-fn ${table}_update(ctx: i64) {
+fn update(ctx: i64) {
     ctx_flash_set(ctx, "notice", "Updated.")
     ctx_redirect(ctx, ${snake}_path(ctx_param(ctx, "id")))
 }
 
-fn ${table}_delete(ctx: i64) {
+fn delete(ctx: i64) {
     forge_soft_delete("${table}", ctx_param(ctx, "id"))
     ctx_flash_set(ctx, "notice", "Deleted.")
     ctx_redirect(ctx, ${table}_path)

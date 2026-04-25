@@ -1,21 +1,143 @@
+// --- application_controller ---
+// ApplicationController — shared helpers for all controllers
+
+fn require_login(ctx: i64) -> bool {
+    if ctx_session_get(ctx, "user_id").len == 0 {
+        ctx_flash_set(ctx, "alert", "Please sign in.")
+        ctx_redirect(ctx, "/login")
+        ret false
+    }
+    ret true
+}
+
+fn current_user_id(ctx: i64) -> []i8 {
+    ret ctx_session_get(ctx, "user_id")
+}
+
+// --- comments_controller ---
+// Controller: Comments
+
+fn comments_create(ctx: i64) {
+    let post_id = ctx_param(ctx, "post_id")
+    if comment_create_from(ctx_permit(ctx, "post_id, author, body")) {
+        ctx_flash_set(ctx, "notice", "Comment added.")
+        ctx_redirect(ctx, post_path(post_id))
+        ret
+    }
+    ctx_save_errors(ctx)
+    ctx_redirect(ctx, post_path(post_id))
+}
+
+fn comments_delete(ctx: i64) {
+    let post_id = ctx_param(ctx, "post_id")
+    comment_delete(ctx_param(ctx, "id"))
+    ctx_flash_set(ctx, "notice", "Comment removed.")
+    ctx_redirect(ctx, post_path(post_id))
+}
+
+// --- posts_controller ---
+// Controller: Posts
+// Bare action names (index, show, …) — compile-routes prefixes them with
+// "posts_" in the generated build, avoiding namespace collisions.
+
+fn posts_rescue(ctx: i64) {
+    forge_log_ctx_error(ctx, "unhandled error in posts controller")
+    ctx_html(ctx, 500, "<h1>Something went wrong</h1>")
+}
+
+fn posts_log_action(ctx: i64) {
+    forge_log_ctx_info(ctx, "posts action completed")
+}
+
+fn posts_set_post(ctx: i64) {
+    let id   = ctx_param(ctx, "id")
+    let post = post_find(id)
+    if forge_result_empty(post) { ctx_not_found(ctx)  ret }
+    forge_dirty_load_result("posts", id, post, "title")
+    ctx_set(ctx, "post", post as i64)
+}
+
+fn posts_index(ctx: i64) {
+    ctx_render(ctx, view_posts_index(ctx, post_published()))
+}
+
+fn posts_new(ctx: i64) {
+    ctx_render(ctx, view_posts_new(ctx))
+}
+
+fn posts_create(ctx: i64) {
+    let attrs = ctx_permit(ctx, "title, body, author")
+    if post_create_from(attrs) {
+        forge_log_ctx_info(ctx, "post created")
+        ctx_flash_set(ctx, "notice", "Post created.")
+        ctx_redirect(ctx, posts_path)
+        ret
+    }
+    ctx_save_errors(ctx)
+    ctx_redirect(ctx, new_post_path)
+}
+
+fn posts_show(ctx: i64) {
+    let post:     &ForgeResult = ctx_get(ctx, "post") as &ForgeResult
+    let comments: &ForgeResult = comment_for_post(ctx_param(ctx, "id"))
+    ctx_render(ctx, view_posts_show(ctx, post, comments))
+}
+
+fn posts_edit(ctx: i64) {
+    let post: &ForgeResult = ctx_get(ctx, "post") as &ForgeResult
+    ctx_render(ctx, view_posts_edit(ctx, post))
+}
+
+fn posts_update(ctx: i64) {
+    let id = ctx_param(ctx, "id")
+    if post_update_from(id, ctx_permit(ctx, "title, body, author")) {
+        if forge_dirty_changed("posts", id, "title", ctx_param(ctx, "title")) {
+            forge_log_ctx_info(ctx, "post title was changed")
+        }
+        ctx_flash_set(ctx, "notice", "Post updated.")
+        ctx_redirect(ctx, post_path(id))
+        ret
+    }
+    ctx_save_errors(ctx)
+    ctx_redirect(ctx, edit_post_path(id))
+}
+
+fn posts_delete(ctx: i64) {
+    post_delete(ctx_param(ctx, "id"))
+    forge_log_ctx_info(ctx, "post deleted")
+    ctx_flash_set(ctx, "notice", "Post deleted.")
+    ctx_redirect(ctx, posts_path)
+}
+
+fn posts_before_actions() {
+    let ctrl = forge_ctrl_new()
+    forge_ctrl_before (ctrl, fn_addr(posts_set_post),   "show, edit, update, delete")
+    forge_ctrl_after  (ctrl, fn_addr(posts_log_action), "")
+    forge_ctrl_rescue (ctrl, fn_addr(posts_rescue))
+    forge_ctrl_register("posts", ctrl)
+}
+
 fn forge__dispatch_comments_create(ctx: i64) { forge_ctrl_run("comments", "create", fn_addr(comments_create), ctx) }
 fn forge__dispatch_comments_delete(ctx: i64) { forge_ctrl_run("comments", "delete", fn_addr(comments_delete), ctx) }
-fn forge__dispatch_posts_index(ctx: i64)     { forge_ctrl_run("posts", "index",  fn_addr(posts_index),  ctx) }
-fn forge__dispatch_posts_new(ctx: i64)       { forge_ctrl_run("posts", "new",    fn_addr(posts_new),    ctx) }
-fn forge__dispatch_posts_create(ctx: i64)    { forge_ctrl_run("posts", "create", fn_addr(posts_create), ctx) }
-fn forge__dispatch_posts_show(ctx: i64)      { forge_ctrl_run("posts", "show",   fn_addr(posts_show),   ctx) }
-fn forge__dispatch_posts_edit(ctx: i64)      { forge_ctrl_run("posts", "edit",   fn_addr(posts_edit),   ctx) }
-fn forge__dispatch_posts_update(ctx: i64)    { forge_ctrl_run("posts", "update", fn_addr(posts_update), ctx) }
-fn forge__dispatch_posts_delete(ctx: i64)    { forge_ctrl_run("posts", "delete", fn_addr(posts_delete), ctx) }
+fn forge__dispatch_posts_rescue(ctx: i64)     { forge_ctrl_run("posts", "rescue",     fn_addr(posts_rescue),     ctx) }
+fn forge__dispatch_posts_log_action(ctx: i64) { forge_ctrl_run("posts", "log_action", fn_addr(posts_log_action), ctx) }
+fn forge__dispatch_posts_set_post(ctx: i64)   { forge_ctrl_run("posts", "set_post",   fn_addr(posts_set_post),   ctx) }
+fn forge__dispatch_posts_index(ctx: i64)      { forge_ctrl_run("posts", "index",      fn_addr(posts_index),      ctx) }
+fn forge__dispatch_posts_new(ctx: i64)        { forge_ctrl_run("posts", "new",        fn_addr(posts_new),        ctx) }
+fn forge__dispatch_posts_create(ctx: i64)     { forge_ctrl_run("posts", "create",     fn_addr(posts_create),     ctx) }
+fn forge__dispatch_posts_show(ctx: i64)       { forge_ctrl_run("posts", "show",       fn_addr(posts_show),       ctx) }
+fn forge__dispatch_posts_edit(ctx: i64)       { forge_ctrl_run("posts", "edit",       fn_addr(posts_edit),       ctx) }
+fn forge__dispatch_posts_update(ctx: i64)     { forge_ctrl_run("posts", "update",     fn_addr(posts_update),     ctx) }
+fn forge__dispatch_posts_delete(ctx: i64)     { forge_ctrl_run("posts", "delete",     fn_addr(posts_delete),     ctx) }
 
 fn forge_controllers_init() {
     forge_action_register("comments", "create", fn_addr(forge__dispatch_comments_create))
     forge_action_register("comments", "delete", fn_addr(forge__dispatch_comments_delete))
-    forge_action_register("posts", "index",  fn_addr(forge__dispatch_posts_index))
-    forge_action_register("posts", "new",    fn_addr(forge__dispatch_posts_new))
-    forge_action_register("posts", "create", fn_addr(forge__dispatch_posts_create))
-    forge_action_register("posts", "show",   fn_addr(forge__dispatch_posts_show))
-    forge_action_register("posts", "edit",   fn_addr(forge__dispatch_posts_edit))
-    forge_action_register("posts", "update", fn_addr(forge__dispatch_posts_update))
-    forge_action_register("posts", "delete", fn_addr(forge__dispatch_posts_delete))
+    forge_action_register("posts", "index",      fn_addr(forge__dispatch_posts_index))
+    forge_action_register("posts", "new",        fn_addr(forge__dispatch_posts_new))
+    forge_action_register("posts", "create",     fn_addr(forge__dispatch_posts_create))
+    forge_action_register("posts", "show",       fn_addr(forge__dispatch_posts_show))
+    forge_action_register("posts", "edit",       fn_addr(forge__dispatch_posts_edit))
+    forge_action_register("posts", "update",     fn_addr(forge__dispatch_posts_update))
+    forge_action_register("posts", "delete",     fn_addr(forge__dispatch_posts_delete))
 }

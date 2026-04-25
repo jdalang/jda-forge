@@ -369,19 +369,20 @@ ctx_json(ctx, 200, payload)
 
 ### 4.7 A complete CRUD example
 
-```jda
+Action functions use bare names. `forge compile-routes` reads the filename (`posts_controller.jda`) to derive the controller name and prefixes each action in the generated build, so `fn index` becomes `fn posts_index` without you writing it.
+
 ```jda
 // app/controllers/posts_controller.jda
 
-fn posts_index(ctx: i64) {
+fn index(ctx: i64) {
     ctx_render(ctx, view_posts_index(ctx, post_published()))
 }
 
-fn posts_new(ctx: i64) {
+fn new(ctx: i64) {
     ctx_render(ctx, view_posts_new(ctx))
 }
 
-fn posts_create(ctx: i64) {
+fn create(ctx: i64) {
     if post_create_from(ctx_permit(ctx, "title, body, author")) {
         ctx_flash_set(ctx, "notice", "Post created.")
         ctx_redirect(ctx, posts_path)
@@ -391,21 +392,21 @@ fn posts_create(ctx: i64) {
     ctx_redirect(ctx, new_post_path)
 }
 
-fn posts_show(ctx: i64) {
+fn show(ctx: i64) {
     let id   = ctx_param(ctx, "id")
     let post = post_find(id)
     if post.count == 0 { ctx_not_found(ctx)  ret }
     ctx_render(ctx, view_posts_show(ctx, post))
 }
 
-fn posts_edit(ctx: i64) {
+fn edit(ctx: i64) {
     let id   = ctx_param(ctx, "id")
     let post = post_find(id)
     if post.count == 0 { ctx_not_found(ctx)  ret }
     ctx_render(ctx, view_posts_edit(ctx, post))
 }
 
-fn posts_update(ctx: i64) {
+fn update(ctx: i64) {
     let id = ctx_param(ctx, "id")
     if post_update_from(id, ctx_permit(ctx, "title, body, author")) {
         ctx_flash_set(ctx, "notice", "Post updated.")
@@ -416,7 +417,7 @@ fn posts_update(ctx: i64) {
     ctx_redirect(ctx, edit_post_path(id))
 }
 
-fn posts_delete(ctx: i64) {
+fn delete(ctx: i64) {
     post_delete(ctx_param(ctx, "id"))
     ctx_flash_set(ctx, "notice", "Post deleted.")
     ctx_redirect(ctx, posts_path)
@@ -816,17 +817,17 @@ test/test_posts.jda
 
 It also appends `resources "posts"` to `config/routes.jda`. The next `forge build` auto-scans controllers and wires everything. No manual registration needed.
 
-Generated controller actions for a `Post` resource:
+Generated controller actions for a `Post` resource. Write bare names in the controller file — `compile-routes` prefixes them:
 
-| Action | Method | Path |
-|---|---|---|
-| `posts_index` | GET | `/posts` |
-| `posts_new` | GET | `/posts/new` |
-| `posts_create` | POST | `/posts` |
-| `posts_show` | GET | `/posts/:id` |
-| `posts_edit` | GET | `/posts/:id/edit` |
-| `posts_update` | PUT | `/posts/:id` |
-| `posts_delete` | DELETE | `/posts/:id` |
+| File function | Compiled as | Method | Path |
+|---|---|---|---|
+| `fn index` | `posts_index` | GET | `/posts` |
+| `fn new` | `posts_new` | GET | `/posts/new` |
+| `fn create` | `posts_create` | POST | `/posts` |
+| `fn show` | `posts_show` | GET | `/posts/:id` |
+| `fn edit` | `posts_edit` | GET | `/posts/:id/edit` |
+| `fn update` | `posts_update` | PUT | `/posts/:id` |
+| `fn delete` | `posts_delete` | DELETE | `/posts/:id` |
 
 ### Path helpers
 

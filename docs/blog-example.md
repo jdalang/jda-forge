@@ -85,18 +85,18 @@ forge server                           # build + start on :8080
 
 ## Routes
 
-| Method | Path | Action | Description |
-|---|---|---|---|
-| GET | `/` | root | Redirects to `/posts` |
-| GET | `/posts` | `posts_index` | List posts |
-| GET | `/posts/new` | `posts_new` | New post form |
-| POST | `/posts` | `posts_create` | Create post |
-| GET | `/posts/:id` | `posts_show` | Show post + comments |
-| GET | `/posts/:id/edit` | `posts_edit` | Edit form |
-| PUT | `/posts/:id` | `posts_update` | Update post |
-| DELETE | `/posts/:id` | `posts_delete` | Soft-delete post |
-| POST | `/posts/:post_id/comments` | `comments_create` | Add comment |
-| DELETE | `/posts/:post_id/comments/:id` | `comments_delete` | Remove comment |
+| Method | Path | File function | Compiled as | Description |
+|---|---|---|---|---|
+| GET | `/` | root | — | Redirects to `/posts` |
+| GET | `/posts` | `fn index` | `posts_index` | List posts |
+| GET | `/posts/new` | `fn new` | `posts_new` | New post form |
+| POST | `/posts` | `fn create` | `posts_create` | Create post |
+| GET | `/posts/:id` | `fn show` | `posts_show` | Show post + comments |
+| GET | `/posts/:id/edit` | `fn edit` | `posts_edit` | Edit form |
+| PUT | `/posts/:id` | `fn update` | `posts_update` | Update post |
+| DELETE | `/posts/:id` | `fn delete` | `posts_delete` | Soft-delete post |
+| POST | `/posts/:post_id/comments` | `fn create` | `comments_create` | Add comment |
+| DELETE | `/posts/:post_id/comments/:id` | `fn delete` | `comments_delete` | Remove comment |
 
 ---
 
@@ -206,8 +206,10 @@ let res = post_q()
 
 ## app/controllers/posts_controller.jda — thin actions
 
+Action functions use bare names. `forge compile-routes` reads the filename (`posts_controller.jda`) to determine the controller is `posts`, then renames `fn create` to `fn posts_create` in the generated output — no naming conflicts across controllers, no prefix boilerplate to write.
+
 ```jda
-fn posts_create(ctx: i64) {
+fn create(ctx: i64) {
     let attrs = ctx_permit(ctx, "title, body, author")
     if post_create_from(attrs) {
         forge_log_ctx_info(ctx, "post created")
@@ -220,11 +222,16 @@ fn posts_create(ctx: i64) {
 }
 ```
 
-Validations are declared once in `post_model_init` and fire automatically inside `post_create_from`. If they fail, `ctx_save_errors` stores the error details in the flash so the next request can display them.
+Helper functions that need to be called by name in `forge_ctrl_before` / `forge_ctrl_rescue` registrations keep the `posts_` prefix because they must be addressable by `fn_addr` after compilation:
 
-After a successful create, `FORGE_CB_AFTER_CREATE` fires `post_after_create` which calls `forge_instrument("post.created", id)`. The subscriber registered in `main.jda` picks this up and sends the notification email asynchronously.
+```jda
+fn posts_set_post(ctx: i64) { ... }   // before-filter helper — keep prefix
+fn posts_rescue(ctx: i64)   { ... }   // rescue handler — keep prefix
+```
 
-Controllers use path helper constants (`posts_path`, `new_post_path`) rather than hard-coded strings. Structured logging with `forge_log_ctx_info` prefixes every line with the request ID.
+Validations are declared once in `post_model_init` and fire automatically inside `post_create_from`. After a successful create, `FORGE_CB_AFTER_CREATE` fires `post_after_create` which calls `forge_instrument("post.created", id)`. The subscriber in `main.jda` sends the notification email asynchronously.
+
+Controllers use path helper constants (`posts_path`, `new_post_path`) rather than hard-coded strings.
 
 ---
 
@@ -412,7 +419,7 @@ fn posts_set_post(ctx: i64) {
     ctx_set(ctx, "post", post as i64)
 }
 
-fn posts_update(ctx: i64) {
+fn update(ctx: i64) {
     let id = ctx_param(ctx, "id")
     if post_update_from(id, ctx_permit(ctx, "title, body, author")) {
         if forge_dirty_changed("posts", id, "title", ctx_param(ctx, "title")) {

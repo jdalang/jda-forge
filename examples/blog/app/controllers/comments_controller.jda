@@ -1,8 +1,6 @@
-// =============================================================================
 // Controller: Comments
-// =============================================================================
 
-fn comments_create(ctx: i64) {
+fn create(ctx: i64) {
     let post_id = ctx_param(ctx, "post_id")
     if comment_create_from(ctx_permit(ctx, "post_id, author, body")) {
         ctx_flash_set(ctx, "notice", "Comment added.")
@@ -13,7 +11,7 @@ fn comments_create(ctx: i64) {
     ctx_redirect(ctx, post_path(post_id))
 }
 
-fn comments_delete(ctx: i64) {
+fn delete(ctx: i64) {
     let post_id = ctx_param(ctx, "post_id")
     comment_delete(ctx_param(ctx, "id"))
     ctx_flash_set(ctx, "notice", "Comment removed.")
