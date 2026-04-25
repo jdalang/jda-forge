@@ -6,9 +6,14 @@
 
 fn post_validations_init() {
     forge_model("posts")
+    forge_assoc_has_many("comments", "comments", "post_id")
     forge_field       ("title, body, author", FORGE_V_PRESENCE)
     forge_field_length("title",               2, 255)
     forge_field_min   ("body",                10)
+}
+
+fn post_comments(post_id: []i8) -> &ForgeResult {
+    ret forge_assoc_query("posts", "comments", post_id)
 }
 
 // --- Custom scopes ---

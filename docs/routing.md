@@ -378,25 +378,13 @@ fn posts_new(ctx: i64) {
 }
 
 fn posts_create(ctx: i64) {
-    let title  = ctx_form(ctx, "title")
-    let body   = ctx_form(ctx, "body")
-    let author = ctx_form(ctx, "author")
-
-    let errs = post_validate(title, body, author)
-    if forge_errors_any(errs) {
-        ctx_flash_set(ctx, "alert", forge_errors_json(errs))
-        ctx_redirect(ctx, new_post_path)
+    if post_create_from(ctx_permit(ctx, "title, body, author")) {
+        ctx_flash_set(ctx, "notice", "Post created.")
+        ctx_redirect(ctx, posts_path)
         ret
     }
-
-    if !post_create(title, body, author) {
-        ctx_flash_set(ctx, "alert", "Could not save post.")
-        ctx_redirect(ctx, new_post_path)
-        ret
-    }
-
-    ctx_flash_set(ctx, "notice", "Post created.")
-    ctx_redirect(ctx, posts_path)
+    ctx_save_errors(ctx)
+    ctx_redirect(ctx, new_post_path)
 }
 
 fn posts_show(ctx: i64) {
@@ -414,25 +402,14 @@ fn posts_edit(ctx: i64) {
 }
 
 fn posts_update(ctx: i64) {
-    let id    = ctx_param(ctx, "id")
-    let title = ctx_form(ctx, "title")
-    let body  = ctx_form(ctx, "body")
-
-    let errs = post_validate(title, body, "placeholder")
-    if forge_errors_any(errs) {
-        ctx_flash_set(ctx, "alert", forge_errors_json(errs))
-        ctx_redirect(ctx, edit_post_path(id))
+    let id = ctx_param(ctx, "id")
+    if post_update_from(id, ctx_permit(ctx, "title, body, author")) {
+        ctx_flash_set(ctx, "notice", "Post updated.")
+        ctx_redirect(ctx, post_path(id))
         ret
     }
-
-    if !post_update(id, title, body) {
-        ctx_flash_set(ctx, "alert", "Could not update post.")
-        ctx_redirect(ctx, edit_post_path(id))
-        ret
-    }
-
-    ctx_flash_set(ctx, "notice", "Post updated.")
-    ctx_redirect(ctx, post_path(id))
+    ctx_save_errors(ctx)
+    ctx_redirect(ctx, edit_post_path(id))
 }
 
 fn posts_delete(ctx: i64) {
@@ -442,7 +419,7 @@ fn posts_delete(ctx: i64) {
 }
 ```
 
-Pattern: validate → flash + redirect on failure → flash + redirect on success. Controllers use path helper constants and functions, never hard-coded strings.
+Validations fire automatically inside `post_create_from` / `post_update_from` — no manual validate call needed. `ctx_save_errors` stores failure details in the flash for the next request. Controllers use path helper constants and functions, never hard-coded strings.
 
 ---
 

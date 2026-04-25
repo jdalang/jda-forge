@@ -4,21 +4,12 @@
 
 fn comments_create(ctx: i64) {
     let post_id = ctx_param(ctx, "post_id")
-    let author  = ctx_form(ctx, "author")
-    let body    = ctx_form(ctx, "body")
-
-    let errs = comment_validate(body, author)
-    if forge_errors_any(errs) {
-        ctx_flash_set(ctx, "alert", forge_errors_json(errs))
+    if comment_create_from(ctx_permit(ctx, "post_id, author, body")) {
+        ctx_flash_set(ctx, "notice", "Comment added.")
         ctx_redirect(ctx, post_path(post_id))
         ret
     }
-    if !comment_create(post_id, author, body) {
-        ctx_flash_set(ctx, "alert", "Could not save comment.")
-        ctx_redirect(ctx, post_path(post_id))
-        ret
-    }
-    ctx_flash_set(ctx, "notice", "Comment added.")
+    ctx_save_errors(ctx)
     ctx_redirect(ctx, post_path(post_id))
 }
 
