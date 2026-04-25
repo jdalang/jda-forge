@@ -2,8 +2,15 @@
 # =============================================================================
 # JDA Forge — Installer
 #
-# Latest:          curl -fsSL https://raw.githubusercontent.com/jdalang/jda-forge/main/install.sh | sh
-# Specific version: curl -fsSL .../install.sh | sh -s -- --version v3.0.0
+# Via JDA package manager (recommended):
+#   jda install forge                     # latest
+#   jda install forge@3.0.0              # specific version
+#   jda install github.com/jdalang/jda-forge
+#   jda install github.com/jdalang/jda-forge@3.0.0
+#
+# Via curl (bootstrap / CI):
+#   curl -fsSL https://raw.githubusercontent.com/jdalang/jda-forge/main/install.sh | sh
+#   curl -fsSL .../install.sh | sh -s -- --version v3.0.0
 # =============================================================================
 
 set -euo pipefail
@@ -12,7 +19,8 @@ REPO="https://github.com/jdalang/jda-forge.git"
 INSTALL_DIR="${JDA_HOME:-$HOME/.jda}"
 FORGE_DIR="$INSTALL_DIR/forge"
 BIN_DIR="$INSTALL_DIR/bin"
-VERSION=""
+# JDA_PKG_VERSION / JDA_PKG_SOURCE are set by 'jda install'; flags override them.
+VERSION="${JDA_PKG_VERSION:-}"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
 info()    { echo -e "${GREEN}==>${NC} ${BOLD}$*${NC}"; }
@@ -40,6 +48,10 @@ while [ $# -gt 0 ]; do
             ;;
         --help|-h)
             echo "Usage: install.sh [--version v3.0.0] [--dir /path]"
+            echo ""
+            echo "Environment variables (set by 'jda install'):"
+            echo "  JDA_PKG_VERSION  version to install (e.g. 3.0.0 or v3.0.0)"
+            echo "  JDA_PKG_SOURCE   alternate git URL"
             exit 0
             ;;
         *) err "Unknown flag: $1. Use --help for usage." ;;
@@ -54,6 +66,9 @@ fi
 # ---------------------------------------------------------------------------
 # Pre-flight
 # ---------------------------------------------------------------------------
+
+# JDA_PKG_SOURCE lets jda install override the repo URL (e.g. a mirror)
+[ -n "${JDA_PKG_SOURCE:-}" ] && REPO="$JDA_PKG_SOURCE"
 
 command -v git >/dev/null 2>&1 || err "git is required. Install it and re-run."
 command -v jda >/dev/null 2>&1 || warn "jda compiler not found in PATH. Install from https://github.com/jdalang/jda"

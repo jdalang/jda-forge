@@ -1,0 +1,8 @@
+{
+  "forge": {
+    "source":      "github.com/jdalang/jda-forge",
+    "description": "JDA Forge — full-stack web framework CLI and library",
+    "latest":      "3.0.0",
+    "compat":      { "jda": ">= 0.9.0" }
+  }
+}

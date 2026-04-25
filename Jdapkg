@@ -1,0 +1,28 @@
+# Jdapkg — JDA package manifest
+# Read by: jda install forge
+#           jda install github.com/jdalang/jda-forge
+#           jda install github.com/jdalang/jda-forge@3.0.0
+
+name        = forge
+version     = 3.0.0
+description = JDA Forge — full-stack web framework CLI and library
+author      = JDA Lang
+license     = MIT
+source      = github.com/jdalang/jda-forge
+
+# Minimum JDA compiler version required
+[compat]
+jda         = >= 0.9.0
+
+# CLI tools installed to ~/.jda/bin/ (added to PATH by install.sh)
+[bin]
+forge       = bin/forge
+
+# Library file made available to projects via 'forge install' or Forgefile
+[lib]
+forge       = forge.jda
+
+# Optional install hook — run by 'jda install' after placing the files.
+# install.sh also handles PATH wiring and shell config.
+[install]
+script      = install.sh
