@@ -824,16 +824,25 @@ Use `find_each` when you want full query builder control (filters, ordering) or 
 
 Forge supports two validation styles: **declarative** (Rails-style, fires automatically on save) and **manual** (explicit calls you control). Prefer declarative for standard rules; fall back to manual for complex cross-field logic.
 
-### Declarative validations
+### Model init — the full picture
 
-Register rules once at startup. They fire automatically inside every `post_create` and `post_update` call — you never call them in the controller.
-
-Call `forge_model(table)` once at the top of your init function to set the model context, then use the short `forge_field*` helpers — no need to repeat the table name on every line:
+The `*_validations_init` function is the single place where the complete shape of a model is declared. Associations, callbacks, and validation rules all live here — any developer reading the file immediately sees what the model relates to, what triggers fire, and what rules apply.
 
 ```jda
 // app/models/post.jda
 fn post_validations_init() {
     forge_model("posts")
+
+    // Associations
+    forge_assoc_belongs_to("user",     "users",    "user_id")
+    forge_assoc_has_many  ("comments", "comments", "post_id")
+    forge_assoc_has_one   ("image",    "images",   "post_id")
+
+    // Callbacks
+    forge_callback(FORGE_CB_BEFORE_SAVE,  fn_addr(post_before_save))
+    forge_callback(FORGE_CB_AFTER_CREATE, fn_addr(post_after_create))
+
+    // Validations
     forge_field       ("title, body, author", FORGE_V_PRESENCE)
     forge_field_length("title",               2, 255)
     forge_field_min   ("body",                10)
@@ -842,7 +851,15 @@ fn post_validations_init() {
 }
 ```
 
+`forge generate model` scaffolds this pattern automatically — it emits the init function with `forge_assoc_belongs_to` for any `references` field, commented-out callback stubs, and `forge_field` lines for all validatable columns.
+
 Call the init function once at startup — typically in `main.jda` before `routes(app)`:
+
+### Declarative validations
+
+Register rules once at startup. They fire automatically inside every `post_create` and `post_update` call — you never call them in the controller.
+
+Call `forge_model(table)` once at the top of your init function to set the model context, then use the short `forge_field*` helpers — no need to repeat the table name on every line:
 
 ```jda
 post_validations_init()
@@ -1103,34 +1120,47 @@ fn user_validate(email: []i8, password: []i8, confirm: []i8, role: []i8, age: []
 
 ## Associations
 
-Forge provides three association helpers. They return a `&ForgeResult` (or a single row result for `has_one` / `belongs_to`).
+Declare associations at the model level so the complete relationship graph is visible in one place. `forge generate model` emits typed accessor stubs for each declared association.
 
-### belongs_to
+### Declaring associations (model-level)
 
-Fetches the parent record by a foreign key value.
+Inside `*_validations_init`, after `forge_model()`:
 
 ```jda
-// Given a post row with a user_id field:
-let user = forge_belongs_to("users", post.user_id)
+fn post_validations_init() {
+    forge_model("posts")
+    forge_assoc_belongs_to("user",     "users",    "user_id")   // parent
+    forge_assoc_has_many  ("comments", "comments", "post_id")   // children
+    forge_assoc_has_one   ("image",    "images",   "post_id")   // single child
+    // ...
+}
 ```
 
-Equivalent to `forge_find("users", post.user_id)`.
-
-### has_many
-
-Fetches all child rows for a given foreign key.
+The generator then emits typed accessor functions in `app/models/post.jda`:
 
 ```jda
-let posts = forge_has_many("posts", "user_id", uid)
+fn post_user(fk_val: []i8)    -> &ForgeResult { ret forge_assoc_query("posts", "user",     fk_val) }
+fn post_comments(post_id: []i8) -> &ForgeResult { ret forge_assoc_query("posts", "comments", post_id) }
+fn post_image(post_id: []i8)    -> &ForgeResult { ret forge_assoc_query("posts", "image",    post_id) }
 ```
 
-Returns all posts where `user_id = uid`, ordered by `created_at DESC`. Soft-deleted rows are excluded.
-
-### has_one
-
-Fetches a single child row for a given foreign key. Returns the first match.
+Call them from controllers or other models:
 
 ```jda
+let author   = post_user(post.user_id)
+let comments = post_comments(post.id)
+let image    = post_image(post.id)
+```
+
+For `belongs_to` pass the FK **value** (`post.user_id`); for `has_many` / `has_one` pass the owner's `id`.
+
+### Ad-hoc association queries
+
+For one-off lookups without a declared association, call the underlying helpers directly:
+
+```jda
+let user    = forge_belongs_to("users", post.user_id)
+let posts   = forge_has_many("posts", "user_id", uid)
 let profile = forge_has_one("profiles", "user_id", uid)
 ```
 
@@ -1156,24 +1186,42 @@ Callbacks let you hook into the record lifecycle. A callback is a plain Jda func
 
 Declarative validations always run before any before-callback. See [Lifecycle order](#lifecycle-order) in the Validations section.
 
-### Registering a callback
+### Registering callbacks (model-level)
+
+Declare callbacks inside `*_validations_init` after `forge_model()` using `forge_callback`. This keeps the entire model definition — associations, callbacks, validations — visible in one function:
 
 ```jda
-forge_callback_add("users", FORGE_CB_BEFORE_SAVE,   fn_addr(hash_password_before_save))
-forge_callback_add("users", FORGE_CB_AFTER_CREATE,  fn_addr(send_welcome_email))
-forge_callback_add("users", FORGE_CB_BEFORE_DELETE, fn_addr(cancel_subscriptions))
+fn user_validations_init() {
+    forge_model("users")
+
+    forge_callback(FORGE_CB_BEFORE_SAVE,   fn_addr(user_hash_password))
+    forge_callback(FORGE_CB_AFTER_CREATE,  fn_addr(user_send_welcome_email))
+    forge_callback(FORGE_CB_BEFORE_DELETE, fn_addr(user_cancel_subscriptions))
+
+    forge_field("email, password", FORGE_V_PRESENCE)
+    forge_field("email",           FORGE_V_EMAIL)
+}
 ```
 
-Register callbacks once at startup.
+`forge_callback` uses the model set by the preceding `forge_model()` call — no need to repeat the table name.
 
 ### Callback function signature
 
 ```jda
-fn hash_password_before_save(row_ptr: i64) -> bool {
+fn user_hash_password(row_ptr: i64) -> bool {
     // row_ptr is a pointer to the row struct in memory
     // Return false to abort the save
     ret true
 }
+```
+
+### Registering callbacks explicitly
+
+If you need to register callbacks outside the model init (e.g. in a plugin or library):
+
+```jda
+forge_callback_add("users", FORGE_CB_BEFORE_SAVE,   fn_addr(user_hash_password))
+forge_callback_add("users", FORGE_CB_AFTER_CREATE,  fn_addr(user_send_welcome_email))
 ```
 
 ### Available callback constants

@@ -1206,41 +1206,63 @@ gen_model() {
         echo "// CRUD functions (${snake}_q, ${snake}_all, ${snake}_find, ${snake}_create, …)"
         echo "// are auto-generated into _build/models.jda from db/migrate/*.sql"
         echo ""
-        echo "// --- Validations ---"
+        echo "fn ${snake}_validations_init() {"
+        echo "    forge_model(\"${table}\")"
+
+        # associations — one belongs_to per references field
+        local has_refs=false
+        for f in "${fields[@]:-}"; do
+            [ -z "$f" ] && continue
+            local fname="${f%%:*}"; local ftype="${f##*:}"
+            [ "$ftype" != "references" ] && continue
+            local ref_table; ref_table=$(plural "$fname")
+            echo "    forge_assoc_belongs_to(\"${fname}\", \"${ref_table}\", \"${fname}_id\")"
+            has_refs=true
+        done
+        $has_refs && echo ""
+
+        # callback placeholders
+        echo "    // forge_callback(FORGE_CB_BEFORE_SAVE,  fn_addr(${snake}_before_save))"
+        echo "    // forge_callback(FORGE_CB_AFTER_CREATE, fn_addr(${snake}_after_create))"
         echo ""
 
-        # Check if there are any validatable fields
-        local has_fields=false
+        # validations
+        local presence_fields=()
         for f in "${fields[@]:-}"; do
             [ -z "$f" ] && continue
             local fname="${f%%:*}"; local ftype="${f##*:}"
             [[ "$fname" =~ ^(created_at|updated_at|deleted_at)$ ]] && continue
-            ( [ "$ftype" = "boolean" ] || [ "$ftype" = "timestamp" ] ) && continue
-            has_fields=true; break
+            [ "$ftype" = "boolean" ] || [ "$ftype" = "timestamp" ] && continue
+            [ "$ftype" = "references" ] && continue
+            presence_fields+=("$fname")
         done
-
-        if $has_fields; then
-            echo "fn ${snake}_validate("
+        if [ ${#presence_fields[@]} -gt 0 ]; then
+            local pf_csv; pf_csv=$(IFS=", "; echo "${presence_fields[*]}")
+            echo "    forge_field(\"${pf_csv}\", FORGE_V_PRESENCE)"
             for f in "${fields[@]:-}"; do
                 [ -z "$f" ] && continue
                 local fname="${f%%:*}"; local ftype="${f##*:}"
-                [[ "$fname" =~ ^(created_at|updated_at|deleted_at)$ ]] && continue
-                ( [ "$ftype" = "boolean" ] || [ "$ftype" = "timestamp" ] ) && continue
-                echo "    ${fname}: []i8"
+                [ "$ftype" = "string" ] && echo "    forge_field_length(\"${fname}\", 1, 255)"
             done
-            echo ") -> &ForgeErrors {"
-            echo "    let e = forge_errors_new()"
-            for f in "${fields[@]:-}"; do
-                [ -z "$f" ] && continue
-                local fname="${f%%:*}"; local ftype="${f##*:}"
-                [[ "$fname" =~ ^(created_at|updated_at|deleted_at)$ ]] && continue
-                ( [ "$ftype" = "boolean" ] || [ "$ftype" = "timestamp" ] ) && continue
-                echo "    forge_validate_presence(e, \"${fname}\", ${fname})"
-                [ "$ftype" = "string" ] && echo "    forge_validate_length(e, \"${fname}\", ${fname}, 1, 255)"
-            done
-            echo "    ret e"
-            echo "}"
         fi
+
+        echo "}"
+
+        # typed accessor stubs for declared associations
+        local printed_header=false
+        for f in "${fields[@]:-}"; do
+            [ -z "$f" ] && continue
+            local fname="${f%%:*}"; local ftype="${f##*:}"
+            [ "$ftype" != "references" ] && continue
+            if ! $printed_header; then
+                echo ""
+                printed_header=true
+            fi
+            local ref_table; ref_table=$(plural "$fname")
+            echo "fn ${snake}_${fname}(fk_val: []i8) -> &ForgeResult {"
+            echo "    ret forge_assoc_query(\"${table}\", \"${fname}\", fk_val)"
+            echo "}"
+        done
     } > "$out"
     ok "created $out"
 }

@@ -5277,6 +5277,11 @@ fn forge_callback_add(table: []i8, event: i64, fn_ptr: i64) {
     g_forge_cb_count = n + 1
 }
 
+// Model-level callback declaration — use inside *_validations_init after forge_model().
+fn forge_callback(event: i64, fn_ptr: i64) {
+    forge_callback_add(g_forge_model_buf[0..g_forge_model_len], event, fn_ptr)
+}
+
 fn forge_callback_run(table: []i8, event: i64, row_ptr: i64) -> bool {
     forge_cb_init()
     loop i in 0..g_forge_cb_count {
@@ -5308,6 +5313,114 @@ fn forge_has_one(table: []i8, fk_col: []i8, owner_id: []i8) -> &ForgeResult {
     let q = forge_q(table)
     forge_q_where(q, fk_col, "=", owner_id)
     ret forge_q_first(q)
+}
+
+// =============================================================================
+// Section D2 — Association registry (model-level declarations)
+//
+// Declare associations inside *_validations_init with forge_assoc_belongs_to /
+// forge_assoc_has_many / forge_assoc_has_one.  forge generate model emits typed
+// accessor stubs; at runtime forge_assoc_query dispatches through this registry.
+// =============================================================================
+
+let FORGE_ASSOC_BELONGS_TO: i64 = 1
+let FORGE_ASSOC_HAS_MANY:   i64 = 2
+let FORGE_ASSOC_HAS_ONE:    i64 = 3
+let FORGE_ASSOC_MAX:        i64 = 128
+
+let g_forge_assoc_models:      &i8  = 0   // [MAX * 64] model table names
+let g_forge_assoc_model_lens:  &i64 = 0
+let g_forge_assoc_names:       &i8  = 0   // [MAX * 64] association names
+let g_forge_assoc_name_lens:   &i64 = 0
+let g_forge_assoc_types:       &i64 = 0   // BELONGS_TO / HAS_MANY / HAS_ONE
+let g_forge_assoc_targets:     &i8  = 0   // [MAX * 64] target table
+let g_forge_assoc_target_lens: &i64 = 0
+let g_forge_assoc_fkeys:       &i8  = 0   // [MAX * 64] foreign key column
+let g_forge_assoc_fkey_lens:   &i64 = 0
+let g_forge_assoc_count:       i64  = 0
+
+fn forge_assoc_reg_init() {
+    if g_forge_assoc_models != 0 { ret }
+    g_forge_assoc_models      = alloc_pages(2)   // 128 * 64 = 8 192 bytes
+    g_forge_assoc_model_lens  = alloc_pages(1)
+    g_forge_assoc_names       = alloc_pages(2)
+    g_forge_assoc_name_lens   = alloc_pages(1)
+    g_forge_assoc_types       = alloc_pages(1)
+    g_forge_assoc_targets     = alloc_pages(2)
+    g_forge_assoc_target_lens = alloc_pages(1)
+    g_forge_assoc_fkeys       = alloc_pages(2)
+    g_forge_assoc_fkey_lens   = alloc_pages(1)
+}
+
+fn forge_assoc_reg(assoc_type: i64, name: []i8, target: []i8, fkey: []i8) {
+    forge_assoc_reg_init()
+    let n = g_forge_assoc_count
+    if n >= FORGE_ASSOC_MAX { ret }
+    let base = n * 64
+
+    let ml = g_forge_model_len
+    loop i in 0..ml { g_forge_assoc_models[base + i] = g_forge_model_buf[i] }
+    g_forge_assoc_model_lens[n] = ml
+
+    let nl = name.len  if nl > 64 { nl = 64 }
+    loop i in 0..nl { g_forge_assoc_names[base + i] = name[i] }
+    g_forge_assoc_name_lens[n] = nl
+
+    g_forge_assoc_types[n] = assoc_type
+
+    let tl = target.len  if tl > 64 { tl = 64 }
+    loop i in 0..tl { g_forge_assoc_targets[base + i] = target[i] }
+    g_forge_assoc_target_lens[n] = tl
+
+    let fl = fkey.len  if fl > 64 { fl = 64 }
+    loop i in 0..fl { g_forge_assoc_fkeys[base + i] = fkey[i] }
+    g_forge_assoc_fkey_lens[n] = fl
+
+    g_forge_assoc_count = n + 1
+}
+
+// Model-level declaration helpers — call inside *_validations_init after forge_model().
+
+fn forge_assoc_belongs_to(name: []i8, target_table: []i8, fk_col: []i8) {
+    forge_assoc_reg(FORGE_ASSOC_BELONGS_TO, name, target_table, fk_col)
+}
+
+fn forge_assoc_has_many(name: []i8, target_table: []i8, fk_col: []i8) {
+    forge_assoc_reg(FORGE_ASSOC_HAS_MANY, name, target_table, fk_col)
+}
+
+fn forge_assoc_has_one(name: []i8, target_table: []i8, fk_col: []i8) {
+    forge_assoc_reg(FORGE_ASSOC_HAS_ONE, name, target_table, fk_col)
+}
+
+// Runtime dispatch — looks up (model_table, assoc_name) in the registry and
+// executes the association query.  id_or_fk is the FK value for belongs_to, or
+// the owner ID for has_many / has_one.
+fn forge_assoc_query(model_table: []i8, assoc_name: []i8, id_or_fk: []i8) -> &ForgeResult {
+    forge_assoc_reg_init()
+    let mtl = model_table.len
+    let anl = assoc_name.len
+    loop i in 0..g_forge_assoc_count {
+        if g_forge_assoc_model_lens[i] != mtl { continue }
+        let base = i * 64
+        let mm = true
+        loop j in 0..mtl { if g_forge_assoc_models[base + j] != model_table[j] { mm = false  break } }
+        if not mm { continue }
+        if g_forge_assoc_name_lens[i] != anl { continue }
+        let nm = true
+        loop j in 0..anl { if g_forge_assoc_names[base + j] != assoc_name[j] { nm = false  break } }
+        if not nm { continue }
+        let tl  = g_forge_assoc_target_lens[i]
+        let fl  = g_forge_assoc_fkey_lens[i]
+        let tgt = g_forge_assoc_targets[base..base + tl]
+        let fk  = g_forge_assoc_fkeys[base..base + fl]
+        let at  = g_forge_assoc_types[i]
+        if at == FORGE_ASSOC_BELONGS_TO { ret forge_belongs_to(tgt, id_or_fk) }
+        if at == FORGE_ASSOC_HAS_MANY   { ret forge_has_many(tgt, fk, id_or_fk) }
+        if at == FORGE_ASSOC_HAS_ONE    { ret forge_has_one(tgt, fk, id_or_fk) }
+        break
+    }
+    ret 0
 }
 
 // =============================================================================
