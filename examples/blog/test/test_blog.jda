@@ -1,0 +1,65 @@
+// =============================================================================
+// Tests: Blog
+// =============================================================================
+
+fn test_posts_index() {
+    let res = forge_test_get("/posts")
+    forge_assert_status  (res, 200)
+    forge_assert_body_has(res, "Blog Posts")
+}
+
+fn test_post_create_valid() {
+    let body = "title=Hello+World&body=This+is+a+test+post+body&author=Alice"
+    let res  = forge_test_post("/posts", body)
+    forge_assert_redirect(res)
+}
+
+fn test_post_create_missing_title() {
+    let body = "title=&body=Some+body+text&author=Alice"
+    let res  = forge_test_post("/posts", body)
+    forge_assert_redirect(res)
+}
+
+fn test_post_create_short_body() {
+    let body = "title=Hi&body=short&author=Alice"
+    let res  = forge_test_post("/posts", body)
+    forge_assert_redirect(res)
+}
+
+fn test_post_show_not_found() {
+    let res = forge_test_get("/posts/99999")
+    forge_assert_status(res, 404)
+}
+
+fn test_comment_create_valid() {
+    let body = "author=Bob&body=Great+post+thanks"
+    let res  = forge_test_post("/posts/1/comments", body)
+    forge_assert_redirect(res)
+}
+
+fn test_comment_create_missing_body() {
+    let body = "author=Bob&body="
+    let res  = forge_test_post("/posts/1/comments", body)
+    forge_assert_redirect(res)
+}
+
+fn test_post_delete() {
+    let res = forge_test_delete("/posts/1")
+    forge_assert_redirect(res)
+}
+
+fn main() {
+    forge_dotenv_load(".env.test")
+    forge_test_init()
+
+    forge_test("GET /posts",                        fn_addr(test_posts_index))
+    forge_test("POST /posts valid",                 fn_addr(test_post_create_valid))
+    forge_test("POST /posts missing title",         fn_addr(test_post_create_missing_title))
+    forge_test("POST /posts body too short",        fn_addr(test_post_create_short_body))
+    forge_test("GET /posts/99999 not found",        fn_addr(test_post_show_not_found))
+    forge_test("POST /posts/1/comments valid",      fn_addr(test_comment_create_valid))
+    forge_test("POST /posts/1/comments empty body", fn_addr(test_comment_create_missing_body))
+    forge_test("DELETE /posts/1",                   fn_addr(test_post_delete))
+
+    forge_test_run()
+}

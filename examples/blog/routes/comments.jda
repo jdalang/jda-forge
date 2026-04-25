@@ -1,0 +1,39 @@
+// =============================================================================
+// Routes: Comments — POST /posts/:post_id/comments
+//                    DELETE /posts/:post_id/comments/:id
+// =============================================================================
+
+fn handle_comments_create(ctx: i64) {
+    let post_id = ctx_param(ctx, "post_id")
+    let author  = ctx_form(ctx, "author")
+    let body    = ctx_form(ctx, "body")
+
+    let errs = comment_validate(body, author)
+    if forge_errors_any(errs) {
+        ctx_flash_set(ctx, "alert", forge_errors_json(errs))
+        ctx_redirect(ctx, forge_path_id("posts", post_id))
+        ret
+    }
+
+    if !comment_create(post_id, author, body) {
+        ctx_flash_set(ctx, "alert", "Could not save comment.")
+        ctx_redirect(ctx, forge_path_id("posts", post_id))
+        ret
+    }
+
+    ctx_flash_set(ctx, "notice", "Comment added.")
+    ctx_redirect(ctx, forge_path_id("posts", post_id))
+}
+
+fn handle_comments_delete(ctx: i64) {
+    let post_id = ctx_param(ctx, "post_id")
+    let id      = ctx_param(ctx, "id")
+    comment_delete(id)
+    ctx_flash_set(ctx, "notice", "Comment removed.")
+    ctx_redirect(ctx, forge_path_id("posts", post_id))
+}
+
+fn register_comment_routes(app: &ForgeApp) {
+    app_post  (app, "/posts/:post_id/comments",     fn_addr(handle_comments_create))
+    app_delete(app, "/posts/:post_id/comments/:id", fn_addr(handle_comments_delete))
+}

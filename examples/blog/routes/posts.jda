@@ -1,0 +1,215 @@
+// =============================================================================
+// Routes: Posts — GET /posts, GET /posts/new, POST /posts,
+//                 GET /posts/:id, GET /posts/:id/edit,
+//                 POST /posts/:id, DELETE /posts/:id
+// =============================================================================
+
+fn handle_posts_index(ctx: i64) {
+    let posts = post_published()
+    let flash = tmpl_flash(ctx)
+    let buf: &i8 = alloc_pages(8)
+    let pos = 0i64
+    let h = "<h1>Blog Posts</h1>"
+    loop i in 0..flash.len { buf[pos] = flash[i]  pos = pos + 1 }
+    loop i in 0..h.len     { buf[pos] = h[i]       pos = pos + 1 }
+    if posts.count == 0 {
+        let empty = "<p>No posts yet. <a href=/posts/new>Write the first one.</a></p>"
+        loop i in 0..empty.len { buf[pos] = empty[i]  pos = pos + 1 }
+    }
+    loop r in 0..posts.count {
+        let title  = forge_result_col(posts, r, "title")
+        let author = forge_result_col(posts, r, "author")
+        let date   = forge_result_col(posts, r, "created_at")
+        let id     = forge_result_col(posts, r, "id")
+        let row = tmpl_post_row(title, author, date, id)
+        loop i in 0..row.len { buf[pos] = row[i]  pos = pos + 1 }
+    }
+    ctx_html(ctx, 200, tmpl_layout("Posts", buf[0..pos]))
+}
+
+fn handle_posts_new(ctx: i64) {
+    let tok = forge_csrf_token(ctx)
+    let buf: &i8 = alloc_pages(2)
+    let pos = 0i64
+    let form = "<h1>New Post</h1>"
+               + "<form method=POST action=/posts>"
+               + "<label>Title<br><input name=title style='width:100%'></label><br><br>"
+               + "<label>Author<br><input name=author></label><br><br>"
+               + "<label>Body<br><textarea name=body rows=10 style='width:100%'></textarea></label><br><br>"
+               + "<input type=hidden name=_csrf value=\""
+    let end  = "\"><button>Publish</button> <a href=/posts>Cancel</a></form>"
+    loop i in 0..form.len { buf[pos] = form[i]  pos = pos + 1 }
+    loop i in 0..tok.len  { buf[pos] = tok[i]   pos = pos + 1 }
+    loop i in 0..end.len  { buf[pos] = end[i]   pos = pos + 1 }
+    ctx_html(ctx, 200, tmpl_layout("New Post", buf[0..pos]))
+}
+
+fn handle_posts_create(ctx: i64) {
+    let title  = ctx_form(ctx, "title")
+    let body   = ctx_form(ctx, "body")
+    let author = ctx_form(ctx, "author")
+
+    let errs = post_validate(title, body, author)
+    if forge_errors_any(errs) {
+        ctx_flash_set(ctx, "alert", forge_errors_json(errs))
+        ctx_redirect(ctx, "/posts/new")
+        ret
+    }
+
+    if !post_create(title, body, author) {
+        ctx_flash_set(ctx, "alert", "Could not save post.")
+        ctx_redirect(ctx, "/posts/new")
+        ret
+    }
+
+    ctx_flash_set(ctx, "notice", "Post created.")
+    ctx_redirect(ctx, "/posts")
+}
+
+fn handle_posts_show(ctx: i64) {
+    let id   = ctx_param(ctx, "id")
+    let post = post_find(id)
+    if post.count == 0 {
+        ctx_not_found(ctx)
+        ret
+    }
+
+    let title  = forge_result_col(post, 0, "title")
+    let author = forge_result_col(post, 0, "author")
+    let body   = forge_result_col(post, 0, "body")
+    let date   = forge_result_col(post, 0, "created_at")
+
+    let comments = comment_for_post(id)
+    let buf: &i8 = alloc_pages(8)
+    let pos = 0i64
+
+    let flash = tmpl_flash(ctx)
+    loop i in 0..flash.len { buf[pos] = flash[i]  pos = pos + 1 }
+
+    let hdr1 = "<h1>"
+    let hdr2 = "</h1><p class=meta>by "
+    let hdr3 = " on "
+    let hdr4 = "</p><div class=body><p>"
+    let hdr5 = "</p></div>"
+    loop i in 0..hdr1.len  { buf[pos] = hdr1[i]   pos = pos + 1 }
+    loop i in 0..title.len { buf[pos] = title[i]   pos = pos + 1 }
+    loop i in 0..hdr2.len  { buf[pos] = hdr2[i]   pos = pos + 1 }
+    loop i in 0..author.len{ buf[pos] = author[i]  pos = pos + 1 }
+    loop i in 0..hdr3.len  { buf[pos] = hdr3[i]   pos = pos + 1 }
+    loop i in 0..date.len  { buf[pos] = date[i]    pos = pos + 1 }
+    loop i in 0..hdr4.len  { buf[pos] = hdr4[i]   pos = pos + 1 }
+    loop i in 0..body.len  { buf[pos] = body[i]    pos = pos + 1 }
+    loop i in 0..hdr5.len  { buf[pos] = hdr5[i]   pos = pos + 1 }
+
+    let act1 = " <a href=/posts/"
+    let act2 = "/edit>Edit</a> &nbsp;"
+    let del1 = forge_link_to_delete("Delete", forge_path_id("posts", id), forge_csrf_token(ctx))
+    loop i in 0..act1.len { buf[pos] = act1[i]  pos = pos + 1 }
+    loop i in 0..id.len   { buf[pos] = id[i]     pos = pos + 1 }
+    loop i in 0..act2.len { buf[pos] = act2[i]  pos = pos + 1 }
+    loop i in 0..del1.len { buf[pos] = del1[i]  pos = pos + 1 }
+
+    let csec = "<hr><h2>Comments ("
+    let ccnt = i64_to_str(comments.count)
+    let csec2 = ")</h2>"
+    loop i in 0..csec.len  { buf[pos] = csec[i]   pos = pos + 1 }
+    loop i in 0..ccnt.len  { buf[pos] = ccnt[i]   pos = pos + 1 }
+    loop i in 0..csec2.len { buf[pos] = csec2[i]  pos = pos + 1 }
+
+    loop r in 0..comments.count {
+        let ca = forge_result_col(comments, r, "author")
+        let cb = forge_result_col(comments, r, "body")
+        let cd = forge_result_col(comments, r, "created_at")
+        let crow = tmpl_comment_row(ca, cb, cd)
+        loop i in 0..crow.len { buf[pos] = crow[i]  pos = pos + 1 }
+    }
+
+    let cf1 = "<hr><h3>Leave a comment</h3>"
+              + "<form method=POST action=/posts/"
+    let cf2 = "/comments>"
+              + "<label>Name<br><input name=author></label><br><br>"
+              + "<label>Comment<br><textarea name=body rows=4 style='width:100%'></textarea></label><br><br>"
+              + "<input type=hidden name=_csrf value=\""
+    let cf3 = "\"><button>Post Comment</button></form>"
+    loop i in 0..cf1.len { buf[pos] = cf1[i]  pos = pos + 1 }
+    loop i in 0..id.len  { buf[pos] = id[i]   pos = pos + 1 }
+    loop i in 0..cf2.len { buf[pos] = cf2[i]  pos = pos + 1 }
+    let tok = forge_csrf_token(ctx)
+    loop i in 0..tok.len { buf[pos] = tok[i]  pos = pos + 1 }
+    loop i in 0..cf3.len { buf[pos] = cf3[i]  pos = pos + 1 }
+
+    ctx_html(ctx, 200, tmpl_layout(title, buf[0..pos]))
+}
+
+fn handle_posts_edit(ctx: i64) {
+    let id   = ctx_param(ctx, "id")
+    let post = post_find(id)
+    if post.count == 0 { ctx_not_found(ctx)  ret }
+
+    let title = forge_result_col(post, 0, "title")
+    let body  = forge_result_col(post, 0, "body")
+    let tok   = forge_csrf_token(ctx)
+
+    let buf: &i8 = alloc_pages(4)
+    let pos = 0i64
+    let s1 = "<h1>Edit Post</h1><form method=POST action=/posts/"
+    let s2 = "><input type=hidden name=_method value=PUT>"
+             + "<label>Title<br><input name=title value=\""
+    let s3 = "\" style='width:100%'></label><br><br>"
+             + "<label>Body<br><textarea name=body rows=10 style='width:100%'>"
+    let s4 = "</textarea></label><br><br>"
+             + "<input type=hidden name=_csrf value=\""
+    let s5 = "\"><button>Update</button> <a href=/posts/"
+    let s6 = ">Cancel</a></form>"
+    loop i in 0..s1.len    { buf[pos] = s1[i]     pos = pos + 1 }
+    loop i in 0..id.len    { buf[pos] = id[i]      pos = pos + 1 }
+    loop i in 0..s2.len    { buf[pos] = s2[i]      pos = pos + 1 }
+    loop i in 0..title.len { buf[pos] = title[i]   pos = pos + 1 }
+    loop i in 0..s3.len    { buf[pos] = s3[i]      pos = pos + 1 }
+    loop i in 0..body.len  { buf[pos] = body[i]    pos = pos + 1 }
+    loop i in 0..s4.len    { buf[pos] = s4[i]      pos = pos + 1 }
+    loop i in 0..tok.len   { buf[pos] = tok[i]     pos = pos + 1 }
+    loop i in 0..s5.len    { buf[pos] = s5[i]      pos = pos + 1 }
+    loop i in 0..id.len    { buf[pos] = id[i]      pos = pos + 1 }
+    loop i in 0..s6.len    { buf[pos] = s6[i]      pos = pos + 1 }
+    ctx_html(ctx, 200, tmpl_layout("Edit Post", buf[0..pos]))
+}
+
+fn handle_posts_update(ctx: i64) {
+    let id    = ctx_param(ctx, "id")
+    let title = ctx_form(ctx, "title")
+    let body  = ctx_form(ctx, "body")
+
+    let errs = post_validate(title, body, "placeholder")
+    if forge_errors_any(errs) {
+        ctx_flash_set(ctx, "alert", forge_errors_json(errs))
+        ctx_redirect(ctx, forge_path_edit("posts", id))
+        ret
+    }
+
+    if !post_update(id, title, body) {
+        ctx_flash_set(ctx, "alert", "Could not update post.")
+        ctx_redirect(ctx, forge_path_edit("posts", id))
+        ret
+    }
+
+    ctx_flash_set(ctx, "notice", "Post updated.")
+    ctx_redirect(ctx, forge_path_id("posts", id))
+}
+
+fn handle_posts_delete(ctx: i64) {
+    let id = ctx_param(ctx, "id")
+    post_delete(id)
+    ctx_flash_set(ctx, "notice", "Post deleted.")
+    ctx_redirect(ctx, "/posts")
+}
+
+fn register_post_routes(app: &ForgeApp) {
+    app_get   (app, "/posts",          fn_addr(handle_posts_index))
+    app_get   (app, "/posts/new",      fn_addr(handle_posts_new))
+    app_post  (app, "/posts",          fn_addr(handle_posts_create))
+    app_get   (app, "/posts/:id",      fn_addr(handle_posts_show))
+    app_get   (app, "/posts/:id/edit", fn_addr(handle_posts_edit))
+    app_post  (app, "/posts/:id",      fn_addr(handle_posts_update))
+    app_delete(app, "/posts/:id",      fn_addr(handle_posts_delete))
+}

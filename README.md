@@ -32,6 +32,20 @@ jda build --include forge.jda app.jda -o app
 
 ---
 
+## Examples
+
+| Example | What it shows |
+|---|---|
+| [`examples/hello.jda`](examples/hello.jda) | Route groups, middleware, request-id |
+| [`examples/crud.jda`](examples/crud.jda) | JWT-protected API, login, /me endpoint |
+| [`examples/websocket.jda`](examples/websocket.jda) | WebSocket echo chat server |
+| [`examples/static_files.jda`](examples/static_files.jda) | SPA shell + static file serving |
+| [`examples/blog/`](examples/blog/) | Full multi-file app — posts + comments CRUD, sessions, CSRF, flash, migrations, tests, multi-environment config |
+
+The blog example is the best starting point for a real application.
+
+---
+
 ## Project Layout (multi-file apps)
 
 Use the scaffold template. The Makefile concatenates all source files before compilation:
@@ -722,43 +736,194 @@ app_use(app, fn_addr(forge_etag_middleware))
 
 ---
 
-## Feature Comparison
+## Third-Party Libraries
 
-| Feature | Rails | Django | Forge |
-|---|---|---|---|
-| Router + groups + scoped middleware | ✅ | ✅ | ✅ |
-| JSON / form / multipart body | ✅ | ✅ | ✅ |
-| Sessions + flash + CSRF | ✅ | ✅ | ✅ |
-| Cookies | ✅ | ✅ | ✅ |
-| Before/after action filters | ✅ | ✅ | ✅ |
-| Strong params | ✅ | Django forms | ✅ |
-| respond_to / content negotiation | ✅ | ✅ | ✅ |
-| Pagination | gem | built-in | ✅ |
-| Query builder | ✅ | ✅ | ✅ |
-| Model validations | ✅ | ✅ | ✅ |
-| Model callbacks | ✅ | signals | ✅ |
-| Associations (belongs_to/has_many) | ✅ | ✅ | ✅ |
-| Transactions | ✅ | ✅ | ✅ |
-| Soft delete | gem | ✅ | ✅ |
-| Serializers (model → JSON) | ✅ | DRF | ✅ |
-| ERB / template rendering | ✅ | ✅ | ✅ |
-| Partials | ✅ | ✅ | ✅ |
-| View helpers | ✅ | template tags | ✅ |
-| I18n | ✅ | ✅ | ✅ |
-| Background jobs | ✅ | Celery | ✅ |
-| Mailer (SMTP) | ✅ | ✅ | ✅ |
-| WebSocket | Action Cable | Channels | ✅ |
-| Server-Sent Events | ✅ | ✅ | ✅ |
-| Static files | ✅ | ✅ | ✅ |
-| File uploads | Active Storage | ✅ | ✅ |
-| Admin UI | — | ✅ | ✅ |
-| Migrations | ✅ | ✅ | ✅ |
-| Environments (dev/test/prod) | ✅ | ✅ | ✅ |
-| Dotenv / secrets | ✅ | ✅ | ✅ |
-| Test runner + request specs | RSpec | TestCase | ✅ |
-| Caching (fragment + ETag) | ✅ | ✅ | ✅ |
-| Concerns (timestamps, tags, audit) | gems | mixins | ✅ |
-| CLI scaffold generator | ✅ | ✅ | ✅ |
+Forge libraries are plain `.jda` files included at build time via `--include`. There is no package manager — libraries are added by path, similar to vendoring.
+
+### Using a library
+
+```bash
+jda build --include forge.jda --include libs/forge-slugify.jda myapp.jda -o myapp
+```
+
+Add multiple `--include` flags for multiple libraries. Order matters — each file can use symbols defined in files listed before it.
+
+### Makefile integration
+
+```makefile
+FORGE  = ../forge.jda
+LIBS   = libs/forge-slugify.jda libs/forge-markdown.jda
+OUT    = _build/app.jda
+
+build: $(OUT)
+    jda build --include $(FORGE) $(addprefix --include ,$(LIBS)) $(OUT) -o app
+```
+
+### Writing a library
+
+A library is any `.jda` file that defines functions and structs:
+
+```jda
+// libs/forge-slugify.jda
+fn slugify(src: []i8, dst: &i8) -> i64 {
+    let pos = 0i64
+    loop i in 0..src.len {
+        let c = src[i]
+        if c >= 'A' && c <= 'Z' { dst[pos] = c + 32   pos = pos + 1 }
+        else if c >= 'a' && c <= 'z' { dst[pos] = c    pos = pos + 1 }
+        else if c >= '0' && c <= '9' { dst[pos] = c    pos = pos + 1 }
+        else if pos > 0 && dst[pos-1] != '-' { dst[pos] = '-'  pos = pos + 1 }
+    }
+    ret pos
+}
+```
+
+Use it in your app:
+
+```jda
+let slug_buf = [256]i8
+let slug_len = slugify(title, slug_buf)
+let slug = slug_buf[0..slug_len]
+```
+
+### Installing a community library
+
+```bash
+# clone the library into libs/
+git clone https://github.com/jdalang/forge-markdown libs/forge-markdown
+
+# or vendor a single file
+cp ~/forge-libs/slugify.jda libs/forge-slugify.jda
+```
+
+---
+
+## Environments
+
+Forge supports `development`, `staging`, `test`, and `production` environments via the `FORGE_ENV` environment variable and per-environment `.env` files.
+
+### Environment files
+
+```
+.env                   # shared defaults (committed)
+.env.development       # local dev overrides (gitignored)
+.env.staging           # staging server values (gitignored)
+.env.production        # production values (gitignored)
+.env.test              # test overrides (gitignored)
+```
+
+Load the right file at startup based on `FORGE_ENV`:
+
+```jda
+fn load_env() {
+    let env = forge_env_get("FORGE_ENV")
+    if env.len == 0 { env = "development" }
+
+    forge_dotenv_load(".env")
+
+    if str_eq(env, "development") { forge_dotenv_load(".env.development") }
+    else if str_eq(env, "staging")     { forge_dotenv_load(".env.staging")     }
+    else if str_eq(env, "production")  { forge_dotenv_load(".env.production")  }
+    else if str_eq(env, "test")        { forge_dotenv_load(".env.test")        }
+}
+```
+
+### Per-environment config
+
+```jda
+fn app_config() -> ForgeConfig {
+    load_env()
+    let cfg = forge_default_config()
+    cfg.db_url     = forge_env_get("DATABASE_URL")
+    cfg.smtp_host  = forge_env_get("SMTP_HOST")
+    cfg.smtp_port  = 587
+    cfg.smtp_user  = forge_env_get("SMTP_USER")
+    cfg.smtp_pass  = forge_env_get("SMTP_PASS")
+    cfg.secret_key = forge_env_get("APP_SECRET")
+
+    // Disable mailer in test and development
+    if forge_env_is("test") || forge_env_is("development") {
+        cfg.smtp_host = ""
+    }
+
+    // Verbose logging in development
+    if forge_env_is("development") {
+        forge_log_level_set(FORGE_LOG_DEBUG)
+    } else {
+        forge_log_level_set(FORGE_LOG_INFO)
+    }
+
+    ret cfg
+}
+```
+
+### Example .env files
+
+**.env** (shared baseline, commit this):
+```
+FORGE_ENV=development
+APP_PORT=8080
+```
+
+**.env.development** (local only, gitignore):
+```
+DATABASE_URL=postgres://postgres:postgres@localhost/myapp_dev
+SMTP_HOST=
+APP_SECRET=dev-secret-not-for-production
+```
+
+**.env.staging** (staging server, gitignore):
+```
+DATABASE_URL=postgres://user:pass@staging-db.internal/myapp_staging
+SMTP_HOST=smtp.sendgrid.net
+SMTP_USER=apikey
+SMTP_PASS=SG.xxxx
+APP_SECRET=staging-secret-64chars
+```
+
+**.env.production** (production server, gitignore):
+```
+DATABASE_URL=postgres://user:pass@prod-db.internal/myapp_prod
+SMTP_HOST=smtp.sendgrid.net
+SMTP_USER=apikey
+SMTP_PASS=SG.xxxx
+APP_SECRET=production-secret-64chars
+```
+
+**.env.test** (test runner, commit this):
+```
+DATABASE_URL=postgres://postgres:postgres@localhost/myapp_test
+SMTP_HOST=
+FORGE_ENV=test
+```
+
+### Running in each environment
+
+```bash
+# development (default)
+./app
+
+# staging
+FORGE_ENV=staging ./app
+
+# production
+FORGE_ENV=production ./app
+
+# test
+FORGE_ENV=test make test
+```
+
+### Checking env in code
+
+```jda
+forge_env()               // returns "development", "staging", "production", "test"
+forge_env_is("production") // bool
+
+if forge_env_is("production") {
+    app_use(app, fn_addr(forge_rate_limit))
+    app_use(app, fn_addr(forge_secure_headers))
+}
+```
 
 ---
 

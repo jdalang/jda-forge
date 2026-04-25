@@ -1,0 +1,82 @@
+// =============================================================================
+// Model: Post
+// =============================================================================
+
+fn post_validate(title: []i8, body: []i8, author: []i8) -> &ForgeErrors {
+    let e = forge_errors_new()
+    forge_validate_presence  (e, "title",  title)
+    forge_validate_length    (e, "title",  title,  2, 255)
+    forge_validate_presence  (e, "body",   body)
+    forge_validate_min_length(e, "body",   body,   10)
+    forge_validate_presence  (e, "author", author)
+    ret e
+}
+
+fn post_find(id: []i8) -> &ForgeResult {
+    ret forge_find("posts", id)
+}
+
+fn post_published() -> &ForgeResult {
+    let q = forge_q("posts")
+    forge_q_where(q, "published", "=", "true")
+    forge_q_order(q, "created_at", "DESC")
+    ret forge_q_exec(q)
+}
+
+fn post_all() -> &ForgeResult {
+    let q = forge_q("posts")
+    forge_q_order(q, "created_at", "DESC")
+    ret forge_q_exec(q)
+}
+
+fn post_comments(post_id: []i8) -> &ForgeResult {
+    ret forge_has_many("comments", "post_id", post_id)
+}
+
+fn post_create(title: []i8, body: []i8, author: []i8) -> bool {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let sql = "INSERT INTO posts (title, body, author) VALUES ('"
+    let sep = "', '"
+    let end = "')"
+    loop i in 0..sql.len { buf[pos] = sql[i]  pos = pos + 1 }
+    let n = forge_db_escape_str(title, buf + pos)   pos = pos + n
+    loop i in 0..sep.len { buf[pos] = sep[i]  pos = pos + 1 }
+    n = forge_db_escape_str(body, buf + pos)         pos = pos + n
+    loop i in 0..sep.len { buf[pos] = sep[i]  pos = pos + 1 }
+    n = forge_db_escape_str(author, buf + pos)       pos = pos + n
+    loop i in 0..end.len { buf[pos] = end[i]  pos = pos + 1 }
+    ret forge_db_exec(buf[0..pos])
+}
+
+fn post_update(id: []i8, title: []i8, body: []i8) -> bool {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let s1 = "UPDATE posts SET title = '"
+    let s2 = "', body = '"
+    let s3 = "', updated_at = NOW() WHERE id = '"
+    let s4 = "'"
+    loop i in 0..s1.len { buf[pos] = s1[i]  pos = pos + 1 }
+    let n = forge_db_escape_str(title, buf + pos)  pos = pos + n
+    loop i in 0..s2.len { buf[pos] = s2[i]  pos = pos + 1 }
+    n = forge_db_escape_str(body, buf + pos)        pos = pos + n
+    loop i in 0..s3.len { buf[pos] = s3[i]  pos = pos + 1 }
+    n = forge_db_escape_str(id, buf + pos)          pos = pos + n
+    loop i in 0..s4.len { buf[pos] = s4[i]  pos = pos + 1 }
+    ret forge_db_exec(buf[0..pos])
+}
+
+fn post_publish(id: []i8) -> bool {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let s1 = "UPDATE posts SET published = true, updated_at = NOW() WHERE id = '"
+    let s2 = "'"
+    loop i in 0..s1.len { buf[pos] = s1[i]  pos = pos + 1 }
+    let n = forge_db_escape_str(id, buf + pos)  pos = pos + n
+    loop i in 0..s2.len { buf[pos] = s2[i]  pos = pos + 1 }
+    ret forge_db_exec(buf[0..pos])
+}
+
+fn post_delete(id: []i8) -> bool {
+    ret forge_soft_delete("posts", id)
+}

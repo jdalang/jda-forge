@@ -1,0 +1,33 @@
+// =============================================================================
+// config.jda
+// =============================================================================
+
+fn load_env() {
+    let env = forge_env_get("FORGE_ENV")
+    if env.len == 0 { env = "development" }
+    forge_dotenv_load(".env")
+    if str_eq(env, "development") { forge_dotenv_load(".env.development") }
+    else if str_eq(env, "staging")    { forge_dotenv_load(".env.staging")    }
+    else if str_eq(env, "production") { forge_dotenv_load(".env.production") }
+    else if str_eq(env, "test")       { forge_dotenv_load(".env.test")       }
+}
+
+fn app_config() -> ForgeConfig {
+    let cfg = forge_default_config()
+    cfg.db_url     = forge_env_get("DATABASE_URL")
+    cfg.smtp_host  = forge_env_get("SMTP_HOST")
+    cfg.smtp_port  = 587
+    cfg.smtp_user  = forge_env_get("SMTP_USER")
+    cfg.smtp_pass  = forge_env_get("SMTP_PASS")
+    cfg.secret_key = forge_env_get("APP_SECRET")
+
+    if forge_env_is("test") || forge_env_is("development") {
+        cfg.smtp_host = ""
+    }
+    if forge_env_is("development") {
+        forge_log_level_set(FORGE_LOG_DEBUG)
+    } else {
+        forge_log_level_set(FORGE_LOG_INFO)
+    }
+    ret cfg
+}

@@ -1,0 +1,86 @@
+// =============================================================================
+// Views: Blog templates
+// =============================================================================
+
+fn tmpl_layout(title: []i8, body: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(4)
+    let pos = 0i64
+    let h1 = "<!DOCTYPE html><html><head><meta charset=utf-8><title>"
+    let h2 = " — Blog</title>"
+         + "<style>body{font-family:sans-serif;max-width:860px;margin:40px auto;padding:0 20px}"
+         + "nav{margin-bottom:24px}a{color:#0070f3}h1{margin-top:0}"
+         + ".post{border-bottom:1px solid #eee;padding-bottom:20px;margin-bottom:20px}"
+         + ".meta{color:#888;font-size:0.85em;margin:4px 0 12px}"
+         + ".comment{background:#f9f9f9;border-radius:4px;padding:12px;margin:8px 0}"
+         + ".flash-notice{background:#d4edda;border:1px solid #c3e6cb;padding:10px;border-radius:4px;margin-bottom:16px}"
+         + ".flash-alert{background:#f8d7da;border:1px solid #f5c6cb;padding:10px;border-radius:4px;margin-bottom:16px}"
+         + "</style></head><body>"
+         + "<nav><a href=/posts>Blog</a> &nbsp;|&nbsp; <a href=/posts/new>New Post</a></nav>"
+    let h3 = "</body></html>"
+
+    loop i in 0..h1.len  { buf[pos] = h1[i]   pos = pos + 1 }
+    loop i in 0..title.len{ buf[pos] = title[i] pos = pos + 1 }
+    loop i in 0..h2.len  { buf[pos] = h2[i]   pos = pos + 1 }
+    loop i in 0..body.len{ buf[pos] = body[i]  pos = pos + 1 }
+    loop i in 0..h3.len  { buf[pos] = h3[i]   pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn tmpl_flash(ctx: i64) -> []i8 {
+    let notice = ctx_flash_get(ctx, "notice")
+    let alert  = ctx_flash_get(ctx, "alert")
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    if notice.len > 0 {
+        let s = "<div class=flash-notice>"
+        let e = "</div>"
+        loop i in 0..s.len      { buf[pos] = s[i]      pos = pos + 1 }
+        loop i in 0..notice.len { buf[pos] = notice[i]  pos = pos + 1 }
+        loop i in 0..e.len      { buf[pos] = e[i]       pos = pos + 1 }
+    }
+    if alert.len > 0 {
+        let s = "<div class=flash-alert>"
+        let e = "</div>"
+        loop i in 0..s.len     { buf[pos] = s[i]     pos = pos + 1 }
+        loop i in 0..alert.len { buf[pos] = alert[i]  pos = pos + 1 }
+        loop i in 0..e.len     { buf[pos] = e[i]      pos = pos + 1 }
+    }
+    ret buf[0..pos]
+}
+
+fn tmpl_post_row(title: []i8, author: []i8, date: []i8, id: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let s1 = "<div class=post><h2><a href=/posts/"
+    let s2 = ">"
+    let s3 = "</a></h2><p class=meta>by "
+    let s4 = " on "
+    let s5 = "</p></div>"
+    loop i in 0..s1.len    { buf[pos] = s1[i]     pos = pos + 1 }
+    loop i in 0..id.len    { buf[pos] = id[i]      pos = pos + 1 }
+    loop i in 0..s2.len    { buf[pos] = s2[i]      pos = pos + 1 }
+    loop i in 0..title.len { buf[pos] = title[i]   pos = pos + 1 }
+    loop i in 0..s3.len    { buf[pos] = s3[i]      pos = pos + 1 }
+    loop i in 0..author.len{ buf[pos] = author[i]  pos = pos + 1 }
+    loop i in 0..s4.len    { buf[pos] = s4[i]      pos = pos + 1 }
+    loop i in 0..date.len  { buf[pos] = date[i]    pos = pos + 1 }
+    loop i in 0..s5.len    { buf[pos] = s5[i]      pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn tmpl_comment_row(author: []i8, body: []i8, date: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let s1 = "<div class=comment><strong>"
+    let s2 = "</strong> <span class=meta>"
+    let s3 = "</span><p>"
+    let s4 = "</p></div>"
+    loop i in 0..s1.len    { buf[pos] = s1[i]     pos = pos + 1 }
+    loop i in 0..author.len{ buf[pos] = author[i]  pos = pos + 1 }
+    loop i in 0..s2.len    { buf[pos] = s2[i]      pos = pos + 1 }
+    loop i in 0..date.len  { buf[pos] = date[i]    pos = pos + 1 }
+    loop i in 0..s3.len    { buf[pos] = s3[i]      pos = pos + 1 }
+    loop i in 0..body.len  { buf[pos] = body[i]    pos = pos + 1 }
+    loop i in 0..s4.len    { buf[pos] = s4[i]      pos = pos + 1 }
+    ret buf[0..pos]
+}
