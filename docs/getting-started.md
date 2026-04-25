@@ -175,7 +175,7 @@ Additional libraries are added with `lib` lines. See [libraries.md](libraries.md
 
 **`config/routes.jda`** is the routes DSL you edit — declare resources, namespaces, scopes, and custom routes here. `forge build` compiles it into `_build/routes.jda` (path helpers + `routes()` function) and auto-generates `_build/controllers.jda` by scanning your controllers. You never edit the `_build/` files.
 
-**`main.jda`** is the entry point. It calls `load_env`, creates the app, registers middleware, calls model validation init functions (e.g. `post_model_init()`), calls `routes(app)`, runs migrations, and starts listening.
+**`main.jda`** is the entry point. It calls `load_env`, creates the app, registers middleware, mounts the default welcome page with `forge_welcome_mount(app)` (remove that line once you define a root route), calls `routes(app)`, runs migrations, and starts listening.
 
 **`.env`** holds defaults that are safe to commit — typically just `FORGE_ENV=development` and `APP_PORT=8080`. Per-environment files (`.env.development`, `.env.production`) hold secrets and are gitignored.
 
@@ -255,7 +255,7 @@ forge server
 
 Forge runs migrations automatically on startup (`forge_migration_run("db/migrate")`), so your tables are created on first launch. You can also run migrations independently with `forge db:migrate` or check their status with `forge db:status` without restarting the server. Migration files use `-- migrate:up` / `-- migrate:down` sections to support `forge db:rollback`.
 
-Visit `http://localhost:8080` in a browser. You should get a 404 — that is correct; no routes are registered yet.
+Visit `http://localhost:8080` in a browser. You should see the **JDA Forge welcome page** — a blue shield with the framework version and environment badge. This page is served automatically by `forge_welcome_mount(app)` in `main.jda` until you define your own root route.
 
 ### 4. Live reload (optional)
 
@@ -400,7 +400,7 @@ It appends `resources "posts"` to `config/routes.jda` automatically. The next `f
 `config/routes.jda` after scaffolding:
 
 ```
-root "pages#home"
+# root "pages#home"
 
 resources "posts"
 ```

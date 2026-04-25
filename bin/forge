@@ -1487,7 +1487,7 @@ JDA
     ok "created config/application.jda"
 
     cat > "$name/config/routes.jda" <<'DSL'
-root "pages#home"
+# root "pages#home"
 
 # resources "posts" do
 #   resources "comments"
@@ -1584,10 +1584,6 @@ JDA
     ok "created app/views/shared/_errors.html.jda"
 
     cat > "$name/main.jda" <<'JDA'
-fn pages_home(ctx: i64) {
-    ctx_html(ctx, 200, "<h1>Welcome</h1>")
-}
-
 fn main() {
     load_env()
     forge_jobs_start(4)
@@ -1601,6 +1597,10 @@ fn main() {
     app_use(app, fn_addr(forge_csrf))
 
     app_static(app, "/static", "./public")
+
+    // Shows the default Forge welcome page at /.
+    // Remove this line once you've defined your own root route.
+    forge_welcome_mount(app)
 
     forge_controllers_init()
     routes(app)
