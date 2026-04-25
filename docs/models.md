@@ -1582,11 +1582,18 @@ CREATE UNIQUE INDEX idx_posts_slug ON posts (slug);
 
 ### Running migrations
 
-```jda
-forge_migration_run("db/migrations")
+```bash
+forge db:migrate
+forge db:migrate --environment production
 ```
 
-Call this once at application startup, before handling any requests. It reads the directory, compares file numbers against the `forge_schema_migrations` tracking table, and runs any unapplied files in order.
+Reads `db/migrate/*.sql` in order, checks each filename against the `forge_migrations` tracking table, and runs any that haven't been applied yet. Safe to run repeatedly — already-applied migrations are skipped.
+
+```bash
+forge db:status          # show ran vs. pending
+```
+
+Migrations also run automatically at application startup via `forge_migration_run("db/migrate")` in `main.jda`. Use `forge db:migrate` when you want to apply migrations without restarting the server (CI, deployment scripts, one-off tasks).
 
 ### Generating a migration from the CLI
 

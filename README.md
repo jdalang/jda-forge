@@ -126,6 +126,9 @@ forge server --port 3000                     # custom port
 forge server --environment production        # different environment
 forge console                                # open database console  (alias: forge c)
 forge console --environment staging          # connect to staging DB
+forge db:migrate                             # run pending migrations
+forge db:migrate --environment production    # run migrations on a specific environment
+forge db:status                              # show ran vs. pending migrations
 
 forge new <name>                             # scaffold a new project
 forge install                                # install deps from Forgefile

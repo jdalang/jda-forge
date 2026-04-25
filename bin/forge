@@ -37,6 +37,9 @@ Run:
   forge test --environment staging          Test against a different environment
   forge console                             Open a database console  (alias: forge c)
   forge console --environment staging       Connect to a different environment
+  forge db:migrate                          Run pending migrations
+  forge db:migrate --environment production Run migrations against a specific environment
+  forge db:status                           Show which migrations have run and which are pending
 
 Project:
   forge new <name>                          Create a new Forge application
@@ -1589,6 +1592,22 @@ cmd_server() {
 # forge console — open a database console (like rails c / rails db)
 # ---------------------------------------------------------------------------
 
+# Load DATABASE_URL from .env then .env.<environment>. Prints the URL; empty on failure.
+load_db_url() {
+    local env_name="${1:-development}"
+    local db_url=""
+    if [ -f ".env" ]; then
+        local v; v=$(grep "^DATABASE_URL=" ".env" 2>/dev/null | head -1 | cut -d= -f2-)
+        [ -n "$v" ] && db_url="$v"
+    fi
+    local env_file=".env.${env_name}"
+    if [ -f "$env_file" ]; then
+        local v; v=$(grep "^DATABASE_URL=" "$env_file" 2>/dev/null | head -1 | cut -d= -f2-)
+        [ -n "$v" ] && db_url="$v"
+    fi
+    echo "$db_url"
+}
+
 cmd_console() {
     local env_name="${FORGE_ENV:-development}"
     while [ $# -gt 0 ]; do
@@ -1600,25 +1619,96 @@ cmd_console() {
 
     [ ! -f "Forgefile" ] && err "No Forgefile found. Are you in a Forge project directory?"
 
-    # Load DATABASE_URL: start with .env, override with .env.<environment>
-    local db_url=""
-    if [ -f ".env" ]; then
-        local v; v=$(grep "^DATABASE_URL=" ".env" 2>/dev/null | head -1 | cut -d= -f2-)
-        [ -n "$v" ] && db_url="$v"
-    fi
-    local env_file=".env.${env_name}"
-    if [ -f "$env_file" ]; then
-        local v; v=$(grep "^DATABASE_URL=" "$env_file" 2>/dev/null | head -1 | cut -d= -f2-)
-        [ -n "$v" ] && db_url="$v"
-    fi
-
-    [ -z "$db_url" ] && err "DATABASE_URL not set in .env or ${env_file}"
+    local db_url; db_url=$(load_db_url "$env_name")
+    [ -z "$db_url" ] && err "DATABASE_URL not set in .env or .env.${env_name}"
 
     command -v psql >/dev/null 2>&1 || err "psql not found. Install PostgreSQL client tools."
 
     info "Connecting to database (${env_name})"
     dim "$db_url"
     exec psql "$db_url"
+}
+
+cmd_db_migrate() {
+    local env_name="${FORGE_ENV:-development}"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --environment|-e) env_name="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    [ ! -f "Forgefile" ] && err "No Forgefile found. Are you in a Forge project directory?"
+    [ ! -d "db/migrate" ] && err "db/migrate/ not found. Create it or run 'forge generate migration'."
+
+    local db_url; db_url=$(load_db_url "$env_name")
+    [ -z "$db_url" ] && err "DATABASE_URL not set in .env or .env.${env_name}"
+
+    command -v psql >/dev/null 2>&1 || err "psql not found. Install PostgreSQL client tools."
+
+    psql "$db_url" -q -c \
+        "CREATE TABLE IF NOT EXISTS forge_migrations (name TEXT PRIMARY KEY, ran_at BIGINT)" \
+        2>/dev/null || err "Could not connect to database."
+
+    local ran=0
+    for f in $(ls db/migrate/*.sql 2>/dev/null | sort); do
+        [ -f "$f" ] || continue
+        local name; name=$(basename "$f" .sql)
+        local already; already=$(psql "$db_url" -tAq \
+            -c "SELECT COUNT(*) FROM forge_migrations WHERE name='${name}'" 2>/dev/null)
+        if [ "${already:-0}" = "0" ]; then
+            info "Running $name"
+            psql "$db_url" -q -f "$f" || err "Migration failed: $name"
+            psql "$db_url" -q -c \
+                "INSERT INTO forge_migrations (name, ran_at) VALUES ('${name}', EXTRACT(EPOCH FROM NOW())::BIGINT)"
+            ok "$name"
+            ran=$((ran + 1))
+        fi
+    done
+
+    if [ "$ran" -eq 0 ]; then
+        info "Already up to date."
+    else
+        ok "${ran} migration(s) ran."
+    fi
+}
+
+cmd_db_status() {
+    local env_name="${FORGE_ENV:-development}"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --environment|-e) env_name="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    [ ! -f "Forgefile" ] && err "No Forgefile found. Are you in a Forge project directory?"
+    [ ! -d "db/migrate" ] && err "db/migrate/ not found."
+
+    local db_url; db_url=$(load_db_url "$env_name")
+    [ -z "$db_url" ] && err "DATABASE_URL not set in .env or .env.${env_name}"
+
+    command -v psql >/dev/null 2>&1 || err "psql not found. Install PostgreSQL client tools."
+
+    psql "$db_url" -q -c \
+        "CREATE TABLE IF NOT EXISTS forge_migrations (name TEXT PRIMARY KEY, ran_at BIGINT)" \
+        2>/dev/null || err "Could not connect to database."
+
+    local any=0
+    for f in $(ls db/migrate/*.sql 2>/dev/null | sort); do
+        [ -f "$f" ] || continue
+        local name; name=$(basename "$f" .sql)
+        local already; already=$(psql "$db_url" -tAq \
+            -c "SELECT COUNT(*) FROM forge_migrations WHERE name='${name}'" 2>/dev/null)
+        if [ "${already:-0}" = "0" ]; then
+            echo -e "  ${YELLOW}pending${NC}  $name"
+        else
+            echo -e "  ${GREEN}ran${NC}      $name"
+        fi
+        any=1
+    done
+
+    [ "$any" = "0" ] && info "No migration files found in db/migrate/."
 }
 
 # ---------------------------------------------------------------------------
@@ -1655,6 +1745,8 @@ case "$CMD" in
         ;;
     compile-routes)  compile_routes  ;;
     compile-models)  compile_models  ;;
+    db:migrate)      cmd_db_migrate "$@" ;;
+    db:status)       cmd_db_status  "$@" ;;
     version|--version|-v) echo "JDA Forge CLI v${FORGE_VERSION}" ;;
     help|--help|-h) usage ;;
     *) err "Unknown command: $CMD. Run 'forge help'." ;;
