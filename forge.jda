@@ -1,6 +1,6 @@
 // =============================================================================
 // JDA Forge — Competitive Web Framework for the Jda Language
-// Version 2.0
+// Version 2.1
 // =============================================================================
 //
 // USAGE
@@ -16,34 +16,66 @@
 //
 // ROUTE GROUPS
 //   let api = app_group(app, "/api/v1")
-//   group_use(&api, fn_addr(auth_middleware))    // scoped middleware
+//   group_use(&api, fn_addr(forge_jwt_auth))     // scoped middleware
 //   group_get(&api, "/users",     fn_addr(list_users))
 //   group_post(&api, "/users",    fn_addr(create_user))
 //   group_get(&api, "/users/:id", fn_addr(get_user))
 //
 // CONTEXT API  (ctx: i64 in every handler/middleware)
-//   ctx_param(ctx, "id")              -> []i8   :param from path
-//   ctx_query(ctx, "page")            -> []i8   ?key=value
-//   ctx_header(ctx, "Accept")         -> []i8   request header
-//   ctx_method(ctx)                   -> []i8   "GET" / "POST" / …
-//   ctx_path(ctx)                     -> []i8   "/users/42"
-//   ctx_body(ctx)                     -> []i8   raw body bytes
-//   ctx_body_json(ctx)                -> Result<JsonValue, []i8>
-//   ctx_cookie(ctx, "session")        -> []i8   cookie value
-//   ctx_set(ctx, "user_id", ptr)                store arbitrary value
-//   ctx_get(ctx, "user_id")           -> i64    retrieve stored value
+//   ctx_param(ctx, "id")                    -> []i8   :param from path
+//   ctx_query(ctx, "page")                  -> []i8   ?key=value (decoded)
+//   ctx_query_default(ctx, "page", "1")     -> []i8   with fallback
+//   ctx_form(ctx, "email")                  -> []i8   url-encoded body field
+//   ctx_form_default(ctx, "role", "user")   -> []i8   with fallback
+//   ctx_header(ctx, "Accept")               -> []i8   request header
+//   ctx_method(ctx)                         -> []i8   "GET" / "POST" / …
+//   ctx_path(ctx)                           -> []i8   "/users/42"
+//   ctx_ip(ctx)                             -> []i8   client IP (proxy-aware)
+//   ctx_body(ctx)                           -> []i8   raw body bytes
+//   ctx_body_json(ctx)                      -> Result<JsonValue, []i8>
+//   ctx_cookie(ctx, "session")              -> []i8   cookie value
+//   ctx_set(ctx, "user_id", ptr)                      store arbitrary value
+//   ctx_get(ctx, "user_id")                 -> i64    retrieve stored value
+//
+// SESSIONS  (requires forge_session_start middleware)
+//   ctx_session_get(ctx, "user_id")         -> []i8
+//   ctx_session_set(ctx, "user_id", "42")
+//   ctx_session_del(ctx, "user_id")
+//   ctx_session_clear(ctx)
+//
+// FLASH MESSAGES  (requires forge_session_start middleware)
+//   ctx_flash_set(ctx, "notice", "Saved!")
+//   ctx_flash_get(ctx, "notice")            -> []i8   (consumed on first read)
+//
+// CSRF PROTECTION  (requires forge_session_start + forge_csrf middleware)
+//   forge_csrf_token(ctx)                   -> []i8   embed in forms
+//   // Register forge_csrf globally to block forged POST/PUT/DELETE/PATCH
 //
 // RESPONSE
 //   ctx_text(ctx, 200, "hello")
 //   ctx_json(ctx, 200, "{\"ok\":true}")
 //   ctx_html(ctx, 200, "<h1>Hi</h1>")
-//   ctx_ok / ctx_created / ctx_no_content / ctx_bad_request
-//   ctx_unauthorized / ctx_forbidden / ctx_not_found / ctx_internal_error
-//   ctx_redirect(ctx, "/login")          302
-//   ctx_redirect_perm(ctx, "/new")       301
+//   ctx_ok / ctx_created / ctx_accepted / ctx_no_content
+//   ctx_bad_request / ctx_unauthorized / ctx_forbidden / ctx_not_found
+//   ctx_conflict / ctx_unprocessable / ctx_too_many_requests
+//   ctx_internal_error / ctx_service_unavailable / ctx_not_modified
+//   ctx_redirect(ctx, "/login")             302
+//   ctx_redirect_perm(ctx, "/new")          301
+//   ctx_download(ctx, body, "report.csv")   attachment download
 //   ctx_set_header(ctx, "X-Foo", "bar")
 //   ctx_set_cookie(ctx, "session", "abc", 3600)
 //   ctx_del_cookie(ctx, "session")
+//
+// SERVER-SENT EVENTS
+//   fn my_sse_handler(ctx: i64) {
+//       let fd = ctx_sse_start(ctx)
+//       if fd < 0 { ret }
+//       loop {
+//           forge_sse_send(fd, "update", "{\"count\":1}")
+//           // ... sleep or wait on channel ...
+//       }
+//       forge_sse_close(fd)
+//   }
 //
 // WEBSOCKET
 //   fn my_ws_handler(ctx: i64) {
@@ -55,11 +87,12 @@
 //               if n <= 0 { break }
 //               forge_ws_send_text(fd, buf[0..n])
 //           }
+//           forge_ws_close(fd)
 //       }
 //   }
 //
 // STATIC FILES
-//   app_static(app, "/public", "./www")    // GET /public/file.js → ./www/file.js
+//   app_static(app, "/public", "./www")     // GET /public/file.js → ./www/file.js
 //
 // TEMPLATE RENDERING
 //   let vars = erb_vars_new()
@@ -67,14 +100,18 @@
 //   ctx_render(ctx, 200, "Hello, <%= name %>!", vars)
 //
 // BUILT-IN MIDDLEWARE
-//   forge_logger          request logger
-//   forge_cors            permissive CORS + OPTIONS preflight
-//   forge_recover         log 500s and keep server alive
-//   forge_request_id      X-Request-ID header
-//   forge_no_cache        Cache-Control: no-cache
-//   forge_secure_headers  security headers (HSTS, XSS, etc.)
-//   forge_rate_limit      100 req/min global token bucket
-//   forge_basic_auth      HTTP Basic Auth (reads FORGE_USER / FORGE_PASS env)
+//   forge_logger           request logger
+//   forge_cors             permissive CORS + OPTIONS preflight
+//   forge_recover          keep server alive on errors
+//   forge_request_id       X-Request-ID header
+//   forge_no_cache         Cache-Control: no-store
+//   forge_secure_headers   HSTS, X-Frame-Options, CSP, etc.
+//   forge_rate_limit       600 req/min global sliding window
+//   forge_basic_auth       HTTP Basic Auth
+//   forge_jwt_auth         Bearer JWT (HMAC-SHA256)
+//   forge_session_start    in-memory session store via "sid" cookie
+//   forge_csrf             block forged POST/PUT/DELETE/PATCH
+//   forge_proxy_headers    trust X-Real-IP / X-Forwarded-For
 // =============================================================================
 
 import jda::net::tcp::{ TcpListener, TcpStream }
@@ -103,6 +140,13 @@ const FORGE_STATIC_BUF   = 1048576   // 1 MB max static file
 const FORGE_SYS_WRITE    = 1
 const FORGE_SYS_RECVFROM = 45
 const FORGE_SYS_CLOSE    = 3
+
+// Session store
+const FORGE_MAX_SESSIONS      = 128
+const FORGE_SESSION_MAX_KV    = 8
+const FORGE_SESSION_ID_LEN    = 16
+const FORGE_SESSION_KEY_CAP   = 32
+const FORGE_SESSION_VAL_CAP   = 128
 
 // =============================================================================
 // ForgeConfig — server configuration
@@ -134,6 +178,23 @@ struct ForgeKV    { key: []i8  val: i64 }
 struct ForgeStaticRoute {
     url_prefix: []i8
     fs_root:    []i8
+}
+
+// =============================================================================
+// Session types
+// =============================================================================
+struct ForgeSessionKV {
+    key:  [FORGE_SESSION_KEY_CAP]i8
+    klen: i64
+    val:  [FORGE_SESSION_VAL_CAP]i8
+    vlen: i64
+}
+
+struct ForgeSession {
+    id:    [FORGE_SESSION_ID_LEN]i8
+    kv:    [FORGE_SESSION_MAX_KV]ForgeSessionKV
+    count: i64
+    used:  bool
 }
 
 // =============================================================================
@@ -191,7 +252,9 @@ struct ForgeApp {
     config:          ForgeConfig
 }
 
-let g_forge_app: i64 = 0
+let g_forge_app:          i64  = 0
+let g_forge_session_ptrs: &i64 = 0
+let g_forge_session_gen:  i64  = 0
 
 // =============================================================================
 // App construction
@@ -540,7 +603,16 @@ fn ctx_header(ctx_ptr: i64, name: []i8) -> []i8 {
 }
 
 fn ctx_ip(ctx_ptr: i64) -> []i8 {
-    ret ctx_header(ctx_ptr, "X-Forwarded-For")
+    // Prefer X-Real-IP (set by nginx), then first entry of X-Forwarded-For
+    let real = ctx_header(ctx_ptr, "X-Real-IP")
+    if real.len > 0 { ret real }
+    let fwd = ctx_header(ctx_ptr, "X-Forwarded-For")
+    if fwd.len > 0 {
+        let end = 0i64
+        loop end < fwd.len and fwd[end] != ',' { end = end + 1 }
+        ret fwd[0..end]
+    }
+    ret ""
 }
 
 // =============================================================================
@@ -678,6 +750,26 @@ fn ctx_redirect     (ctx_ptr: i64, url: []i8) {
 fn ctx_redirect_perm(ctx_ptr: i64, url: []i8) {
     ctx_set_header(ctx_ptr, "Location", url)
     ctx_respond(ctx_ptr, 301, "", "")
+}
+
+// Extended status helpers
+fn ctx_accepted           (ctx_ptr: i64, body: []i8) { ctx_text(ctx_ptr, 202, body) }
+fn ctx_not_modified       (ctx_ptr: i64)              { ctx_respond(ctx_ptr, 304, "", "") }
+fn ctx_conflict           (ctx_ptr: i64, msg: []i8)   { ctx_json(ctx_ptr, 409, msg) }
+fn ctx_unprocessable      (ctx_ptr: i64, msg: []i8)   { ctx_json(ctx_ptr, 422, msg) }
+fn ctx_service_unavailable(ctx_ptr: i64)               { ctx_text(ctx_ptr, 503, "Service Unavailable") }
+
+// File download — sends body with Content-Disposition: attachment
+fn ctx_download(ctx_ptr: i64, body: []i8, filename: []i8) {
+    let buf = [320]i8
+    let pos = 0i64
+    let p1 = "attachment; filename=\""
+    let p2 = "\""
+    loop i in 0..p1.len       { buf[pos] = p1[i]        pos = pos + 1 }
+    loop i in 0..filename.len { buf[pos] = filename[i]  pos = pos + 1 }
+    loop i in 0..p2.len       { buf[pos] = p2[i]        pos = pos + 1 }
+    ctx_set_header(ctx_ptr, "Content-Disposition", buf[0..pos])
+    ctx_respond(ctx_ptr, 200, "application/octet-stream", body)
 }
 
 // =============================================================================
@@ -1094,4 +1186,346 @@ fn forge_jwt_auth(ctx_ptr: i64) {
         }
         err(_) => {}
     }
+}
+
+// =============================================================================
+// URL utilities — percent-decode, form parsing
+// =============================================================================
+
+fn forge_hex_val(c: i8) -> i64 {
+    if c >= '0' and c <= '9' { ret c as i64 - 48 }
+    if c >= 'a' and c <= 'f' { ret c as i64 - 87 }
+    if c >= 'A' and c <= 'F' { ret c as i64 - 55 }
+    ret 0
+}
+
+// Decode a percent-encoded (URL-encoded) slice into dst. Returns written length.
+fn forge_url_decode(src: []i8, dst: &i8) -> i64 {
+    let pos = 0i64
+    let i   = 0i64
+    loop i < src.len {
+        let c = src[i]
+        if c == '%' and i + 2 < src.len {
+            dst[pos] = (forge_hex_val(src[i+1]) * 16 + forge_hex_val(src[i+2])) as i8
+            pos = pos + 1
+            i   = i + 3
+        } else if c == '+' {
+            dst[pos] = ' '
+            pos = pos + 1
+            i   = i + 1
+        } else {
+            dst[pos] = c
+            pos = pos + 1
+            i   = i + 1
+        }
+    }
+    ret pos
+}
+
+// ctx_form: read a field from an application/x-www-form-urlencoded body.
+fn ctx_form(ctx_ptr: i64, key: []i8) -> []i8 {
+    let c: &ForgeCtx = ctx_ptr
+    let body = c.req.body
+    if body.len == 0 { ret "" }
+    let pos = 0i64
+    loop pos < body.len {
+        let ks = pos
+        loop pos < body.len and body[pos] != '=' and body[pos] != '&' { pos = pos + 1 }
+        let k_raw = body[ks..pos]
+        if pos < body.len and body[pos] == '=' { pos = pos + 1 }
+        let vs = pos
+        loop pos < body.len and body[pos] != '&' { pos = pos + 1 }
+        let v_raw = body[vs..pos]
+        if pos < body.len { pos = pos + 1 }
+        // Decode key and compare
+        let k_buf = [256]i8
+        let k_len = forge_url_decode(k_raw, k_buf)
+        if forge_slice_eq(k_buf[0..k_len], key) {
+            let v_buf: &i8 = alloc_pages(1)
+            let v_len = forge_url_decode(v_raw, v_buf)
+            ret v_buf[0..v_len]
+        }
+    }
+    ret ""
+}
+
+fn ctx_form_default(ctx_ptr: i64, key: []i8, def: []i8) -> []i8 {
+    let v = ctx_form(ctx_ptr, key)
+    if v.len == 0 { ret def }
+    ret v
+}
+
+fn ctx_query_default(ctx_ptr: i64, key: []i8, def: []i8) -> []i8 {
+    let v = ctx_query(ctx_ptr, key)
+    if v.len == 0 { ret def }
+    ret v
+}
+
+// =============================================================================
+// Server-Sent Events (SSE)
+// ctx_sse_start sends the 200 + event-stream headers and returns the raw fd.
+// Use forge_sse_send in a loop, then forge_sse_close when done.
+// =============================================================================
+
+fn ctx_sse_start(ctx_ptr: i64) -> i32 {
+    let c: &ForgeCtx = ctx_ptr
+    if c.sent { ret -1 }
+    let buf = [2048]i8
+    let pos = 0i64
+    let sl  = "HTTP/1.1 200 OK\r\n"
+    let ct  = "Content-Type: text/event-stream; charset=utf-8\r\n"
+    let cc  = "Cache-Control: no-cache\r\n"
+    let cn  = "Connection: keep-alive\r\n"
+    let xb  = "X-Accel-Buffering: no\r\n"
+    loop i in 0..sl.len  { buf[pos] = sl[i]   pos = pos + 1 }
+    loop i in 0..ct.len  { buf[pos] = ct[i]   pos = pos + 1 }
+    loop i in 0..cc.len  { buf[pos] = cc[i]   pos = pos + 1 }
+    loop i in 0..cn.len  { buf[pos] = cn[i]   pos = pos + 1 }
+    loop i in 0..xb.len  { buf[pos] = xb[i]   pos = pos + 1 }
+    // Append any user-set headers (e.g. CORS from middleware)
+    let hdr_buf = [1024]i8
+    let hlen = forge_build_hdr_str(c, hdr_buf)
+    loop i in 0..hlen { buf[pos] = hdr_buf[i]  pos = pos + 1 }
+    buf[pos] = '\r'  pos = pos + 1
+    buf[pos] = '\n'  pos = pos + 1
+    forge_tcp_write_all(c.fd, buf, pos)
+    c.sent  = true    // suppress normal response
+    c.is_ws = true    // keep fd open after dispatch
+    ret c.fd
+}
+
+// Send one SSE event. Pass event="" to omit the "event:" line.
+fn forge_sse_send(fd: i32, event: []i8, data: []i8) {
+    let buf = [2048]i8
+    let pos = 0i64
+    if event.len > 0 {
+        let ev = "event: "
+        loop i in 0..ev.len    { buf[pos] = ev[i]     pos = pos + 1 }
+        loop i in 0..event.len { buf[pos] = event[i]  pos = pos + 1 }
+        buf[pos] = '\n'  pos = pos + 1
+    }
+    let da = "data: "
+    loop i in 0..da.len   { buf[pos] = da[i]    pos = pos + 1 }
+    loop i in 0..data.len { buf[pos] = data[i]  pos = pos + 1 }
+    buf[pos] = '\n'  pos = pos + 1
+    buf[pos] = '\n'  pos = pos + 1   // blank line terminates event
+    forge_tcp_write_all(fd, buf, pos)
+}
+
+// Send a keep-alive comment ping (prevents proxy timeouts).
+fn forge_sse_ping(fd: i32) {
+    let msg = ": ping\n\n"
+    forge_tcp_write_all(fd, msg, msg.len)
+}
+
+fn forge_sse_close(fd: i32) {
+    syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+}
+
+// =============================================================================
+// Sessions — in-memory session store
+// Register forge_session_start as a global middleware before other middleware.
+// Sessions persist for the lifetime of the server process.
+// =============================================================================
+
+fn forge_gen_sid(dst: &i8) {
+    let t = time_now_ms()
+    let n = atomic_fetch_add(&g_forge_session_gen, 1)
+    let v = t ^ (n * 6364136223846793005)
+    let hex = "0123456789abcdef"
+    loop i in 0..FORGE_SESSION_ID_LEN {
+        let shift = (FORGE_SESSION_ID_LEN - 1 - i) * 4
+        dst[i] = hex[(v >> shift) as i64 and 0x0F]
+    }
+}
+
+fn forge_session_init() {
+    if g_forge_session_ptrs != 0 { ret }
+    let ptrs: &i64 = alloc_pages(1)
+    loop i in 0..FORGE_MAX_SESSIONS {
+        let s: &ForgeSession = alloc_pages(1)
+        s.used  = false
+        s.count = 0
+        ptrs[i] = s as i64
+    }
+    g_forge_session_ptrs = ptrs
+}
+
+fn forge_session_find(sid: []i8) -> &ForgeSession {
+    if g_forge_session_ptrs == 0 { ret 0 }
+    if sid.len != FORGE_SESSION_ID_LEN { ret 0 }
+    loop i in 0..FORGE_MAX_SESSIONS {
+        let s: &ForgeSession = g_forge_session_ptrs[i] as &ForgeSession
+        if s.used {
+            let eq = true
+            loop j in 0..FORGE_SESSION_ID_LEN {
+                if s.id[j] != sid[j] { eq = false   break }
+            }
+            if eq { ret s }
+        }
+    }
+    ret 0
+}
+
+fn forge_session_alloc() -> &ForgeSession {
+    loop i in 0..FORGE_MAX_SESSIONS {
+        let s: &ForgeSession = g_forge_session_ptrs[i] as &ForgeSession
+        if not s.used {
+            s.used  = true
+            s.count = 0
+            forge_gen_sid(s.id)
+            ret s
+        }
+    }
+    ret 0   // session pool exhausted
+}
+
+// Middleware: read or create a session, attach to ctx as "_session".
+fn forge_session_start(ctx_ptr: i64) {
+    forge_session_init()
+    let sid = ctx_cookie(ctx_ptr, "sid")
+    let s: &ForgeSession = 0
+    if sid.len == FORGE_SESSION_ID_LEN {
+        s = forge_session_find(sid)
+    }
+    if s == 0 {
+        s = forge_session_alloc()
+        if s != 0 {
+            ctx_set_cookie(ctx_ptr, "sid", s.id[0..FORGE_SESSION_ID_LEN], 86400)
+        }
+    }
+    if s != 0 { ctx_set(ctx_ptr, "_session", s as i64) }
+}
+
+fn ctx_session_get(ctx_ptr: i64, key: []i8) -> []i8 {
+    let s: &ForgeSession = ctx_get(ctx_ptr, "_session") as &ForgeSession
+    if s == 0 { ret "" }
+    loop i in 0..s.count {
+        if forge_slice_eq(s.kv[i].key[0..s.kv[i].klen], key) {
+            ret s.kv[i].val[0..s.kv[i].vlen]
+        }
+    }
+    ret ""
+}
+
+fn ctx_session_set(ctx_ptr: i64, key: []i8, val: []i8) {
+    let s: &ForgeSession = ctx_get(ctx_ptr, "_session") as &ForgeSession
+    if s == 0 { ret }
+    // Update existing key
+    loop i in 0..s.count {
+        if forge_slice_eq(s.kv[i].key[0..s.kv[i].klen], key) {
+            let vl = val.len
+            if vl > FORGE_SESSION_VAL_CAP { vl = FORGE_SESSION_VAL_CAP }
+            loop j in 0..vl { s.kv[i].val[j] = val[j] }
+            s.kv[i].vlen = vl
+            ret
+        }
+    }
+    // Insert new key
+    let n = s.count
+    if n < FORGE_SESSION_MAX_KV {
+        let kl = key.len
+        if kl > FORGE_SESSION_KEY_CAP { kl = FORGE_SESSION_KEY_CAP }
+        loop j in 0..kl { s.kv[n].key[j] = key[j] }
+        s.kv[n].klen = kl
+        let vl = val.len
+        if vl > FORGE_SESSION_VAL_CAP { vl = FORGE_SESSION_VAL_CAP }
+        loop j in 0..vl { s.kv[n].val[j] = val[j] }
+        s.kv[n].vlen = vl
+        s.count = n + 1
+    }
+}
+
+fn ctx_session_del(ctx_ptr: i64, key: []i8) {
+    let s: &ForgeSession = ctx_get(ctx_ptr, "_session") as &ForgeSession
+    if s == 0 { ret }
+    loop i in 0..s.count {
+        if forge_slice_eq(s.kv[i].key[0..s.kv[i].klen], key) {
+            loop j in i..s.count - 1 { s.kv[j] = s.kv[j+1] }
+            s.count = s.count - 1
+            ret
+        }
+    }
+}
+
+fn ctx_session_clear(ctx_ptr: i64) {
+    let s: &ForgeSession = ctx_get(ctx_ptr, "_session") as &ForgeSession
+    if s != 0 { s.count = 0 }
+}
+
+// =============================================================================
+// Flash messages — Rails-style one-time session messages
+// Requires forge_session_start middleware.
+// =============================================================================
+
+fn ctx_flash_set(ctx_ptr: i64, kind: []i8, msg: []i8) {
+    // Store as "<kind>|<msg>" in session key "_flash"
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    loop i in 0..kind.len { buf[pos] = kind[i]  pos = pos + 1 }
+    buf[pos] = '|'  pos = pos + 1
+    loop i in 0..msg.len  { buf[pos] = msg[i]   pos = pos + 1 }
+    ctx_session_set(ctx_ptr, "_flash", buf[0..pos])
+}
+
+// Read and consume flash message for the given kind ("notice", "alert", etc.).
+fn ctx_flash_get(ctx_ptr: i64, kind: []i8) -> []i8 {
+    let raw = ctx_session_get(ctx_ptr, "_flash")
+    if raw.len == 0 { ret "" }
+    let sep = -1i64
+    loop i in 0..raw.len { if raw[i] == '|' { sep = i   break } }
+    if sep < 0 { ret "" }
+    if not forge_slice_eq(raw[0..sep], kind) { ret "" }
+    let msg = raw[sep+1..]
+    ctx_session_del(ctx_ptr, "_flash")   // one-time read
+    ret msg
+}
+
+// =============================================================================
+// CSRF protection
+// Requires forge_session_start middleware registered before forge_csrf.
+// Embed forge_csrf_token(ctx) in forms as hidden field "_csrf".
+// =============================================================================
+
+fn forge_csrf_token(ctx_ptr: i64) -> []i8 {
+    let existing = ctx_session_get(ctx_ptr, "_csrf")
+    if existing.len > 0 { ret existing }
+    let buf: &i8 = alloc_pages(1)
+    let t = time_now_ms()
+    let n = atomic_fetch_add(&g_forge_session_gen, 1)
+    let v = t ^ (n * 2654435761)
+    let hex = "0123456789abcdef"
+    loop i in 0..16 {
+        let shift = (15 - i) * 4
+        buf[i] = hex[(v >> shift) as i64 and 0x0F]
+    }
+    let tok = buf[0..16]
+    ctx_session_set(ctx_ptr, "_csrf", tok)
+    ret tok
+}
+
+// Middleware: verify CSRF token on state-changing methods.
+fn forge_csrf(ctx_ptr: i64) {
+    let method = ctx_method(ctx_ptr)
+    if forge_slice_eq(method, "GET")  or
+       forge_slice_eq(method, "HEAD") or
+       forge_slice_eq(method, "OPTIONS") { ret }
+    // Accept token from X-CSRF-Token header or _csrf form field
+    let token = ctx_header(ctx_ptr, "X-CSRF-Token")
+    if token.len == 0 { token = ctx_form(ctx_ptr, "_csrf") }
+    let expected = ctx_session_get(ctx_ptr, "_csrf")
+    if expected.len == 0 or not forge_slice_eq(token, expected) {
+        ctx_json(ctx_ptr, 403, "{\"error\":\"invalid CSRF token\"}")
+    }
+}
+
+// =============================================================================
+// Proxy headers middleware
+// Trust X-Real-IP / X-Forwarded-For from the load balancer.
+// ctx_ip() reads these headers automatically; extend this middleware to
+// validate the proxy source address before trusting the headers.
+// =============================================================================
+fn forge_proxy_headers(ctx_ptr: i64) {
+    // ctx_ip() already reads X-Real-IP and X-Forwarded-For.
+    // Add source-IP validation here if the load balancer has a fixed address.
 }
