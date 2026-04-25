@@ -1,0 +1,7 @@
+# Forgefile — blog example
+
+forge "github.com/jdalang/jda-forge"
+
+# Uncomment to add third-party libraries:
+# lib "github.com/jdalang/forge-markdown"
+# lib "github.com/jdalang/forge-slugify"

@@ -1,38 +1,51 @@
 #!/bin/bash
 # =============================================================================
-# JDA Forge CLI Generator
-# Usage: forge generate [scaffold|model|controller|migration] <name> [field:type ...]
+# JDA Forge CLI
 # =============================================================================
 
 set -euo pipefail
 
-FORGE_VERSION="2.1"
+FORGE_VERSION="3.0"
+FORGE_REGISTRY="https://github.com/jdalang"
+LIBS_DIR="libs"
+FORGEFILE="Forgefile"
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
+info()    { echo -e "${GREEN}==>${NC} ${BOLD}$*${NC}"; }
+warn()    { echo -e "${YELLOW}warning:${NC} $*"; }
+ok()      { echo -e "  ${GREEN}✓${NC} $*"; }
+err()     { echo -e "${RED}error:${NC} $*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
 
 usage() {
     cat <<EOF
 JDA Forge CLI v${FORGE_VERSION}
 
-Usage:
-  forge generate model      <Name> [field:type ...]
+Project:
+  forge new <name>                    Create a new Forge application
+  forge install                       Install all libraries from Forgefile
+  forge add <lib> [git-url]           Add a library and install it
+  forge update [lib]                  Update all libraries (or one)
+  forge list                          List installed libraries
+
+Generators:
+  forge generate scaffold <Name> [field:type ...]
+  forge generate model    <Name> [field:type ...]
   forge generate controller <Name>
-  forge generate scaffold   <Name> [field:type ...]
   forge generate migration  <Description> [field:type ...]
 
-Examples:
-  forge generate model User email:string name:string created_at:timestamp
-  forge generate controller Users
-  forge generate scaffold User email:string name:string bio:text
-  forge generate migration AddEmailToUsers email:string
+Other:
+  forge version                       Show version
 
-Field types:
-  string     → VARCHAR(255)
-  text       → TEXT
-  integer    → BIGINT
-  boolean    → BOOLEAN NOT NULL DEFAULT false
-  timestamp  → TIMESTAMP
-  float      → FLOAT
-  json       → JSONB
-  references → BIGINT (foreign key)
+Examples:
+  forge new myblog
+  forge add forge-markdown
+  forge add my-slugify https://github.com/myorg/jda-slugify
+  forge generate scaffold Post title:string body:text user:references
+  forge generate migration AddPublishedToPosts published:boolean
 EOF
 }
 
@@ -41,19 +54,15 @@ EOF
 # ---------------------------------------------------------------------------
 
 lowercase() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
-uppercase() { echo "$1" | tr '[:lower:]' '[:upper:]'; }
-snake_case() {
-    echo "$1" | sed 's/\([A-Z]\)/_\1/g' | sed 's/^_//' | tr '[:upper:]' '[:lower:]'
-}
+snake_case() { echo "$1" | sed 's/\([A-Z]\)/_\1/g' | sed 's/^_//' | tr '[:upper:]' '[:lower:]'; }
 plural() {
-    local word="$1"
-    case "$word" in
-        *s|*x|*z|*sh|*ch) echo "${word}es" ;;
-        *y)                echo "${word%y}ies" ;;
-        *)                 echo "${word}s" ;;
+    local w="$1"
+    case "$w" in
+        *s|*x|*z|*sh|*ch) echo "${w}es" ;;
+        *y) echo "${w%y}ies" ;;
+        *) echo "${w}s" ;;
     esac
 }
-
 sql_type() {
     case "$1" in
         string)     echo "VARCHAR(255)" ;;
@@ -67,260 +76,500 @@ sql_type() {
         *)          echo "VARCHAR(255)" ;;
     esac
 }
-
 next_migration_number() {
     local dir="db/migrations"
     mkdir -p "$dir"
     local max=0
     for f in "$dir"/*.sql 2>/dev/null; do
         [ -f "$f" ] || continue
-        local num
-        num=$(basename "$f" | cut -d_ -f1)
-        num=$((10#${num}))
+        local num; num=$(basename "$f" | cut -d_ -f1); num=$((10#${num}))
         [ "$num" -gt "$max" ] && max=$num
     done
     printf "%03d" $((max + 1))
 }
 
 # ---------------------------------------------------------------------------
-# Generate model
+# forge new <name>
+# ---------------------------------------------------------------------------
+
+cmd_new() {
+    local name="${1:-}"
+    [ -z "$name" ] && err "Usage: forge new <name>"
+    [ -d "$name" ] && err "Directory '$name' already exists"
+
+    info "Creating new Forge application: $name"
+    mkdir -p "$name"/{models,controllers,views,routes,middleware,concerns,db/migrations,test,libs,public}
+
+    # Forgefile
+    cat > "$name/$FORGEFILE" <<EOF
+# Forgefile — declare library dependencies here
+# Install with: forge install
+
+forge "github.com/jdalang/jda-forge"
+
+# Add third-party libraries:
+# lib "github.com/jdalang/forge-markdown"
+# lib "github.com/jdalang/forge-slugify"
+EOF
+    ok "created $FORGEFILE"
+
+    # .env
+    cat > "$name/.env" <<EOF
+FORGE_ENV=development
+APP_PORT=8080
+EOF
+
+    cat > "$name/.env.example" <<EOF
+DATABASE_URL=postgres://postgres:postgres@localhost/${name}_dev
+SMTP_HOST=
+SMTP_USER=
+SMTP_PASS=
+APP_SECRET=change-me-at-least-32-chars-long
+APP_PORT=8080
+EOF
+    ok "created .env, .env.example"
+
+    # .gitignore
+    cat > "$name/.gitignore" <<EOF
+_build/
+$(basename "$name")
+test_runner
+.env.development
+.env.staging
+.env.production
+.env.test
+libs/
+EOF
+    ok "created .gitignore"
+
+    # config.jda
+    cat > "$name/config.jda" <<'JDA'
+fn load_env() {
+    let env = forge_env_get("FORGE_ENV")
+    if env.len == 0 { env = "development" }
+    forge_dotenv_load(".env")
+    if str_eq(env, "development") { forge_dotenv_load(".env.development") }
+    else if str_eq(env, "staging")    { forge_dotenv_load(".env.staging")    }
+    else if str_eq(env, "production") { forge_dotenv_load(".env.production") }
+    else if str_eq(env, "test")       { forge_dotenv_load(".env.test")       }
+}
+
+fn app_config() -> ForgeConfig {
+    let cfg = forge_default_config()
+    cfg.db_url     = forge_env_get("DATABASE_URL")
+    cfg.smtp_host  = forge_env_get("SMTP_HOST")
+    cfg.smtp_port  = 587
+    cfg.smtp_user  = forge_env_get("SMTP_USER")
+    cfg.smtp_pass  = forge_env_get("SMTP_PASS")
+    cfg.secret_key = forge_env_get("APP_SECRET")
+    if forge_env_is("test") || forge_env_is("development") { cfg.smtp_host = "" }
+    if forge_env_is("development") { forge_log_level_set(FORGE_LOG_DEBUG) }
+    else                           { forge_log_level_set(FORGE_LOG_INFO)  }
+    ret cfg
+}
+JDA
+    ok "created config.jda"
+
+    # main.jda
+    cat > "$name/main.jda" <<'JDA'
+fn handle_root(ctx: i64) {
+    ctx_html(ctx, 200, "<h1>Welcome</h1>")
+}
+
+fn main() {
+    load_env()
+    forge_jobs_start(4)
+    forge_migration_run("db/migrations")
+
+    let app = app_new_config(app_config())
+
+    app_use(app, fn_addr(forge_logger))
+    app_use(app, fn_addr(forge_request_id))
+    app_use(app, fn_addr(forge_secure_headers))
+    app_use(app, fn_addr(forge_session_start))
+    app_use(app, fn_addr(forge_csrf))
+
+    app_static(app, "/static", "./public")
+    app_get(app, "/", fn_addr(handle_root))
+
+    // register_<resource>_routes(app)
+
+    app_listen(app, str_to_i32(forge_env_get("APP_PORT")))
+}
+JDA
+    ok "created main.jda"
+
+    # Makefile
+    cat > "$name/Makefile" <<'MAKE'
+APP   = app
+OUT   = _build/$(APP).jda
+
+# forge.jda path: set JDA_FORGE env var or override here
+FORGE ?= $(JDA_FORGE)
+
+# Auto-discover installed libraries
+LIBS  = $(wildcard libs/*.jda)
+LINCS = $(addprefix --include ,$(LIBS))
+
+CONFIG  = config.jda
+MW      = $(wildcard middleware/*.jda)
+MODELS  = $(wildcard models/*.jda)
+VIEWS   = $(wildcard views/*.jda)
+ROUTES  = $(wildcard routes/*.jda)
+MAIN    = main.jda
+SRC     = $(CONFIG) $(MW) $(MODELS) $(VIEWS) $(ROUTES) $(MAIN)
+
+TEST_SRC = $(CONFIG) $(MW) $(MODELS) $(VIEWS) $(ROUTES) $(wildcard test/*.jda)
+TEST_OUT = _build/test.jda
+
+.PHONY: all build run watch test clean
+
+all: build
+
+build: $(OUT)
+	jda build --include $(FORGE) $(LINCS) $(OUT) -o $(APP)
+
+$(OUT): $(SRC)
+	@mkdir -p _build
+	@cat $(SRC) > $(OUT)
+	@echo "merged $(words $(SRC)) files → $(OUT)"
+
+run: build
+	./$(APP)
+
+watch:
+	@ls $(SRC) | entr -r make run
+
+test: $(TEST_OUT)
+	jda build --include $(FORGE) $(LINCS) $(TEST_OUT) -o test_runner
+	FORGE_ENV=test ./test_runner
+
+$(TEST_OUT): $(TEST_SRC)
+	@mkdir -p _build
+	@cat $(TEST_SRC) > $(TEST_OUT)
+
+clean:
+	rm -rf _build $(APP) test_runner
+MAKE
+    ok "created Makefile"
+
+    echo ""
+    echo -e "${BOLD}Created application: $name/${NC}"
+    echo ""
+    echo "Next steps:"
+    echo -e "  cd $name"
+    echo -e "  forge install          # install forge.jda into libs/"
+    echo -e "  cp .env.example .env.development && \$EDITOR .env.development"
+    echo -e "  make run"
+}
+
+# ---------------------------------------------------------------------------
+# forge install
+# ---------------------------------------------------------------------------
+
+cmd_install() {
+    [ ! -f "$FORGEFILE" ] && err "No Forgefile found. Run 'forge new <name>' or create a Forgefile."
+
+    info "Installing dependencies from Forgefile..."
+    mkdir -p "$LIBS_DIR"
+
+    local count=0
+    while IFS= read -r line; do
+        # Skip comments and blank lines
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line// }" ]] && continue
+
+        if [[ "$line" =~ ^forge[[:space:]] ]]; then
+            # forge "github.com/jdalang/jda-forge"
+            local url; url=$(echo "$line" | grep -oP '(?<=")[^"]+(?=")' | head -1)
+            install_lib "$url" "forge"
+            count=$((count + 1))
+        elif [[ "$line" =~ ^lib[[:space:]] ]]; then
+            # lib "github.com/jdalang/forge-markdown"
+            local url; url=$(echo "$line" | grep -oP '(?<=")[^"]+(?=")' | head -1)
+            local libname; libname=$(basename "$url")
+            install_lib "$url" "$libname"
+            count=$((count + 1))
+        fi
+    done < "$FORGEFILE"
+
+    echo ""
+    echo -e "${BOLD}$count dependencies installed.${NC}"
+}
+
+install_lib() {
+    local url="$1"
+    local name="$2"
+
+    # Resolve full git URL
+    local git_url
+    if [[ "$url" == https://* ]] || [[ "$url" == git@* ]]; then
+        git_url="$url"
+    else
+        git_url="https://${url}.git"
+    fi
+
+    local dest="$LIBS_DIR/.src/$name"
+    local jda_dest
+
+    if [ -d "$dest/.git" ]; then
+        echo -n "  updating $name... "
+        git -C "$dest" pull --ff-only --quiet 2>/dev/null && echo "updated" || echo "already up to date"
+    else
+        echo -n "  cloning $name... "
+        mkdir -p "$LIBS_DIR/.src"
+        git clone --depth=1 --quiet "$git_url" "$dest" 2>/dev/null && echo "done" || {
+            warn "could not clone $git_url — skipping"
+            return
+        }
+    fi
+
+    # Copy the main .jda file
+    if [ "$name" = "forge" ]; then
+        jda_dest="$LIBS_DIR/forge.jda"
+        if [ -f "$dest/forge.jda" ]; then
+            cp "$dest/forge.jda" "$jda_dest"
+            ok "installed forge.jda → $jda_dest"
+        fi
+    else
+        # Look for <name>.jda or the first .jda file in root
+        local src_jda
+        src_jda=$(find "$dest" -maxdepth 1 -name "*.jda" | head -1)
+        if [ -n "$src_jda" ]; then
+            jda_dest="$LIBS_DIR/${name}.jda"
+            cp "$src_jda" "$jda_dest"
+            ok "installed $name → $jda_dest"
+        else
+            warn "no .jda file found in $name — check the library layout"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# forge add <lib> [git-url]
+# ---------------------------------------------------------------------------
+
+cmd_add() {
+    local lib="${1:-}"
+    [ -z "$lib" ] && err "Usage: forge add <lib> [git-url]"
+    local url="${2:-}"
+
+    # Resolve URL
+    if [ -z "$url" ]; then
+        # Default: github.com/jdalang/<lib>
+        if [[ "$lib" == github.com/* ]] || [[ "$lib" == https://* ]]; then
+            url="$lib"
+        else
+            url="github.com/jdalang/${lib}"
+        fi
+    fi
+
+    # Ensure Forgefile exists
+    [ ! -f "$FORGEFILE" ] && cat > "$FORGEFILE" <<EOF
+# Forgefile
+forge "github.com/jdalang/jda-forge"
+
+EOF
+
+    # Check if already present
+    if grep -q "\"$url\"" "$FORGEFILE" 2>/dev/null; then
+        warn "$lib already in Forgefile"
+    else
+        echo "lib \"$url\"" >> "$FORGEFILE"
+        ok "added $lib to Forgefile"
+    fi
+
+    mkdir -p "$LIBS_DIR"
+    install_lib "$url" "$(basename "$url")"
+}
+
+# ---------------------------------------------------------------------------
+# forge update [lib]
+# ---------------------------------------------------------------------------
+
+cmd_update() {
+    local target="${1:-}"
+    [ ! -f "$FORGEFILE" ] && err "No Forgefile found."
+
+    info "Updating libraries..."
+    mkdir -p "$LIBS_DIR/.src"
+
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line// }" ]] && continue
+
+        local url name
+        if [[ "$line" =~ ^forge[[:space:]] ]]; then
+            url=$(echo "$line" | grep -oP '(?<=")[^"]+(?=")' | head -1)
+            name="forge"
+        elif [[ "$line" =~ ^lib[[:space:]] ]]; then
+            url=$(echo "$line" | grep -oP '(?<=")[^"]+(?=")' | head -1)
+            name=$(basename "$url")
+        else
+            continue
+        fi
+
+        [ -n "$target" ] && [ "$name" != "$target" ] && continue
+        install_lib "$url" "$name"
+    done < "$FORGEFILE"
+}
+
+# ---------------------------------------------------------------------------
+# forge list
+# ---------------------------------------------------------------------------
+
+cmd_list() {
+    echo "Installed libraries (libs/*.jda):"
+    echo ""
+    local found=0
+    for f in libs/*.jda 2>/dev/null; do
+        [ -f "$f" ] || continue
+        local name; name=$(basename "$f" .jda)
+        local lines; lines=$(wc -l < "$f" | tr -d ' ')
+        echo "  $name  ($lines lines)  →  $f"
+        found=1
+    done
+    [ "$found" = "0" ] && echo "  (none — run 'forge install')"
+    echo ""
+    if [ -f "$FORGEFILE" ]; then
+        echo "Forgefile:"
+        grep -v '^#' "$FORGEFILE" | grep -v '^$' | sed 's/^/  /'
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Generators
 # ---------------------------------------------------------------------------
 
 gen_model() {
-    local name="$1"
-    shift
-    local fields=("$@")
-    local snake
-    snake=$(snake_case "$name")
-    local table
-    table=$(plural "$snake")
-    local model_dir="models"
-    mkdir -p "$model_dir"
-    local out="$model_dir/${snake}.jda"
+    local name="$1"; shift; local fields=("$@")
+    local snake; snake=$(snake_case "$name")
+    local table; table=$(plural "$snake")
+    mkdir -p models
+    local out="models/${snake}.jda"
 
-    cat > "$out" <<JDA
-// =============================================================================
-// Model: ${name}
-// Table: ${table}
-// Generated by forge generate model ${name} ${fields[*]}
-// =============================================================================
+    {
+        echo "// Model: ${name} — table: ${table}"
+        echo ""
+        echo "fn ${snake}_find(id: []i8) -> &ForgeResult {"
+        echo "    ret forge_find(\"${table}\", id)"
+        echo "}"
+        echo ""
+        echo "fn ${snake}_find_by(col: []i8, val: []i8) -> &ForgeResult {"
+        echo "    ret forge_find_by(\"${table}\", col, val)"
+        echo "}"
+        echo ""
+        echo "fn ${snake}_all() -> &ForgeResult {"
+        echo "    let q = forge_q(\"${table}\")"
+        echo "    forge_q_order(q, \"created_at\", \"DESC\")"
+        echo "    ret forge_q_exec(q)"
+        echo "}"
+        echo ""
+        echo "fn ${snake}_validate("
+        for f in "${fields[@]}"; do
+            local fname="${f%%:*}"; local ftype="${f##*:}"
+            [[ "$fname" =~ ^(created_at|updated_at|deleted_at)$ ]] && continue
+            [ "$ftype" = "boolean" ] || [ "$ftype" = "timestamp" ] && continue
+            echo "    ${fname}: []i8"
+        done
+        echo ") -> &ForgeErrors {"
+        echo "    let e = forge_errors_new()"
+        for f in "${fields[@]}"; do
+            local fname="${f%%:*}"; local ftype="${f##*:}"
+            [[ "$fname" =~ ^(created_at|updated_at|deleted_at)$ ]] && continue
+            [ "$ftype" = "boolean" ] || [ "$ftype" = "timestamp" ] && continue
+            echo "    forge_validate_presence(e, \"${fname}\", ${fname})"
+            [ "$ftype" = "string" ] && echo "    forge_validate_length(e, \"${fname}\", ${fname}, 1, 255)"
+        done
+        echo "    ret e"
+        echo "}"
+        echo ""
+        echo "fn ${snake}_delete(id: []i8) -> bool {"
+        echo "    ret forge_soft_delete(\"${table}\", id)"
+        echo "}"
+    } > "$out"
 
-fn ${snake}_find(id: []i8) -> &ForgeResult {
-    ret forge_find("${table}", id)
+    ok "created $out"
 }
-
-fn ${snake}_find_by(col: []i8, val: []i8) -> &ForgeResult {
-    ret forge_find_by("${table}", col, val)
-}
-
-fn ${snake}_all() -> &ForgeResult {
-    ret forge_all("${table}")
-}
-
-fn ${snake}_validate(
-JDA
-
-    # Add field params
-    local param_list=""
-    for f in "${fields[@]}"; do
-        local fname="${f%%:*}"
-        local ftype="${f##*:}"
-        if [ "$fname" != "created_at" ] && [ "$fname" != "updated_at" ]; then
-            echo "    ${fname}: []i8" >> "$out"
-        fi
-    done
-
-    cat >> "$out" <<JDA
-) -> &ForgeErrors {
-    let e = forge_errors_new()
-JDA
-
-    for f in "${fields[@]}"; do
-        local fname="${f%%:*}"
-        local ftype="${f##*:}"
-        if [ "$fname" != "created_at" ] && [ "$fname" != "updated_at" ] && [ "$ftype" != "boolean" ] && [ "$ftype" != "timestamp" ]; then
-            echo "    forge_validate_presence(e, \"${fname}\", ${fname})" >> "$out"
-        fi
-        if [ "$ftype" = "string" ]; then
-            echo "    forge_validate_max_length(e, \"${fname}\", ${fname}, 255)" >> "$out"
-        fi
-    done
-
-    cat >> "$out" <<JDA
-    ret e
-}
-
-fn ${snake}_create(
-JDA
-
-    for f in "${fields[@]}"; do
-        local fname="${f%%:*}"
-        local ftype="${f##*:}"
-        if [ "$fname" != "created_at" ] && [ "$fname" != "updated_at" ] && [ "$ftype" != "boolean" ] && [ "$ftype" != "timestamp" ]; then
-            echo "    ${fname}: []i8" >> "$out"
-        fi
-    done
-
-    echo ") -> bool {" >> "$out"
-    echo "    let buf: &i8 = alloc_pages(1)" >> "$out"
-    echo "    let pos = 0i64" >> "$out"
-
-    # Build INSERT
-    local cols=""
-    local vals=""
-    for f in "${fields[@]}"; do
-        local fname="${f%%:*}"
-        local ftype="${f##*:}"
-        if [ "$fname" != "created_at" ] && [ "$fname" != "updated_at" ] && [ "$ftype" != "boolean" ] && [ "$ftype" != "timestamp" ]; then
-            [ -n "$cols" ] && cols="${cols}, "
-            cols="${cols}${fname}"
-            [ -n "$vals" ] && vals="${vals}, '"
-            vals="${vals}'"
-        fi
-    done
-
-    cat >> "$out" <<JDA
-    let p1 = "INSERT INTO ${table} (${cols}) VALUES ('${vals}')"
-    loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
-    ret forge_db_exec(buf[0..pos])
-}
-
-fn ${snake}_delete(id: []i8) -> bool {
-    ret forge_soft_delete("${table}", id)
-}
-
-fn ${snake}_purge(id: []i8) -> bool {
-    ret forge_purge("${table}", id)
-}
-JDA
-
-    echo "  created: $out"
-}
-
-# ---------------------------------------------------------------------------
-# Generate migration
-# ---------------------------------------------------------------------------
 
 gen_migration() {
-    local name="$1"
-    shift
-    local fields=("$@")
-    local num
-    num=$(next_migration_number)
-    local snake
-    snake=$(snake_case "$name")
-    local dir="db/migrations"
-    mkdir -p "$dir"
-    local out="${dir}/${num}_${snake}.sql"
+    local name="$1"; shift; local fields=("$@")
+    local num; num=$(next_migration_number)
+    local snake; snake=$(snake_case "$name")
+    mkdir -p db/migrations
+    local out="db/migrations/${num}_${snake}.sql"
 
-    # Determine if this is a create table or alter table
-    if [[ "$snake" == create_* ]]; then
-        local table="${snake#create_}"
-        {
-            echo "-- Migration: ${num}_${snake}"
-            echo ""
+    {
+        echo "-- Migration: ${num}_${snake}"
+        echo ""
+        if [[ "$snake" == create_* ]]; then
+            local table="${snake#create_}"
             echo "CREATE TABLE IF NOT EXISTS ${table} ("
             echo "    id         BIGSERIAL PRIMARY KEY,"
             for f in "${fields[@]}"; do
-                local fname="${f%%:*}"
-                local ftype="${f##*:}"
-                local stype
-                stype=$(sql_type "$ftype")
+                local fname="${f%%:*}"; local ftype="${f##*:}"
+                local stype; stype=$(sql_type "$ftype")
                 if [ "$ftype" = "references" ]; then
-                    local ref_table
-                    ref_table=$(plural "$fname")
-                    echo "    ${fname}_id  BIGINT NOT NULL REFERENCES ${ref_table}(id) ON DELETE CASCADE,"
+                    local ref; ref=$(plural "$fname")
+                    echo "    ${fname}_id  BIGINT NOT NULL REFERENCES ${ref}(id) ON DELETE CASCADE,"
                 else
-                    echo "    ${fname}    ${stype},"
+                    echo "    ${fname}     ${stype},"
                 fi
             done
             echo "    created_at TIMESTAMP NOT NULL DEFAULT NOW(),"
-            echo "    updated_at TIMESTAMP NOT NULL DEFAULT NOW()"
+            echo "    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),"
+            echo "    deleted_at TIMESTAMP"
             echo ");"
             echo ""
             for f in "${fields[@]}"; do
-                local fname="${f%%:*}"
-                local ftype="${f##*:}"
+                local fname="${f%%:*}"; local ftype="${f##*:}"
                 if [ "$ftype" = "string" ] || [ "$ftype" = "references" ]; then
-                    local idx_col="${fname}"
-                    [ "$ftype" = "references" ] && idx_col="${fname}_id"
-                    echo "CREATE INDEX IF NOT EXISTS idx_${table}_${idx_col} ON ${table} (${idx_col});"
+                    local col="${fname}"; [ "$ftype" = "references" ] && col="${fname}_id"
+                    echo "CREATE INDEX IF NOT EXISTS idx_${table}_${col} ON ${table} (${col});"
                 fi
             done
-        } > "$out"
-    elif [[ "$snake" == add_*_to_* ]]; then
-        local table="${snake##*_to_}"
-        {
-            echo "-- Migration: ${num}_${snake}"
-            echo ""
+        elif [[ "$snake" == add_*_to_* ]]; then
+            local table="${snake##*_to_}"
             for f in "${fields[@]}"; do
-                local fname="${f%%:*}"
-                local ftype="${f##*:}"
-                local stype
-                stype=$(sql_type "$ftype")
-                echo "ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${fname} ${stype};"
+                local fname="${f%%:*}"; local ftype="${f##*:}"
+                echo "ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${fname} $(sql_type "$ftype");"
             done
-        } > "$out"
-    elif [[ "$snake" == remove_*_from_* ]]; then
-        local table="${snake##*_from_}"
-        {
-            echo "-- Migration: ${num}_${snake}"
-            echo ""
+        elif [[ "$snake" == remove_*_from_* ]]; then
+            local table="${snake##*_from_}"
             for f in "${fields[@]}"; do
-                local fname="${f%%:*}"
-                echo "ALTER TABLE ${table} DROP COLUMN IF EXISTS ${fname};"
+                echo "ALTER TABLE ${table} DROP COLUMN IF EXISTS ${f%%:*};"
             done
-        } > "$out"
-    else
-        {
-            echo "-- Migration: ${num}_${snake}"
-            echo "-- TODO: Write migration SQL here"
-            echo ""
-        } > "$out"
-    fi
+        else
+            echo "-- TODO: write migration SQL"
+        fi
+    } > "$out"
 
-    echo "  created: $out"
+    ok "created $out"
 }
-
-# ---------------------------------------------------------------------------
-# Generate controller
-# ---------------------------------------------------------------------------
 
 gen_controller() {
     local name="$1"
-    local snake
-    snake=$(snake_case "$name")
-    local table
-    table=$(plural "$snake")
-    local dir="controllers"
-    mkdir -p "$dir"
-    local out="${dir}/${snake}s_controller.jda"
+    local snake; snake=$(snake_case "$name")
+    local table; table=$(plural "$snake")
+    mkdir -p controllers
+    local out="controllers/${snake}s_controller.jda"
 
     cat > "$out" <<JDA
-// =============================================================================
 // Controller: ${name}s
-// Generated by forge generate controller ${name}
-// =============================================================================
 
 let g_${snake}_ctrl: &ForgeController = 0
 
 fn ${snake}_ctrl_init() {
     if g_${snake}_ctrl != 0 { ret }
     g_${snake}_ctrl = forge_ctrl_new()
-    forge_ctrl_before(g_${snake}_ctrl, fn_addr(${snake}_require_auth), "create")
-    forge_ctrl_before(g_${snake}_ctrl, fn_addr(${snake}_require_auth), "update")
-    forge_ctrl_before(g_${snake}_ctrl, fn_addr(${snake}_require_auth), "delete")
-}
-
-fn ${snake}_require_auth(ctx: i64) {
-    let uid = ctx_session_get(ctx, "user_id")
-    if uid.len == 0 { ctx_redirect(ctx, "/login") }
+    forge_ctrl_before(g_${snake}_ctrl, fn_addr(require_login), "create")
+    forge_ctrl_before(g_${snake}_ctrl, fn_addr(require_login), "update")
+    forge_ctrl_before(g_${snake}_ctrl, fn_addr(require_login), "delete")
 }
 
 fn ${snake}_index_action(ctx: i64) {
     let res = forge_all("${table}")
-    let fmt = ctx_format(ctx)
-    if forge_slice_eq(fmt, "json") {
+    if forge_slice_eq(ctx_format(ctx), "json") {
         ctx_json(ctx, 200, forge_result_to_json(res))
     } else {
         ctx_html(ctx, 200, "<h1>${name}s</h1>")
@@ -328,11 +577,9 @@ fn ${snake}_index_action(ctx: i64) {
 }
 
 fn ${snake}_show_action(ctx: i64) {
-    let id  = ctx_param(ctx, "id")
-    let res = forge_find("${table}", id)
+    let res = forge_find("${table}", ctx_param(ctx, "id"))
     if res.count == 0 { ctx_not_found(ctx)  ret }
-    let fmt = ctx_format(ctx)
-    if forge_slice_eq(fmt, "json") {
+    if forge_slice_eq(ctx_format(ctx), "json") {
         ctx_json(ctx, 200, forge_row_to_json(res, 0))
     } else {
         ctx_html(ctx, 200, "<h1>${name}</h1>")
@@ -340,27 +587,28 @@ fn ${snake}_show_action(ctx: i64) {
 }
 
 fn ${snake}_new_action(ctx: i64) {
-    ctx_html(ctx, 200, "<h1>New ${name}</h1><form action=/${table} method=post></form>")
+    ctx_html(ctx, 200, "<h1>New ${name}</h1>")
 }
 
 fn ${snake}_create_action(ctx: i64) {
+    ctx_flash_set(ctx, "notice", "Created.")
     ctx_redirect(ctx, "/${table}")
 }
 
 fn ${snake}_edit_action(ctx: i64) {
-    let id = ctx_param(ctx, "id")
-    let res = forge_find("${table}", id)
+    let res = forge_find("${table}", ctx_param(ctx, "id"))
     if res.count == 0 { ctx_not_found(ctx)  ret }
     ctx_html(ctx, 200, "<h1>Edit ${name}</h1>")
 }
 
 fn ${snake}_update_action(ctx: i64) {
+    ctx_flash_set(ctx, "notice", "Updated.")
     ctx_redirect(ctx, "/${table}")
 }
 
 fn ${snake}_delete_action(ctx: i64) {
-    let id = ctx_param(ctx, "id")
-    forge_soft_delete("${table}", id)
+    forge_soft_delete("${table}", ctx_param(ctx, "id"))
+    ctx_flash_set(ctx, "notice", "Deleted.")
     ctx_redirect(ctx, "/${table}")
 }
 
@@ -383,123 +631,57 @@ fn ${snake}s_routes(app: &ForgeApp) {
     app_delete(app, "/${table}/:id",      fn_addr(handle_${snake}_delete))
 }
 JDA
-
-    echo "  created: $out"
+    ok "created $out"
 }
-
-# ---------------------------------------------------------------------------
-# Generate scaffold (model + controller + migration + routes stub)
-# ---------------------------------------------------------------------------
 
 gen_scaffold() {
-    local name="$1"
-    shift
-    local fields=("$@")
-    local snake
-    snake=$(snake_case "$name")
-    local table
-    table=$(plural "$snake")
-
-    echo "Generating scaffold for ${name}..."
-
-    # Migration
+    local name="$1"; shift; local fields=("$@")
+    local snake; snake=$(snake_case "$name")
+    local table; table=$(plural "$snake")
+    info "Generating scaffold for ${name}..."
     gen_migration "create_${table}" "${fields[@]}"
-
-    # Model
     gen_model "$name" "${fields[@]}"
-
-    # Controller
     gen_controller "$name"
-
-    # Route registration hint
-    local routes_file="routes/${snake}s.jda"
-    mkdir -p routes
-    cat > "$routes_file" <<JDA
-// Routes for ${name} — generated by forge generate scaffold ${name}
-// Include ${snake}s_routes(app) in your main() function.
-JDA
-    echo "  created: $routes_file"
-
-    # Test stub
-    local test_file="test/test_${snake}s.jda"
     mkdir -p test
-    cat > "$test_file" <<JDA
-// Tests for ${name} — generated by forge generate scaffold ${name}
-
-fn test_${snake}s_index(_: i64) {
-    let res = forge_test_get("/${table}")
-    forge_assert_status(res, 200, "GET /${table} should return 200")
+    cat > "test/test_${snake}s.jda" <<JDA
+fn test_${snake}s_index() {
+    forge_assert_status(forge_test_get("/${table}"), 200)
 }
-
-fn test_${snake}s_show_not_found(_: i64) {
-    let res = forge_test_get("/${table}/99999")
-    forge_assert_status(res, 404, "unknown id should return 404")
-}
-
-fn register_${snake}_tests() {
-    forge_test("${snake}s: index returns 200",      fn_addr(test_${snake}s_index))
-    forge_test("${snake}s: show unknown is 404",    fn_addr(test_${snake}s_show_not_found))
+fn test_${snake}s_not_found() {
+    forge_assert_status(forge_test_get("/${table}/99999"), 404)
 }
 JDA
-    echo "  created: $test_file"
+    ok "created test/test_${snake}s.jda"
     echo ""
-    echo "Done. Add to main():"
-    echo "  ${snake}s_routes(app)"
+    echo "Add to main(): ${snake}s_routes(app)"
 }
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-if [ $# -lt 2 ]; then
-    usage
-    exit 0
-fi
+[ $# -eq 0 ] && { usage; exit 0; }
 
-COMMAND="$1"
-shift
+CMD="$1"; shift
 
-case "$COMMAND" in
+case "$CMD" in
+    new)          cmd_new "${1:-}" ;;
+    install)      cmd_install ;;
+    add)          cmd_add "$@" ;;
+    update)       cmd_update "${1:-}" ;;
+    list)         cmd_list ;;
     generate|g)
-        SUBCOMMAND="$1"
-        shift
-        NAME="${1:-}"
-        if [ -z "$NAME" ]; then
-            echo "Error: name required"
-            usage
-            exit 1
-        fi
-        shift
-        FIELDS=("$@")
-        case "$SUBCOMMAND" in
-            model|m)
-                gen_model "$NAME" "${FIELDS[@]}"
-                ;;
-            controller|c)
-                gen_controller "$NAME"
-                ;;
-            scaffold|s)
-                gen_scaffold "$NAME" "${FIELDS[@]}"
-                ;;
-            migration|mig)
-                gen_migration "$NAME" "${FIELDS[@]}"
-                ;;
-            *)
-                echo "Unknown generator: $SUBCOMMAND"
-                usage
-                exit 1
-                ;;
+        [ $# -lt 2 ] && { usage; exit 1; }
+        SUB="$1"; NAME="$2"; shift 2; FIELDS=("$@")
+        case "$SUB" in
+            scaffold|s)   gen_scaffold "$NAME" "${FIELDS[@]}" ;;
+            model|m)      gen_model    "$NAME" "${FIELDS[@]}" ;;
+            controller|c) gen_controller "$NAME" ;;
+            migration|mig) gen_migration "$NAME" "${FIELDS[@]}" ;;
+            *) err "Unknown generator: $SUB" ;;
         esac
         ;;
-    version|--version|-v)
-        echo "JDA Forge CLI v${FORGE_VERSION}"
-        ;;
-    help|--help|-h)
-        usage
-        ;;
-    *)
-        echo "Unknown command: $COMMAND"
-        usage
-        exit 1
-        ;;
+    version|--version|-v) echo "JDA Forge CLI v${FORGE_VERSION}" ;;
+    help|--help|-h) usage ;;
+    *) err "Unknown command: $CMD. Run 'forge help'." ;;
 esac

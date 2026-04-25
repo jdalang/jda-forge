@@ -1,9 +1,42 @@
 # JDA Forge
 
-A full-stack web framework for the [Jda language](https://github.com/jdalang/jda). Competitive with Rails and Django — routing, ORM, migrations, controllers, views, testing, background jobs, mailer, WebSocket, SSE, caching, file uploads, i18n, and more — in a single `--include` file.
+A full-stack web framework for the [Jda language](https://github.com/jdalang/jda). Routing, ORM, migrations, controllers, views, testing, background jobs, mailer, WebSocket, SSE, caching, file uploads, i18n, and more — in a single `--include` file.
 
+---
+
+## Installation
+
+### One-line install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jdalang/jda-forge/main/install.sh | sh
 ```
-jda build --include forge.jda myapp.jda -o myapp
+
+This clones Forge to `~/.jda/forge/`, adds the `forge` CLI to `~/.jda/bin/`, and configures your shell.
+
+### Manual install
+
+```bash
+git clone https://github.com/jdalang/jda-forge.git ~/.jda/forge
+echo 'export PATH="$HOME/.jda/bin:$PATH"'            >> ~/.zshrc
+echo 'export JDA_FORGE="$HOME/.jda/forge/forge.jda"' >> ~/.zshrc
+ln -s ~/.jda/forge/bin/forge ~/.jda/bin/forge
+source ~/.zshrc
+```
+
+### Verify
+
+```bash
+forge version        # JDA Forge CLI v3.0
+jda build --include $JDA_FORGE hello.jda -o hello
+```
+
+### Updating
+
+```bash
+forge update         # updates forge.jda + all Forgefile libs
+# or
+cd ~/.jda/forge && git pull
 ```
 
 ---
@@ -76,16 +109,38 @@ make watch  # rebuild on file change (requires entr)
 
 ---
 
-## CLI Generator
+## CLI
+
+### New project
+
+```bash
+forge new myblog
+cd myblog
+forge install                    # install forge.jda into libs/
+cp .env.example .env.development # fill in DATABASE_URL, APP_SECRET
+make run
+```
+
+### Generators
 
 ```bash
 # scaffold: model + controller + migration in one shot
-forge generate scaffold User email:string name:string
+forge generate scaffold Post title:string body:text user:references
 
 # individual generators
-forge generate model Post title:string body:text user_id:int
+forge generate model    Comment body:text post:references author:string
 forge generate controller Posts
-forge generate migration AddAvatarToUsers
+forge generate migration AddPublishedToPosts published:boolean
+```
+
+### Library management
+
+```bash
+forge add forge-markdown          # add from github.com/jdalang/forge-markdown
+forge add mylib https://github.com/org/jda-mylib   # custom URL
+forge install                     # install all from Forgefile
+forge update                      # update all libs
+forge list                        # show installed libs
 ```
 
 ---
@@ -736,49 +791,66 @@ app_use(app, fn_addr(forge_etag_middleware))
 
 ---
 
-## Third-Party Libraries
+## Third-Party Libraries (Forgefile)
 
-Forge libraries are plain `.jda` files included at build time via `--include`. There is no package manager — libraries are added by path, similar to vendoring.
+Libraries are plain `.jda` files declared in a `Forgefile` and installed into `libs/` — similar to a Gemfile or package.json. The Makefile auto-discovers everything in `libs/*.jda` and passes it to the compiler.
 
-### Using a library
+### Forgefile
 
-```bash
-jda build --include forge.jda --include libs/forge-slugify.jda myapp.jda -o myapp
+```
+# Forgefile
+
+forge "github.com/jdalang/jda-forge"
+
+lib "github.com/jdalang/forge-markdown"
+lib "github.com/jdalang/forge-slugify"
+lib "github.com/myorg/jda-payments"
 ```
 
-Add multiple `--include` flags for multiple libraries. Order matters — each file can use symbols defined in files listed before it.
+### Commands
 
-### Makefile integration
+```bash
+forge install                               # install all libs from Forgefile
+forge add forge-markdown                    # add jdalang/forge-markdown + install
+forge add payments https://github.com/myorg/jda-payments  # custom URL
+forge update                                # update all to latest
+forge update forge-markdown                 # update one library
+forge list                                  # show installed libs
+```
+
+### How it works
+
+`forge install` clones each library from GitHub into `libs/.src/<name>/`, then copies the `.jda` file to `libs/<name>.jda`. The Makefile picks it up automatically:
 
 ```makefile
-FORGE  = ../forge.jda
-LIBS   = libs/forge-slugify.jda libs/forge-markdown.jda
-OUT    = _build/app.jda
+LIBS  = $(wildcard libs/*.jda)
+LINCS = $(addprefix --include ,$(LIBS))
 
-build: $(OUT)
-    jda build --include $(FORGE) $(addprefix --include ,$(LIBS)) $(OUT) -o app
+build:
+    jda build --include $(FORGE) $(LINCS) $(OUT) -o app
 ```
 
 ### Writing a library
 
-A library is any `.jda` file that defines functions and structs:
+A library is any `.jda` file that defines functions and structs. Publish it as a GitHub repository with one `.jda` file at the root:
 
 ```jda
-// libs/forge-slugify.jda
+// forge-slugify.jda  (root of github.com/jdalang/forge-slugify)
+
 fn slugify(src: []i8, dst: &i8) -> i64 {
     let pos = 0i64
     loop i in 0..src.len {
         let c = src[i]
-        if c >= 'A' && c <= 'Z' { dst[pos] = c + 32   pos = pos + 1 }
-        else if c >= 'a' && c <= 'z' { dst[pos] = c    pos = pos + 1 }
-        else if c >= '0' && c <= '9' { dst[pos] = c    pos = pos + 1 }
+        if c >= 'A' && c <= 'Z' { dst[pos] = c + 32    pos = pos + 1 }
+        else if c >= 'a' && c <= 'z' { dst[pos] = c     pos = pos + 1 }
+        else if c >= '0' && c <= '9' { dst[pos] = c     pos = pos + 1 }
         else if pos > 0 && dst[pos-1] != '-' { dst[pos] = '-'  pos = pos + 1 }
     }
     ret pos
 }
 ```
 
-Use it in your app:
+Use it after `forge add forge-slugify`:
 
 ```jda
 let slug_buf = [256]i8
@@ -786,15 +858,9 @@ let slug_len = slugify(title, slug_buf)
 let slug = slug_buf[0..slug_len]
 ```
 
-### Installing a community library
+### Naming convention
 
-```bash
-# clone the library into libs/
-git clone https://github.com/jdalang/forge-markdown libs/forge-markdown
-
-# or vendor a single file
-cp ~/forge-libs/slugify.jda libs/forge-slugify.jda
-```
+Official Forge libraries live at `github.com/jdalang/forge-<name>`. Community libraries can be any git URL — just pass the full URL to `forge add`.
 
 ---
 
