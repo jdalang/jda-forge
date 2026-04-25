@@ -20,7 +20,7 @@ MAIN     = main.jda
 
 SRC      = $(CONFIG) $(MW) $(VIEWS) $(ROUTES) $(MAIN)
 
-.PHONY: all build run watch clean
+.PHONY: all build run watch clean test
 
 all: build
 
@@ -40,5 +40,16 @@ watch:
 	@echo "Watching for changes…"
 	@ls $(SRC) | entr -r make run
 
+TEST_SRC = $(CONFIG) $(MW) $(VIEWS) $(ROUTES) $(wildcard test/*.jda)
+TEST_OUT = _build/test.jda
+
+test: $(TEST_OUT)
+	jda build --include $(FORGE) $(TEST_OUT) -o test_runner
+	./test_runner
+
+$(TEST_OUT): $(TEST_SRC)
+	@mkdir -p _build
+	@cat $(TEST_SRC) > $(TEST_OUT)
+
 clean:
-	rm -rf _build $(APP)
+	rm -rf _build $(APP) test_runner

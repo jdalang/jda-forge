@@ -1,0 +1,151 @@
+// =============================================================================
+// Model: User
+// Table: users
+// =============================================================================
+// Callbacks, validations, and associations example.
+
+// ---------------------------------------------------------------------------
+// Callbacks — registered at app startup (call from main() or config.jda)
+// ---------------------------------------------------------------------------
+
+fn user_before_create(row_ptr: i64) -> i64 {
+    // Example: validate before insert
+    ret 1   // return 0 to abort
+}
+
+fn user_after_create(row_ptr: i64) -> i64 {
+    // Example: send welcome email after create
+    ret 1
+}
+
+fn user_before_save(row_ptr: i64) -> i64 {
+    ret 1
+}
+
+fn user_after_save(row_ptr: i64) -> i64 {
+    ret 1
+}
+
+fn user_before_delete(row_ptr: i64) -> i64 {
+    ret 1
+}
+
+fn user_after_delete(row_ptr: i64) -> i64 {
+    ret 1
+}
+
+fn user_register_callbacks() {
+    forge_callback_add("users", FORGE_CB_BEFORE_CREATE, fn_addr(user_before_create))
+    forge_callback_add("users", FORGE_CB_AFTER_CREATE,  fn_addr(user_after_create))
+    forge_callback_add("users", FORGE_CB_BEFORE_SAVE,   fn_addr(user_before_save))
+    forge_callback_add("users", FORGE_CB_AFTER_SAVE,    fn_addr(user_after_save))
+    forge_callback_add("users", FORGE_CB_BEFORE_DELETE, fn_addr(user_before_delete))
+    forge_callback_add("users", FORGE_CB_AFTER_DELETE,  fn_addr(user_after_delete))
+}
+
+// ---------------------------------------------------------------------------
+// Validations
+// ---------------------------------------------------------------------------
+
+fn user_validate(email: []i8, name: []i8, password: []i8) -> &ForgeErrors {
+    let e = forge_errors_new()
+    forge_validate_presence(e, "email", email)
+    forge_validate_format_email(e, "email", email)
+    forge_validate_presence(e, "name", name)
+    forge_validate_min_length(e, "name", name, 2)
+    forge_validate_presence(e, "password", password)
+    forge_validate_min_length(e, "password", password, 8)
+    ret e
+}
+
+// ---------------------------------------------------------------------------
+// Finders
+// ---------------------------------------------------------------------------
+
+fn user_find(id: []i8) -> &ForgeResult {
+    ret forge_find("users", id)
+}
+
+fn user_find_by_email(email: []i8) -> &ForgeResult {
+    ret forge_find_by("users", "email", email)
+}
+
+fn user_all() -> &ForgeResult {
+    let q = forge_q("users")
+    forge_q_order(q, "created_at", "DESC")
+    ret forge_q_exec(q)
+}
+
+fn user_active() -> &ForgeResult {
+    let q = forge_q("users")
+    forge_q_where(q, "deleted_at", "IS", "NULL")
+    forge_q_order(q, "created_at", "DESC")
+    ret forge_q_exec(q)
+}
+
+// ---------------------------------------------------------------------------
+// Associations
+// ---------------------------------------------------------------------------
+
+fn user_posts(user_id: []i8) -> &ForgeResult {
+    ret forge_has_many("posts", "user_id", user_id)
+}
+
+fn user_profile(user_id: []i8) -> &ForgeResult {
+    ret forge_has_one("profiles", "user_id", user_id)
+}
+
+// ---------------------------------------------------------------------------
+// Create / Update / Delete helpers
+// ---------------------------------------------------------------------------
+
+fn user_create(email: []i8, name: []i8, password_hash: []i8) -> bool {
+    if not forge_callback_run("users", FORGE_CB_BEFORE_SAVE, 0) { ret false }
+    if not forge_callback_run("users", FORGE_CB_BEFORE_CREATE, 0) { ret false }
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "INSERT INTO users (email, name, password_hash) VALUES ('"
+    let p2 = "', '"
+    let p3 = "')"
+    loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
+    let el = forge_db_escape_str(email, buf + pos)         pos = pos + el
+    loop i in 0..p2.len { buf[pos] = p2[i]  pos = pos + 1 }
+    el = forge_db_escape_str(name, buf + pos)              pos = pos + el
+    loop i in 0..p2.len { buf[pos] = p2[i]  pos = pos + 1 }
+    el = forge_db_escape_str(password_hash, buf + pos)     pos = pos + el
+    loop i in 0..p3.len { buf[pos] = p3[i]  pos = pos + 1 }
+    let ok = forge_db_exec(buf[0..pos])
+    if ok {
+        forge_callback_run("users", FORGE_CB_AFTER_CREATE, 0)
+        forge_callback_run("users", FORGE_CB_AFTER_SAVE, 0)
+    }
+    ret ok
+}
+
+fn user_update(id: []i8, name: []i8) -> bool {
+    if not forge_callback_run("users", FORGE_CB_BEFORE_SAVE, 0) { ret false }
+    if not forge_callback_run("users", FORGE_CB_BEFORE_UPDATE, 0) { ret false }
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "UPDATE users SET name = '"
+    let p2 = "', updated_at = NOW() WHERE id = '"
+    let p3 = "'"
+    loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
+    let el = forge_db_escape_str(name, buf + pos)  pos = pos + el
+    loop i in 0..p2.len { buf[pos] = p2[i]  pos = pos + 1 }
+    el = forge_db_escape_str(id, buf + pos)        pos = pos + el
+    loop i in 0..p3.len { buf[pos] = p3[i]  pos = pos + 1 }
+    let ok = forge_db_exec(buf[0..pos])
+    if ok {
+        forge_callback_run("users", FORGE_CB_AFTER_UPDATE, 0)
+        forge_callback_run("users", FORGE_CB_AFTER_SAVE, 0)
+    }
+    ret ok
+}
+
+fn user_delete(id: []i8) -> bool {
+    if not forge_callback_run("users", FORGE_CB_BEFORE_DELETE, 0) { ret false }
+    let ok = forge_soft_delete("users", id)
+    if ok { forge_callback_run("users", FORGE_CB_AFTER_DELETE, 0) }
+    ret ok
+}

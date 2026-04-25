@@ -717,11 +717,29 @@ fn forge_build_hdr_str(c: &ForgeCtx, buf: &i8) -> i64 {
     ret pos
 }
 
+let g_forge_test_mode:         bool = false
+let g_forge_test_cap_status:   i32  = 0
+let g_forge_test_cap_body_ptr: i64  = 0
+let g_forge_test_cap_body_len: i64  = 0
+
+struct ForgeTestResponse {
+    status: i32
+    body:   []i8
+}
+
 fn ctx_respond(ctx_ptr: i64, status: i32, content_type: []i8, body: []i8) {
     let c: &ForgeCtx = ctx_ptr
     if c.sent { ret }
     c.sent = true
     if content_type.len > 0 { ctx_set_header(ctx_ptr, "Content-Type", content_type) }
+    if g_forge_test_mode {
+        g_forge_test_cap_status = status
+        let bp: &i8 = alloc_pages(1)
+        loop i in 0..body.len { bp[i] = body[i] }
+        g_forge_test_cap_body_ptr = bp as i64
+        g_forge_test_cap_body_len = body.len
+        ret
+    }
     let hdr_buf = [4096]i8
     let hdr_len = forge_build_hdr_str(c, hdr_buf)
     let resp = HttpResponse { status: status, headers: hdr_buf[0..hdr_len], body: body }
@@ -1910,10 +1928,14 @@ struct ForgeDbRow {
     count: i64
 }
 
+struct ForgeColName { name: [64]i8  nlen: i64 }
+
 struct ForgeResult {
-    rows:     &ForgeDbRow   // alloc_pages block
-    count:    i64           // number of rows
-    affected: i64           // rows affected for INSERT/UPDATE/DELETE
+    rows:      &ForgeDbRow
+    count:     i64
+    affected:  i64
+    col_names: [32]ForgeColName
+    col_count: i64
 }
 
 let g_forge_db_host: []i8 = ""
@@ -2057,8 +2079,25 @@ fn forge_db_query(sql: []i8) -> &ForgeResult {
         if mlen > 0 { forge_db_recv_n(fd, body, mlen) }
 
         if mtype == 'T' {
-            // RowDescription — note column count
+            // RowDescription — parse column count and names
             ncols = forge_db_read_i16(body, 0)
+            result.col_count = ncols
+            let tp = 2i64
+            loop ci in 0..ncols {
+                // Each field: name(cstring) + 18 bytes of metadata
+                let cn: &ForgeColName = (result.col_names as i64 + ci * 72) as &ForgeColName
+                let nl = 0i64
+                loop {
+                    if tp >= mlen { break }
+                    let ch = body[tp]
+                    tp = tp + 1
+                    if ch == 0 { break }
+                    if nl < 64 { cn.name[nl] = ch  nl = nl + 1 }
+                }
+                cn.nlen = nl
+                // Skip 18 bytes: tableOID(4) colNum(2) typeOID(4) typeSize(2) typeMod(4) format(2)
+                tp = tp + 18
+            }
         } else if mtype == 'D' {
             // DataRow
             let row_i = result.count
@@ -2317,4 +2356,2133 @@ fn forge_admin_list(ctx: i64) {
     let tend = "</table>"
     loop i in 0..tend.len { buf[pos] = tend[i]  pos = pos + 1 }
     ctx_html(ctx, 200, buf[0..pos])
+}
+
+// =============================================================================
+// Section A — DB Utilities + Query Builder
+// =============================================================================
+const FORGE_QUERY_WHERE_CAP = 2048
+const FORGE_QUERY_ORDER_CAP = 256
+const FORGE_QUERY_SEL_CAP   = 512
+
+struct ForgeQuery {
+    table:     []i8
+    where_buf: [FORGE_QUERY_WHERE_CAP]i8
+    where_len: i64
+    order_buf: [FORGE_QUERY_ORDER_CAP]i8
+    order_len: i64
+    sel_buf:   [FORGE_QUERY_SEL_CAP]i8
+    sel_len:   i64
+    lim:       i64
+    off:       i64
+}
+
+fn forge_db_escape_str(val: []i8, dst: &i8) -> i64 {
+    let pos = 0i64
+    loop i in 0..val.len {
+        if val[i] == '\'' {
+            dst[pos] = '\''
+            pos = pos + 1
+            dst[pos] = '\''
+            pos = pos + 1
+        } else {
+            dst[pos] = val[i]
+            pos = pos + 1
+        }
+    }
+    ret pos
+}
+
+fn forge_q(table: []i8) -> &ForgeQuery {
+    let q: &ForgeQuery = alloc_pages(1)
+    q.table     = table
+    q.where_len = 0
+    q.order_len = 0
+    q.sel_len   = 0
+    q.lim       = -1
+    q.off       = -1
+    ret q
+}
+
+fn forge_q_select(q: &ForgeQuery, cols: []i8) -> &ForgeQuery {
+    let l = cols.len
+    if l > FORGE_QUERY_SEL_CAP { l = FORGE_QUERY_SEL_CAP }
+    loop i in 0..l { q.sel_buf[i] = cols[i] }
+    q.sel_len = l
+    ret q
+}
+
+fn forge_q_where(q: &ForgeQuery, col: []i8, op: []i8, val: []i8) -> &ForgeQuery {
+    let is_kw = forge_slice_eq(op, "IS") or forge_slice_eq(op, "IS NOT")
+    if q.where_len > 0 {
+        let and_s = " AND "
+        loop i in 0..and_s.len {
+            if q.where_len < FORGE_QUERY_WHERE_CAP {
+                q.where_buf[q.where_len] = and_s[i]
+                q.where_len = q.where_len + 1
+            }
+        }
+    }
+    loop i in 0..col.len {
+        if q.where_len < FORGE_QUERY_WHERE_CAP {
+            q.where_buf[q.where_len] = col[i]
+            q.where_len = q.where_len + 1
+        }
+    }
+    let sp = " "
+    loop i in 0..sp.len {
+        if q.where_len < FORGE_QUERY_WHERE_CAP {
+            q.where_buf[q.where_len] = sp[i]
+            q.where_len = q.where_len + 1
+        }
+    }
+    loop i in 0..op.len {
+        if q.where_len < FORGE_QUERY_WHERE_CAP {
+            q.where_buf[q.where_len] = op[i]
+            q.where_len = q.where_len + 1
+        }
+    }
+    loop i in 0..sp.len {
+        if q.where_len < FORGE_QUERY_WHERE_CAP {
+            q.where_buf[q.where_len] = sp[i]
+            q.where_len = q.where_len + 1
+        }
+    }
+    if is_kw {
+        loop i in 0..val.len {
+            if q.where_len < FORGE_QUERY_WHERE_CAP {
+                q.where_buf[q.where_len] = val[i]
+                q.where_len = q.where_len + 1
+            }
+        }
+    } else {
+        if q.where_len < FORGE_QUERY_WHERE_CAP {
+            q.where_buf[q.where_len] = '\''
+            q.where_len = q.where_len + 1
+        }
+        let esc_buf: &i8 = alloc_pages(1)
+        let esc_len = forge_db_escape_str(val, esc_buf)
+        loop i in 0..esc_len {
+            if q.where_len < FORGE_QUERY_WHERE_CAP {
+                q.where_buf[q.where_len] = esc_buf[i]
+                q.where_len = q.where_len + 1
+            }
+        }
+        if q.where_len < FORGE_QUERY_WHERE_CAP {
+            q.where_buf[q.where_len] = '\''
+            q.where_len = q.where_len + 1
+        }
+    }
+    ret q
+}
+
+fn forge_q_where_raw(q: &ForgeQuery, expr: []i8) -> &ForgeQuery {
+    if q.where_len > 0 {
+        let and_s = " AND "
+        loop i in 0..and_s.len {
+            if q.where_len < FORGE_QUERY_WHERE_CAP {
+                q.where_buf[q.where_len] = and_s[i]
+                q.where_len = q.where_len + 1
+            }
+        }
+    }
+    loop i in 0..expr.len {
+        if q.where_len < FORGE_QUERY_WHERE_CAP {
+            q.where_buf[q.where_len] = expr[i]
+            q.where_len = q.where_len + 1
+        }
+    }
+    ret q
+}
+
+fn forge_q_order(q: &ForgeQuery, col: []i8, dir: []i8) -> &ForgeQuery {
+    if q.order_len > 0 {
+        let cs = ", "
+        loop i in 0..cs.len {
+            if q.order_len < FORGE_QUERY_ORDER_CAP {
+                q.order_buf[q.order_len] = cs[i]
+                q.order_len = q.order_len + 1
+            }
+        }
+    }
+    loop i in 0..col.len {
+        if q.order_len < FORGE_QUERY_ORDER_CAP {
+            q.order_buf[q.order_len] = col[i]
+            q.order_len = q.order_len + 1
+        }
+    }
+    let sp = " "
+    loop i in 0..sp.len {
+        if q.order_len < FORGE_QUERY_ORDER_CAP {
+            q.order_buf[q.order_len] = sp[i]
+            q.order_len = q.order_len + 1
+        }
+    }
+    loop i in 0..dir.len {
+        if q.order_len < FORGE_QUERY_ORDER_CAP {
+            q.order_buf[q.order_len] = dir[i]
+            q.order_len = q.order_len + 1
+        }
+    }
+    ret q
+}
+
+fn forge_q_limit(q: &ForgeQuery, n: i64) -> &ForgeQuery {
+    q.lim = n
+    ret q
+}
+
+fn forge_q_offset(q: &ForgeQuery, n: i64) -> &ForgeQuery {
+    q.off = n
+    ret q
+}
+
+fn forge_q_sql(q: &ForgeQuery, dst: &i8) -> i64 {
+    let pos = 0i64
+    let sel_s  = "SELECT "
+    let from_s = " FROM "
+    loop i in 0..sel_s.len  { dst[pos] = sel_s[i]   pos = pos + 1 }
+    if q.sel_len > 0 {
+        loop i in 0..q.sel_len { dst[pos] = q.sel_buf[i]  pos = pos + 1 }
+    } else {
+        dst[pos] = '*'  pos = pos + 1
+    }
+    loop i in 0..from_s.len { dst[pos] = from_s[i]  pos = pos + 1 }
+    loop i in 0..q.table.len { dst[pos] = q.table[i]  pos = pos + 1 }
+    if q.where_len > 0 {
+        let wh = " WHERE "
+        loop i in 0..wh.len { dst[pos] = wh[i]  pos = pos + 1 }
+        loop i in 0..q.where_len { dst[pos] = q.where_buf[i]  pos = pos + 1 }
+    }
+    if q.order_len > 0 {
+        let ob = " ORDER BY "
+        loop i in 0..ob.len { dst[pos] = ob[i]  pos = pos + 1 }
+        loop i in 0..q.order_len { dst[pos] = q.order_buf[i]  pos = pos + 1 }
+    }
+    if q.lim >= 0 {
+        let ls = " LIMIT "
+        loop i in 0..ls.len { dst[pos] = ls[i]  pos = pos + 1 }
+        let nb: &i8 = alloc_pages(1)
+        let nl = fmt_i64(nb, q.lim)
+        loop i in 0..nl { dst[pos] = nb[i]  pos = pos + 1 }
+    }
+    if q.off >= 0 {
+        let os = " OFFSET "
+        loop i in 0..os.len { dst[pos] = os[i]  pos = pos + 1 }
+        let nb2: &i8 = alloc_pages(1)
+        let nl2 = fmt_i64(nb2, q.off)
+        loop i in 0..nl2 { dst[pos] = nb2[i]  pos = pos + 1 }
+    }
+    ret pos
+}
+
+fn forge_q_exec(q: &ForgeQuery) -> &ForgeResult {
+    let sql_buf: &i8 = alloc_pages(2)
+    let sql_len = forge_q_sql(q, sql_buf)
+    ret forge_db_query(sql_buf[0..sql_len])
+}
+
+fn forge_q_first(q: &ForgeQuery) -> &ForgeResult {
+    q.lim = 1
+    ret forge_q_exec(q)
+}
+
+fn forge_q_count(q: &ForgeQuery) -> i64 {
+    let orig_sel_len = q.sel_len
+    let count_s = "COUNT(*)"
+    loop i in 0..count_s.len { q.sel_buf[i] = count_s[i] }
+    q.sel_len = count_s.len
+    let res = forge_q_exec(q)
+    q.sel_len = orig_sel_len
+    if res.count == 0 { ret 0 }
+    let val = forge_row_col(res, 0, 0)
+    let acc = 0i64
+    loop i in 0..val.len {
+        let d = val[i] as i64 - 48
+        if d >= 0 and d <= 9 { acc = acc * 10 + d }
+    }
+    ret acc
+}
+
+fn forge_find(table: []i8, id: []i8) -> &ForgeResult {
+    let q = forge_q(table)
+    forge_q_where(q, "id", "=", id)
+    ret forge_q_first(q)
+}
+
+fn forge_find_by(table: []i8, col: []i8, val: []i8) -> &ForgeResult {
+    let q = forge_q(table)
+    forge_q_where(q, col, "=", val)
+    ret forge_q_first(q)
+}
+
+fn forge_all(table: []i8) -> &ForgeResult {
+    let q = forge_q(table)
+    ret forge_q_exec(q)
+}
+
+// =============================================================================
+// Section B — Validations
+// =============================================================================
+const FORGE_MAX_ERRORS = 16
+
+struct ForgeValidationError { field: []i8  msg: []i8 }
+struct ForgeErrors { errs: [FORGE_MAX_ERRORS]ForgeValidationError  count: i64 }
+
+fn forge_errors_new() -> &ForgeErrors {
+    let e: &ForgeErrors = alloc_pages(1)
+    e.count = 0
+    ret e
+}
+
+fn forge_errors_add(e: &ForgeErrors, field: []i8, msg: []i8) {
+    if e.count >= FORGE_MAX_ERRORS { ret }
+    let i = e.count
+    e.errs[i].field = field
+    e.errs[i].msg   = msg
+    e.count = i + 1
+}
+
+fn forge_errors_any(e: &ForgeErrors) -> bool {
+    ret e.count > 0
+}
+
+fn forge_errors_json(e: &ForgeErrors) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "{\"errors\":{"
+    loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
+    loop i in 0..e.count {
+        if i > 0 { buf[pos] = ','  pos = pos + 1 }
+        buf[pos] = '"'  pos = pos + 1
+        loop j in 0..e.errs[i].field.len { buf[pos] = e.errs[i].field[j]  pos = pos + 1 }
+        buf[pos] = '"'  pos = pos + 1
+        buf[pos] = ':'  pos = pos + 1
+        buf[pos] = '"'  pos = pos + 1
+        loop j in 0..e.errs[i].msg.len { buf[pos] = e.errs[i].msg[j]  pos = pos + 1 }
+        buf[pos] = '"'  pos = pos + 1
+    }
+    let p2 = "}}"
+    loop i in 0..p2.len { buf[pos] = p2[i]  pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn forge_validate_presence(e: &ForgeErrors, field: []i8, val: []i8) -> bool {
+    if val.len == 0 {
+        forge_errors_add(e, field, "can't be blank")
+        ret false
+    }
+    ret true
+}
+
+fn forge_validate_length(e: &ForgeErrors, field: []i8, val: []i8, min: i64, max: i64) -> bool {
+    if val.len < min or val.len > max {
+        let mb: &i8 = alloc_pages(1)
+        let mp = 0i64
+        let p1 = "length must be between "
+        let p2 = " and "
+        loop i in 0..p1.len { mb[mp] = p1[i]  mp = mp + 1 }
+        let n1 = fmt_i64(mb + mp, min)  mp = mp + n1
+        loop i in 0..p2.len { mb[mp] = p2[i]  mp = mp + 1 }
+        let n2 = fmt_i64(mb + mp, max)  mp = mp + n2
+        forge_errors_add(e, field, mb[0..mp])
+        ret false
+    }
+    ret true
+}
+
+fn forge_validate_min_length(e: &ForgeErrors, field: []i8, val: []i8, min: i64) -> bool {
+    if val.len < min {
+        let mb: &i8 = alloc_pages(1)
+        let mp = 0i64
+        let p1 = "is too short (minimum is "
+        let p2 = " characters)"
+        loop i in 0..p1.len { mb[mp] = p1[i]  mp = mp + 1 }
+        let n1 = fmt_i64(mb + mp, min)  mp = mp + n1
+        loop i in 0..p2.len { mb[mp] = p2[i]  mp = mp + 1 }
+        forge_errors_add(e, field, mb[0..mp])
+        ret false
+    }
+    ret true
+}
+
+fn forge_validate_format_email(e: &ForgeErrors, field: []i8, val: []i8) -> bool {
+    let has_at  = false
+    let has_dot = false
+    loop i in 0..val.len {
+        if val[i] == '@' { has_at  = true }
+        if val[i] == '.' { has_dot = true }
+    }
+    if not has_at or not has_dot {
+        forge_errors_add(e, field, "is not a valid email address")
+        ret false
+    }
+    ret true
+}
+
+fn forge_validate_numericality(e: &ForgeErrors, field: []i8, val: []i8) -> bool {
+    if val.len == 0 {
+        forge_errors_add(e, field, "is not a number")
+        ret false
+    }
+    loop i in 0..val.len {
+        let d = val[i] as i64 - 48
+        if d < 0 or d > 9 {
+            forge_errors_add(e, field, "is not a number")
+            ret false
+        }
+    }
+    ret true
+}
+
+fn forge_validate_confirmation(e: &ForgeErrors, field: []i8, val: []i8, confirm: []i8) -> bool {
+    if not forge_slice_eq(val, confirm) {
+        forge_errors_add(e, field, "doesn't match confirmation")
+        ret false
+    }
+    ret true
+}
+
+fn forge_validate_inclusion(e: &ForgeErrors, field: []i8, val: []i8, allowed: []i8) -> bool {
+    let start = 0i64
+    loop i in 0..allowed.len {
+        if allowed[i] == ',' {
+            let seg = allowed[start..i]
+            if forge_slice_eq(seg, val) { ret true }
+            start = i + 1
+        }
+    }
+    let seg = allowed[start..allowed.len]
+    if forge_slice_eq(seg, val) { ret true }
+    forge_errors_add(e, field, "is not included in the list")
+    ret false
+}
+
+// =============================================================================
+// Section C — Model Callbacks
+// =============================================================================
+const FORGE_CB_BEFORE_SAVE   = 1
+const FORGE_CB_AFTER_SAVE    = 2
+const FORGE_CB_BEFORE_CREATE = 3
+const FORGE_CB_AFTER_CREATE  = 4
+const FORGE_CB_BEFORE_UPDATE = 5
+const FORGE_CB_AFTER_UPDATE  = 6
+const FORGE_CB_BEFORE_DELETE = 7
+const FORGE_CB_AFTER_DELETE  = 8
+
+const FORGE_MAX_CALLBACKS    = 64
+const FORGE_CB_TABLE_CAP     = 32
+
+struct ForgeCbEntry {
+    table:  [FORGE_CB_TABLE_CAP]i8
+    tlen:   i64
+    event:  i64
+    fn_ptr: i64
+    used:   bool
+}
+
+const FORGE_CB_ENTRY_STRIDE = 58
+
+let g_forge_cb_store: &ForgeCbEntry = 0
+let g_forge_cb_count: i64 = 0
+
+fn forge_cb_init() {
+    if g_forge_cb_store != 0 { ret }
+    g_forge_cb_store = alloc_pages(4) as &ForgeCbEntry
+}
+
+fn forge_callback_add(table: []i8, event: i64, fn_ptr: i64) {
+    forge_cb_init()
+    let n = g_forge_cb_count
+    if n >= FORGE_MAX_CALLBACKS { ret }
+    let entry: &ForgeCbEntry = (g_forge_cb_store as i64 + n * FORGE_CB_ENTRY_STRIDE) as &ForgeCbEntry
+    let tl = table.len
+    if tl > FORGE_CB_TABLE_CAP { tl = FORGE_CB_TABLE_CAP }
+    loop i in 0..tl { entry.table[i] = table[i] }
+    entry.tlen   = tl
+    entry.event  = event
+    entry.fn_ptr = fn_ptr
+    entry.used   = true
+    g_forge_cb_count = n + 1
+}
+
+fn forge_callback_run(table: []i8, event: i64, row_ptr: i64) -> bool {
+    forge_cb_init()
+    loop i in 0..g_forge_cb_count {
+        let entry: &ForgeCbEntry = (g_forge_cb_store as i64 + i * FORGE_CB_ENTRY_STRIDE) as &ForgeCbEntry
+        if not entry.used { continue }
+        if entry.event != event { continue }
+        if not forge_slice_eq(entry.table[0..entry.tlen], table) { continue }
+        let result = call_fn(entry.fn_ptr, row_ptr)
+        if result == 0 { ret false }
+    }
+    ret true
+}
+
+// =============================================================================
+// Section D — Associations
+// =============================================================================
+
+fn forge_belongs_to(table: []i8, fk_val: []i8) -> &ForgeResult {
+    ret forge_find(table, fk_val)
+}
+
+fn forge_has_many(table: []i8, fk_col: []i8, owner_id: []i8) -> &ForgeResult {
+    let q = forge_q(table)
+    forge_q_where(q, fk_col, "=", owner_id)
+    ret forge_q_exec(q)
+}
+
+fn forge_has_one(table: []i8, fk_col: []i8, owner_id: []i8) -> &ForgeResult {
+    let q = forge_q(table)
+    forge_q_where(q, fk_col, "=", owner_id)
+    ret forge_q_first(q)
+}
+
+// =============================================================================
+// Section E — Transactions
+// =============================================================================
+
+fn forge_tx_begin() -> i32 {
+    let fd = forge_db_connect()
+    if fd < 0 { ret fd }
+    let msg: &i8 = alloc_pages(1)
+    msg[0] = 'Q'
+    let sql = "BEGIN"
+    let mlen = sql.len + 5
+    forge_db_write_i32(msg, 1, mlen)
+    loop i in 0..sql.len { msg[5 + i] = sql[i] }
+    msg[5 + sql.len] = 0
+    forge_tcp_write_all(fd, msg, 6 + sql.len as i64)
+    let hdr = [5]i8
+    loop {
+        if not forge_db_recv_n(fd, hdr, 5) { break }
+        let mtype = hdr[0]
+        let mlen2 = forge_db_read_i32(hdr, 1) - 4
+        let body: &i8 = alloc_pages(1)
+        if mlen2 > 0 { forge_db_recv_n(fd, body, mlen2) }
+        if mtype == 'Z' { break }
+    }
+    ret fd
+}
+
+fn forge_tx_exec(fd: i32, sql: []i8) -> bool {
+    let msg: &i8 = alloc_pages(1)
+    msg[0] = 'Q'
+    let mlen = sql.len + 5
+    forge_db_write_i32(msg, 1, mlen)
+    loop i in 0..sql.len { msg[5 + i] = sql[i] }
+    msg[5 + sql.len] = 0
+    forge_tcp_write_all(fd, msg, 6 + sql.len as i64)
+    let hdr = [5]i8
+    let ok = true
+    loop {
+        if not forge_db_recv_n(fd, hdr, 5) { ok = false  break }
+        let mtype = hdr[0]
+        let mlen2 = forge_db_read_i32(hdr, 1) - 4
+        let body: &i8 = alloc_pages(1)
+        if mlen2 > 0 { forge_db_recv_n(fd, body, mlen2) }
+        if mtype == 'E' { ok = false }
+        if mtype == 'Z' { break }
+    }
+    ret ok
+}
+
+fn forge_tx_query(fd: i32, sql: []i8) -> &ForgeResult {
+    let result: &ForgeResult = alloc_pages(1)
+    result.count    = 0
+    result.affected = 0
+    let msg: &i8 = alloc_pages(1)
+    msg[0] = 'Q'
+    let mlen = sql.len + 5
+    forge_db_write_i32(msg, 1, mlen)
+    loop i in 0..sql.len { msg[5 + i] = sql[i] }
+    msg[5 + sql.len] = 0
+    forge_tcp_write_all(fd, msg, 6 + sql.len as i64)
+    let rows: &i8 = alloc_pages(512)
+    result.rows = rows as &ForgeDbRow
+    let hdr = [5]i8
+    let ncols = 0i64
+    loop {
+        if not forge_db_recv_n(fd, hdr, 5) { break }
+        let mtype = hdr[0]
+        let blen  = forge_db_read_i32(hdr, 1) - 4
+        let body: &i8 = alloc_pages(16)
+        if blen > 0 { forge_db_recv_n(fd, body, blen) }
+        if mtype == 'T' {
+            ncols = forge_db_read_i16(body, 0)
+            result.col_count = ncols
+            let tp = 2i64
+            loop ci in 0..ncols {
+                let cn: &ForgeColName = (result.col_names as i64 + ci * 72) as &ForgeColName
+                let nl = 0i64
+                loop {
+                    if tp >= blen { break }
+                    let ch = body[tp]
+                    tp = tp + 1
+                    if ch == 0 { break }
+                    if nl < 64 { cn.name[nl] = ch  nl = nl + 1 }
+                }
+                cn.nlen = nl
+                tp = tp + 18
+            }
+        } else if mtype == 'D' {
+            let row_i = result.count
+            if row_i < FORGE_DB_MAX_ROWS {
+                let row: &ForgeDbRow = (rows as i64 + row_i * FORGE_DB_ROW_STRIDE) as &ForgeDbRow
+                let nf = forge_db_read_i16(body, 0)
+                row.count = nf
+                let bp = 2i64
+                loop c in 0..nf {
+                    let dlen = forge_db_read_i32(body, bp)
+                    bp = bp + 4
+                    if dlen < 0 {
+                        row.cols[c].len = 0
+                    } else {
+                        let cell: &ForgeDbCell = (row.cols as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
+                        let cl = dlen
+                        if cl > FORGE_DB_COL_CAP { cl = FORGE_DB_COL_CAP }
+                        loop j in 0..cl { cell.data[j] = body[bp + j] }
+                        cell.len = cl
+                        bp = bp + dlen
+                    }
+                }
+                result.count = row_i + 1
+            }
+        } else if mtype == 'C' {
+            let tag = body[0..blen]
+            let li = 0i64
+            loop i in 0..tag.len { if tag[i] == ' ' { li = i } }
+            if li > 0 {
+                let num_str = tag[li+1..]
+                let acc = 0i64
+                loop i in 0..num_str.len {
+                    let d = num_str[i] as i64 - 48
+                    if d >= 0 and d <= 9 { acc = acc * 10 + d }
+                }
+                result.affected = acc
+            }
+        } else if mtype == 'Z' {
+            break
+        } else if mtype == 'E' {
+            break
+        }
+    }
+    ret result
+}
+
+fn forge_tx_commit(fd: i32) -> bool {
+    let ok = forge_tx_exec(fd, "COMMIT")
+    syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+    ret ok
+}
+
+fn forge_tx_rollback(fd: i32) {
+    forge_tx_exec(fd, "ROLLBACK")
+    syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+}
+
+// =============================================================================
+// Section F — Soft Delete
+// =============================================================================
+
+fn forge_soft_delete(table: []i8, id: []i8) -> bool {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "UPDATE "
+    let p2 = " SET deleted_at = NOW() WHERE id = '"
+    let p3 = "'"
+    loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
+    loop i in 0..table.len { buf[pos] = table[i]  pos = pos + 1 }
+    loop i in 0..p2.len { buf[pos] = p2[i]  pos = pos + 1 }
+    let esc_len = forge_db_escape_str(id, buf + pos)
+    pos = pos + esc_len
+    loop i in 0..p3.len { buf[pos] = p3[i]  pos = pos + 1 }
+    ret forge_db_exec(buf[0..pos])
+}
+
+fn forge_restore(table: []i8, id: []i8) -> bool {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "UPDATE "
+    let p2 = " SET deleted_at = NULL WHERE id = '"
+    let p3 = "'"
+    loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
+    loop i in 0..table.len { buf[pos] = table[i]  pos = pos + 1 }
+    loop i in 0..p2.len { buf[pos] = p2[i]  pos = pos + 1 }
+    let esc_len = forge_db_escape_str(id, buf + pos)
+    pos = pos + esc_len
+    loop i in 0..p3.len { buf[pos] = p3[i]  pos = pos + 1 }
+    ret forge_db_exec(buf[0..pos])
+}
+
+fn forge_purge(table: []i8, id: []i8) -> bool {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "DELETE FROM "
+    let p2 = " WHERE id = '"
+    let p3 = "'"
+    loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
+    loop i in 0..table.len { buf[pos] = table[i]  pos = pos + 1 }
+    loop i in 0..p2.len { buf[pos] = p2[i]  pos = pos + 1 }
+    let esc_len = forge_db_escape_str(id, buf + pos)
+    pos = pos + esc_len
+    loop i in 0..p3.len { buf[pos] = p3[i]  pos = pos + 1 }
+    ret forge_db_exec(buf[0..pos])
+}
+
+// =============================================================================
+// Section G — Serializer
+// =============================================================================
+
+fn forge_row_to_json(res: &ForgeResult, row_i: i64) -> []i8 {
+    if row_i >= res.count { ret "{}" }
+    let row: &ForgeDbRow = (res.rows as i64 + row_i * FORGE_DB_ROW_STRIDE) as &ForgeDbRow
+    let buf: &i8 = alloc_pages(2)
+    let pos = 0i64
+    buf[pos] = '{'  pos = pos + 1
+    let nc = res.col_count
+    if nc == 0 { nc = row.count }
+    loop c in 0..nc {
+        if c > 0 { buf[pos] = ','  pos = pos + 1 }
+        buf[pos] = '"'  pos = pos + 1
+        if c < res.col_count {
+            let cn: &ForgeColName = (res.col_names as i64 + c * 72) as &ForgeColName
+            loop j in 0..cn.nlen { buf[pos] = cn.name[j]  pos = pos + 1 }
+        } else {
+            let nb: &i8 = alloc_pages(1)
+            let nl = fmt_i64(nb, c)
+            loop j in 0..nl { buf[pos] = nb[j]  pos = pos + 1 }
+        }
+        buf[pos] = '"'  pos = pos + 1
+        buf[pos] = ':'  pos = pos + 1
+        buf[pos] = '"'  pos = pos + 1
+        let cell: &ForgeDbCell = (row.cols as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
+        loop j in 0..cell.len {
+            let ch = cell.data[j]
+            if ch == '"' or ch == '\\' { buf[pos] = '\\'  pos = pos + 1 }
+            buf[pos] = ch  pos = pos + 1
+        }
+        buf[pos] = '"'  pos = pos + 1
+    }
+    buf[pos] = '}'  pos = pos + 1
+    ret buf[0..pos]
+}
+
+fn forge_result_to_json(res: &ForgeResult) -> []i8 {
+    let buf: &i8 = alloc_pages(8)
+    let pos = 0i64
+    buf[pos] = '['  pos = pos + 1
+    loop r in 0..res.count {
+        if r > 0 { buf[pos] = ','  pos = pos + 1 }
+        let obj = forge_row_to_json(res, r)
+        loop i in 0..obj.len { buf[pos] = obj[i]  pos = pos + 1 }
+    }
+    buf[pos] = ']'  pos = pos + 1
+    ret buf[0..pos]
+}
+
+// =============================================================================
+// Section H — Controller Layer
+// =============================================================================
+const FORGE_CTRL_MAX_FILTERS    = 8
+const FORGE_CTRL_FILTER_NAME_CAP = 32
+
+struct ForgeFilter {
+    fn_ptr: i64
+    only:   [FORGE_CTRL_FILTER_NAME_CAP]i8
+    only_l: i64
+    used:   bool
+}
+
+struct ForgeController {
+    before: [FORGE_CTRL_MAX_FILTERS]ForgeFilter
+    after:  [FORGE_CTRL_MAX_FILTERS]ForgeFilter
+    bc:     i64
+    ac:     i64
+}
+
+fn forge_ctrl_new() -> &ForgeController {
+    let ctrl: &ForgeController = alloc_pages(1)
+    ctrl.bc = 0
+    ctrl.ac = 0
+    ret ctrl
+}
+
+fn forge_ctrl_before(ctrl: &ForgeController, fn_ptr: i64, only: []i8) {
+    let n = ctrl.bc
+    if n >= FORGE_CTRL_MAX_FILTERS { ret }
+    ctrl.before[n].fn_ptr = fn_ptr
+    let ol = only.len
+    if ol > FORGE_CTRL_FILTER_NAME_CAP { ol = FORGE_CTRL_FILTER_NAME_CAP }
+    loop i in 0..ol { ctrl.before[n].only[i] = only[i] }
+    ctrl.before[n].only_l = ol
+    ctrl.before[n].used   = true
+    ctrl.bc = n + 1
+}
+
+fn forge_ctrl_after(ctrl: &ForgeController, fn_ptr: i64, only: []i8) {
+    let n = ctrl.ac
+    if n >= FORGE_CTRL_MAX_FILTERS { ret }
+    ctrl.after[n].fn_ptr = fn_ptr
+    let ol = only.len
+    if ol > FORGE_CTRL_FILTER_NAME_CAP { ol = FORGE_CTRL_FILTER_NAME_CAP }
+    loop i in 0..ol { ctrl.after[n].only[i] = only[i] }
+    ctrl.after[n].only_l = ol
+    ctrl.after[n].used   = true
+    ctrl.ac = n + 1
+}
+
+fn forge_ctrl_dispatch(ctrl: &ForgeController, ctx: i64, action_fn: i64, action_name: []i8) {
+    loop i in 0..ctrl.bc {
+        let f = ctrl.before[i]
+        if not f.used { continue }
+        let matches = f.only_l == 0 or forge_slice_eq(f.only[0..f.only_l], action_name)
+        if matches { call_fn(f.fn_ptr, ctx) }
+        let c: &ForgeCtx = ctx
+        if c.sent { ret }
+    }
+    call_fn(action_fn, ctx)
+    loop i in 0..ctrl.ac {
+        let f = ctrl.after[i]
+        if not f.used { continue }
+        let matches = f.only_l == 0 or forge_slice_eq(f.only[0..f.only_l], action_name)
+        if matches { call_fn(f.fn_ptr, ctx) }
+    }
+}
+
+fn forge_permit_json(ctx: i64, allowed: []i8) -> []i8 {
+    let body = ctx_body(ctx)
+    let out: &i8 = alloc_pages(1)
+    let pos = 0i64
+    out[pos] = '{'  pos = pos + 1
+    let first = true
+    let i = 0i64
+    loop i < body.len {
+        if body[i] == '"' {
+            i = i + 1
+            let key_start = i
+            loop i < body.len and body[i] != '"' { i = i + 1 }
+            let key = body[key_start..i]
+            i = i + 1
+            loop i < body.len and body[i] != ':' { i = i + 1 }
+            i = i + 1
+            loop i < body.len and (body[i] == ' ' or body[i] == '\t') { i = i + 1 }
+            let val_start = i
+            let depth = 0i64
+            loop i < body.len {
+                let ch = body[i]
+                if ch == '{' or ch == '[' { depth = depth + 1 }
+                if ch == '}' or ch == ']' {
+                    if depth == 0 { break }
+                    depth = depth - 1
+                }
+                if ch == ',' and depth == 0 { break }
+                i = i + 1
+            }
+            let val = body[val_start..i]
+            let a_start = 0i64
+            let found = false
+            loop j in 0..allowed.len {
+                if allowed[j] == ',' {
+                    let seg = allowed[a_start..j]
+                    if forge_slice_eq(seg, key) { found = true  break }
+                    a_start = j + 1
+                }
+            }
+            if not found {
+                let seg = allowed[a_start..allowed.len]
+                if forge_slice_eq(seg, key) { found = true }
+            }
+            if found {
+                if not first { out[pos] = ','  pos = pos + 1 }
+                out[pos] = '"'  pos = pos + 1
+                loop j in 0..key.len { out[pos] = key[j]  pos = pos + 1 }
+                out[pos] = '"'  pos = pos + 1
+                out[pos] = ':'  pos = pos + 1
+                loop j in 0..val.len { out[pos] = val[j]  pos = pos + 1 }
+                first = false
+            }
+        } else {
+            i = i + 1
+        }
+    }
+    out[pos] = '}'  pos = pos + 1
+    ret out[0..pos]
+}
+
+fn forge_permit_form(ctx: i64, allowed: []i8, key: []i8) -> []i8 {
+    ret ctx_form(ctx, key)
+}
+
+fn ctx_format(ctx: i64) -> []i8 {
+    let accept = ctx_header(ctx, "Accept")
+    let fmt_q  = ctx_query(ctx, "format")
+    if forge_slice_eq(fmt_q, "json") { ret "json" }
+    if forge_slice_eq(fmt_q, "html") { ret "html" }
+    if forge_starts_with(accept, "application/json") { ret "json" }
+    if forge_starts_with(accept, "text/html") { ret "html" }
+    ret "html"
+}
+
+fn forge_paginate_query(q: &ForgeQuery, page: i64, per: i64) -> &ForgeResult {
+    if page < 1 { page = 1 }
+    if per  < 1 { per  = 20 }
+    q.lim = per
+    q.off = (page - 1) * per
+    ret forge_q_exec(q)
+}
+
+fn forge_page_meta_json(total: i64, page: i64, per: i64) -> []i8 {
+    let total_pages = (total + per - 1) / per
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "{\"page\":"
+    loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
+    let nb: &i8 = alloc_pages(1)
+    let nl = fmt_i64(nb, page)
+    loop i in 0..nl { buf[pos] = nb[i]  pos = pos + 1 }
+    let p2 = ",\"per\":"
+    loop i in 0..p2.len { buf[pos] = p2[i]  pos = pos + 1 }
+    nl = fmt_i64(nb, per)
+    loop i in 0..nl { buf[pos] = nb[i]  pos = pos + 1 }
+    let p3 = ",\"total\":"
+    loop i in 0..p3.len { buf[pos] = p3[i]  pos = pos + 1 }
+    nl = fmt_i64(nb, total)
+    loop i in 0..nl { buf[pos] = nb[i]  pos = pos + 1 }
+    let p4 = ",\"total_pages\":"
+    loop i in 0..p4.len { buf[pos] = p4[i]  pos = pos + 1 }
+    nl = fmt_i64(nb, total_pages)
+    loop i in 0..nl { buf[pos] = nb[i]  pos = pos + 1 }
+    buf[pos] = '}'  pos = pos + 1
+    ret buf[0..pos]
+}
+
+// =============================================================================
+// Section I — View Helpers
+// =============================================================================
+
+fn forge_html_escape(src: []i8, dst: &i8) -> i64 {
+    let pos = 0i64
+    loop i in 0..src.len {
+        let c = src[i]
+        if c == '&' {
+            let s = "&amp;"
+            loop j in 0..s.len { dst[pos] = s[j]  pos = pos + 1 }
+        } else if c == '<' {
+            let s = "&lt;"
+            loop j in 0..s.len { dst[pos] = s[j]  pos = pos + 1 }
+        } else if c == '>' {
+            let s = "&gt;"
+            loop j in 0..s.len { dst[pos] = s[j]  pos = pos + 1 }
+        } else if c == '"' {
+            let s = "&quot;"
+            loop j in 0..s.len { dst[pos] = s[j]  pos = pos + 1 }
+        } else if c == '\'' {
+            let s = "&#39;"
+            loop j in 0..s.len { dst[pos] = s[j]  pos = pos + 1 }
+        } else {
+            dst[pos] = c  pos = pos + 1
+        }
+    }
+    ret pos
+}
+
+fn forge_link_to(text: []i8, url: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "<a href=\""
+    let p2 = "\">"
+    let p3 = "</a>"
+    loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
+    loop i in 0..url.len  { buf[pos] = url[i]   pos = pos + 1 }
+    loop i in 0..p2.len { buf[pos] = p2[i]  pos = pos + 1 }
+    loop i in 0..text.len { buf[pos] = text[i]  pos = pos + 1 }
+    loop i in 0..p3.len { buf[pos] = p3[i]  pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn forge_link_to_delete(text: []i8, url: []i8, csrf: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "<form action=\""
+    let p2 = "\" method=\"post\"><input type=\"hidden\" name=\"_method\" value=\"DELETE\"><input type=\"hidden\" name=\"_csrf\" value=\""
+    let p3 = "\"><button type=\"submit\">"
+    let p4 = "</button></form>"
+    loop i in 0..p1.len  { buf[pos] = p1[i]   pos = pos + 1 }
+    loop i in 0..url.len  { buf[pos] = url[i]   pos = pos + 1 }
+    loop i in 0..p2.len  { buf[pos] = p2[i]   pos = pos + 1 }
+    loop i in 0..csrf.len { buf[pos] = csrf[i]  pos = pos + 1 }
+    loop i in 0..p3.len  { buf[pos] = p3[i]   pos = pos + 1 }
+    loop i in 0..text.len { buf[pos] = text[i]  pos = pos + 1 }
+    loop i in 0..p4.len  { buf[pos] = p4[i]   pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn forge_button_to(text: []i8, url: []i8, method: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "<form action=\""
+    let p2 = "\" method=\"post\"><input type=\"hidden\" name=\"_method\" value=\""
+    let p3 = "\"><button type=\"submit\">"
+    let p4 = "</button></form>"
+    loop i in 0..p1.len     { buf[pos] = p1[i]      pos = pos + 1 }
+    loop i in 0..url.len     { buf[pos] = url[i]      pos = pos + 1 }
+    loop i in 0..p2.len     { buf[pos] = p2[i]      pos = pos + 1 }
+    loop i in 0..method.len  { buf[pos] = method[i]   pos = pos + 1 }
+    loop i in 0..p3.len     { buf[pos] = p3[i]      pos = pos + 1 }
+    loop i in 0..text.len   { buf[pos] = text[i]    pos = pos + 1 }
+    loop i in 0..p4.len     { buf[pos] = p4[i]      pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn forge_form_tag_open(action: []i8, method: []i8, csrf_token: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "<form action=\""
+    let p2 = "\" method=\""
+    let p3 = "\"><input type=\"hidden\" name=\"_csrf\" value=\""
+    let p4 = "\">"
+    loop i in 0..p1.len       { buf[pos] = p1[i]         pos = pos + 1 }
+    loop i in 0..action.len    { buf[pos] = action[i]      pos = pos + 1 }
+    loop i in 0..p2.len       { buf[pos] = p2[i]         pos = pos + 1 }
+    loop i in 0..method.len    { buf[pos] = method[i]      pos = pos + 1 }
+    loop i in 0..p3.len       { buf[pos] = p3[i]         pos = pos + 1 }
+    loop i in 0..csrf_token.len { buf[pos] = csrf_token[i]  pos = pos + 1 }
+    loop i in 0..p4.len       { buf[pos] = p4[i]         pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn forge_form_tag_close() -> []i8 {
+    ret "</form>"
+}
+
+fn forge_input_tag(type_s: []i8, name: []i8, value: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "<input type=\""
+    let p2 = "\" name=\""
+    let p3 = "\" value=\""
+    let p4 = "\">"
+    loop i in 0..p1.len    { buf[pos] = p1[i]    pos = pos + 1 }
+    loop i in 0..type_s.len { buf[pos] = type_s[i]  pos = pos + 1 }
+    loop i in 0..p2.len    { buf[pos] = p2[i]    pos = pos + 1 }
+    loop i in 0..name.len   { buf[pos] = name[i]   pos = pos + 1 }
+    loop i in 0..p3.len    { buf[pos] = p3[i]    pos = pos + 1 }
+    loop i in 0..value.len  { buf[pos] = value[i]  pos = pos + 1 }
+    loop i in 0..p4.len    { buf[pos] = p4[i]    pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn forge_label_tag(for_s: []i8, text: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "<label for=\""
+    let p2 = "\">"
+    let p3 = "</label>"
+    loop i in 0..p1.len  { buf[pos] = p1[i]   pos = pos + 1 }
+    loop i in 0..for_s.len { buf[pos] = for_s[i]  pos = pos + 1 }
+    loop i in 0..p2.len  { buf[pos] = p2[i]   pos = pos + 1 }
+    loop i in 0..text.len { buf[pos] = text[i]  pos = pos + 1 }
+    loop i in 0..p3.len  { buf[pos] = p3[i]   pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn forge_submit_tag(text: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "<input type=\"submit\" value=\""
+    let p2 = "\">"
+    loop i in 0..p1.len  { buf[pos] = p1[i]   pos = pos + 1 }
+    loop i in 0..text.len { buf[pos] = text[i]  pos = pos + 1 }
+    loop i in 0..p2.len  { buf[pos] = p2[i]   pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn forge_textarea_tag(name: []i8, value: []i8, rows: i64, cols: i64) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "<textarea name=\""
+    let p2 = "\" rows=\""
+    let p3 = "\" cols=\""
+    let p4 = "\">"
+    let p5 = "</textarea>"
+    loop i in 0..p1.len  { buf[pos] = p1[i]   pos = pos + 1 }
+    loop i in 0..name.len { buf[pos] = name[i]  pos = pos + 1 }
+    loop i in 0..p2.len  { buf[pos] = p2[i]   pos = pos + 1 }
+    let nb: &i8 = alloc_pages(1)
+    let nl = fmt_i64(nb, rows)
+    loop i in 0..nl { buf[pos] = nb[i]  pos = pos + 1 }
+    loop i in 0..p3.len { buf[pos] = p3[i]  pos = pos + 1 }
+    nl = fmt_i64(nb, cols)
+    loop i in 0..nl { buf[pos] = nb[i]  pos = pos + 1 }
+    loop i in 0..p4.len   { buf[pos] = p4[i]   pos = pos + 1 }
+    loop i in 0..value.len { buf[pos] = value[i]  pos = pos + 1 }
+    loop i in 0..p5.len   { buf[pos] = p5[i]   pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn forge_select_tag(name: []i8, options: []i8, selected: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(2)
+    let pos = 0i64
+    let p1 = "<select name=\""
+    let p2 = "\">"
+    let p3 = "</select>"
+    loop i in 0..p1.len  { buf[pos] = p1[i]   pos = pos + 1 }
+    loop i in 0..name.len { buf[pos] = name[i]  pos = pos + 1 }
+    loop i in 0..p2.len  { buf[pos] = p2[i]   pos = pos + 1 }
+    let start = 0i64
+    loop i in 0..options.len {
+        if options[i] == ',' or i == options.len - 1 {
+            let end = i
+            if i == options.len - 1 and options[i] != ',' { end = i + 1 }
+            let seg = options[start..end]
+            let colon_pos = -1i64
+            loop j in 0..seg.len { if seg[j] == ':' { colon_pos = j  break } }
+            let opt_p1 = "<option value=\""
+            loop j in 0..opt_p1.len { buf[pos] = opt_p1[j]  pos = pos + 1 }
+            if colon_pos >= 0 {
+                let val_s = seg[0..colon_pos]
+                let lbl_s = seg[colon_pos+1..seg.len]
+                loop j in 0..val_s.len { buf[pos] = val_s[j]  pos = pos + 1 }
+                buf[pos] = '"'  pos = pos + 1
+                if forge_slice_eq(val_s, selected) {
+                    let sel_s = " selected"
+                    loop j in 0..sel_s.len { buf[pos] = sel_s[j]  pos = pos + 1 }
+                }
+                buf[pos] = '>'  pos = pos + 1
+                loop j in 0..lbl_s.len { buf[pos] = lbl_s[j]  pos = pos + 1 }
+            } else {
+                loop j in 0..seg.len { buf[pos] = seg[j]  pos = pos + 1 }
+                buf[pos] = '"'  pos = pos + 1
+                if forge_slice_eq(seg, selected) {
+                    let sel_s = " selected"
+                    loop j in 0..sel_s.len { buf[pos] = sel_s[j]  pos = pos + 1 }
+                }
+                buf[pos] = '>'  pos = pos + 1
+                loop j in 0..seg.len { buf[pos] = seg[j]  pos = pos + 1 }
+            }
+            let opt_p2 = "</option>"
+            loop j in 0..opt_p2.len { buf[pos] = opt_p2[j]  pos = pos + 1 }
+            start = i + 1
+        }
+    }
+    loop i in 0..p3.len { buf[pos] = p3[i]  pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn forge_path(resource: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    buf[pos] = '/'  pos = pos + 1
+    loop i in 0..resource.len { buf[pos] = resource[i]  pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn forge_path_id(resource: []i8, id: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    buf[pos] = '/'  pos = pos + 1
+    loop i in 0..resource.len { buf[pos] = resource[i]  pos = pos + 1 }
+    buf[pos] = '/'  pos = pos + 1
+    loop i in 0..id.len { buf[pos] = id[i]  pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn forge_path_new(resource: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    buf[pos] = '/'  pos = pos + 1
+    loop i in 0..resource.len { buf[pos] = resource[i]  pos = pos + 1 }
+    let suf = "/new"
+    loop i in 0..suf.len { buf[pos] = suf[i]  pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn forge_path_edit(resource: []i8, id: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    buf[pos] = '/'  pos = pos + 1
+    loop i in 0..resource.len { buf[pos] = resource[i]  pos = pos + 1 }
+    buf[pos] = '/'  pos = pos + 1
+    loop i in 0..id.len { buf[pos] = id[i]  pos = pos + 1 }
+    let suf = "/edit"
+    loop i in 0..suf.len { buf[pos] = suf[i]  pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn forge_truncate(s: []i8, max: i64) -> []i8 {
+    if s.len <= max { ret s }
+    let buf: &i8 = alloc_pages(1)
+    let cut = max - 3
+    if cut < 0 { cut = 0 }
+    loop i in 0..cut { buf[i] = s[i] }
+    let dots = "..."
+    loop i in 0..dots.len { buf[cut + i] = dots[i] }
+    ret buf[0..cut + 3]
+}
+
+fn forge_pluralize(count: i64, singular: []i8, plural: []i8) -> []i8 {
+    if count == 1 { ret singular }
+    ret plural
+}
+
+fn forge_content_for(ctx: i64, key: []i8, content: []i8) {
+    let kb: &i8 = alloc_pages(1)
+    let kp = 0i64
+    let pfx = "_cf_"
+    loop i in 0..pfx.len { kb[kp] = pfx[i]  kp = kp + 1 }
+    loop i in 0..key.len  { kb[kp] = key[i]   kp = kp + 1 }
+    ctx_set(ctx, kb[0..kp], content as i64)
+}
+
+fn forge_yield_content(ctx: i64, key: []i8) -> []i8 {
+    let kb: &i8 = alloc_pages(1)
+    let kp = 0i64
+    let pfx = "_cf_"
+    loop i in 0..pfx.len { kb[kp] = pfx[i]  kp = kp + 1 }
+    loop i in 0..key.len  { kb[kp] = key[i]   kp = kp + 1 }
+    let val = ctx_get(ctx, kb[0..kp])
+    if val == 0 { ret "" }
+    ret val as []i8
+}
+
+// Template registry
+const FORGE_TMPL_MAX      = 32
+const FORGE_TMPL_NAME_CAP = 32
+
+struct ForgeTmplEntry {
+    name:  [FORGE_TMPL_NAME_CAP]i8
+    nlen:  i64
+    tmpl:  []i8
+    used:  bool
+}
+
+let g_forge_tmpl_store: &ForgeTmplEntry = 0
+let g_forge_tmpl_count: i64 = 0
+
+fn forge_tmpl_init() {
+    if g_forge_tmpl_store != 0 { ret }
+    g_forge_tmpl_store = alloc_pages(4) as &ForgeTmplEntry
+}
+
+fn forge_template_register(name: []i8, tmpl: []i8) {
+    forge_tmpl_init()
+    let stride = 50i64   // 32 + 8 + 8 + 1 + 1 pad
+    let n = g_forge_tmpl_count
+    if n >= FORGE_TMPL_MAX { ret }
+    let entry: &ForgeTmplEntry = (g_forge_tmpl_store as i64 + n * stride) as &ForgeTmplEntry
+    let nl = name.len
+    if nl > FORGE_TMPL_NAME_CAP { nl = FORGE_TMPL_NAME_CAP }
+    loop i in 0..nl { entry.name[i] = name[i] }
+    entry.nlen = nl
+    entry.tmpl = tmpl
+    entry.used = true
+    g_forge_tmpl_count = n + 1
+}
+
+fn forge_partial(name: []i8, vars: &i64) -> []i8 {
+    forge_tmpl_init()
+    let stride = 50i64
+    loop i in 0..g_forge_tmpl_count {
+        let entry: &ForgeTmplEntry = (g_forge_tmpl_store as i64 + i * stride) as &ForgeTmplEntry
+        if not entry.used { continue }
+        if forge_slice_eq(entry.name[0..entry.nlen], name) {
+            ret erb_render(entry.tmpl, vars)
+        }
+    }
+    ret ""
+}
+
+// =============================================================================
+// Section J — Testing Framework
+// =============================================================================
+const FORGE_MAX_TESTS      = 128
+const FORGE_TEST_NAME_CAP  = 64
+
+struct ForgeTestCase {
+    name:   [FORGE_TEST_NAME_CAP]i8
+    nlen:   i64
+    fn_ptr: i64
+    used:   bool
+}
+
+let g_forge_tests:      &ForgeTestCase = 0
+let g_forge_test_count: i64            = 0
+let g_forge_test_fails: i64            = 0
+
+fn forge_test_init() {
+    if g_forge_tests != 0 { ret }
+    g_forge_tests = alloc_pages(8) as &ForgeTestCase
+}
+
+fn forge_test(name: []i8, fn_ptr: i64) {
+    forge_test_init()
+    let stride = 82i64   // 64 + 8 + 8 + 1 + 1 pad
+    let n = g_forge_test_count
+    if n >= FORGE_MAX_TESTS { ret }
+    let tc: &ForgeTestCase = (g_forge_tests as i64 + n * stride) as &ForgeTestCase
+    let nl = name.len
+    if nl > FORGE_TEST_NAME_CAP { nl = FORGE_TEST_NAME_CAP }
+    loop i in 0..nl { tc.name[i] = name[i] }
+    tc.nlen   = nl
+    tc.fn_ptr = fn_ptr
+    tc.used   = true
+    g_forge_test_count = n + 1
+}
+
+fn forge_test_run() {
+    forge_test_init()
+    let stride = 82i64
+    let pass_count = 0i64
+    let fail_count = 0i64
+    loop i in 0..g_forge_test_count {
+        let tc: &ForgeTestCase = (g_forge_tests as i64 + i * stride) as &ForgeTestCase
+        if not tc.used { continue }
+        g_forge_test_fails = 0
+        call_fn(tc.fn_ptr, 0)
+        let ok = g_forge_test_fails == 0
+        let buf: &i8 = alloc_pages(1)
+        let pos = 0i64
+        if ok {
+            let p = "PASS "
+            loop j in 0..p.len { buf[pos] = p[j]  pos = pos + 1 }
+            pass_count = pass_count + 1
+        } else {
+            let p = "FAIL "
+            loop j in 0..p.len { buf[pos] = p[j]  pos = pos + 1 }
+            fail_count = fail_count + 1
+        }
+        loop j in 0..tc.nlen { buf[pos] = tc.name[j]  pos = pos + 1 }
+        buf[pos] = '\n'  pos = pos + 1
+        syscall(FORGE_SYS_WRITE, 1, buf, pos, 0, 0, 0)
+    }
+    let sum_buf: &i8 = alloc_pages(1)
+    let sp = 0i64
+    let s1 = "\n--- "
+    loop i in 0..s1.len { sum_buf[sp] = s1[i]  sp = sp + 1 }
+    let nb: &i8 = alloc_pages(1)
+    let nl = fmt_i64(nb, pass_count)
+    loop i in 0..nl { sum_buf[sp] = nb[i]  sp = sp + 1 }
+    let s2 = " passed, "
+    loop i in 0..s2.len { sum_buf[sp] = s2[i]  sp = sp + 1 }
+    nl = fmt_i64(nb, fail_count)
+    loop i in 0..nl { sum_buf[sp] = nb[i]  sp = sp + 1 }
+    let s3 = " failed ---\n"
+    loop i in 0..s3.len { sum_buf[sp] = s3[i]  sp = sp + 1 }
+    syscall(FORGE_SYS_WRITE, 1, sum_buf, sp, 0, 0, 0)
+    if fail_count > 0 {
+        syscall(231, 1, 0, 0, 0, 0, 0)   // exit_group(1)
+    }
+}
+
+fn forge_test_request(method: []i8, path: []i8, body: []i8) -> &ForgeTestResponse {
+    g_forge_test_mode = true
+    g_forge_test_cap_status   = 0
+    g_forge_test_cap_body_ptr = 0
+    g_forge_test_cap_body_len = 0
+    let ctx_raw: &i8 = alloc_pages(4)
+    let ctx_ptr = ctx_raw as i64
+    let c: &ForgeCtx = ctx_ptr
+    c.fd          = -1
+    c.param_count = 0
+    c.out_hcount  = 0
+    c.store_count = 0
+    c.sent        = false
+    c.is_ws       = false
+    // Extract query string from path
+    let path_only = path
+    let query_s   = ""
+    loop i in 0..path.len {
+        if path[i] == '?' {
+            path_only = path[0..i]
+            query_s   = path[i+1..path.len]
+            break
+        }
+    }
+    c.req.method = method
+    c.req.path   = path_only
+    c.req.query  = query_s
+    c.req.body   = body
+    if g_forge_app != 0 {
+        let app: &ForgeApp = g_forge_app
+        forge_dispatch(app, ctx_ptr)
+    }
+    let resp: &ForgeTestResponse = alloc_pages(1)
+    resp.status = g_forge_test_cap_status
+    if g_forge_test_cap_body_ptr != 0 {
+        let bp: &i8 = g_forge_test_cap_body_ptr as &i8
+        resp.body = bp[0..g_forge_test_cap_body_len]
+    } else {
+        resp.body = ""
+    }
+    g_forge_test_mode = false
+    ret resp
+}
+
+fn forge_test_get(path: []i8) -> &ForgeTestResponse {
+    ret forge_test_request("GET", path, "")
+}
+
+fn forge_test_post(path: []i8, body: []i8) -> &ForgeTestResponse {
+    ret forge_test_request("POST", path, body)
+}
+
+fn forge_test_put(path: []i8, body: []i8) -> &ForgeTestResponse {
+    ret forge_test_request("PUT", path, body)
+}
+
+fn forge_test_delete(path: []i8) -> &ForgeTestResponse {
+    ret forge_test_request("DELETE", path, "")
+}
+
+fn forge_assert(cond: bool, msg: []i8) -> bool {
+    if not cond {
+        let p = "  ASSERT FAILED: "
+        let buf: &i8 = alloc_pages(1)
+        let pos = 0i64
+        loop i in 0..p.len   { buf[pos] = p[i]    pos = pos + 1 }
+        loop i in 0..msg.len { buf[pos] = msg[i]   pos = pos + 1 }
+        buf[pos] = '\n'  pos = pos + 1
+        syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+        g_forge_test_fails = g_forge_test_fails + 1
+        ret false
+    }
+    ret true
+}
+
+fn forge_assert_eq(a: []i8, b: []i8, msg: []i8) -> bool {
+    if not forge_slice_eq(a, b) {
+        let p = "  ASSERT EQ FAILED: "
+        let buf: &i8 = alloc_pages(1)
+        let pos = 0i64
+        loop i in 0..p.len   { buf[pos] = p[i]    pos = pos + 1 }
+        loop i in 0..msg.len { buf[pos] = msg[i]   pos = pos + 1 }
+        buf[pos] = '\n'  pos = pos + 1
+        syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+        g_forge_test_fails = g_forge_test_fails + 1
+        ret false
+    }
+    ret true
+}
+
+fn forge_assert_status(res: &ForgeTestResponse, expected: i32) -> bool {
+    if res.status != expected {
+        let buf: &i8 = alloc_pages(1)
+        let pos = 0i64
+        let p1 = "  ASSERT STATUS FAILED: expected "
+        loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
+        let nb: &i8 = alloc_pages(1)
+        let nl = fmt_i64(nb, expected as i64)
+        loop i in 0..nl { buf[pos] = nb[i]  pos = pos + 1 }
+        let p2 = " got "
+        loop i in 0..p2.len { buf[pos] = p2[i]  pos = pos + 1 }
+        nl = fmt_i64(nb, res.status as i64)
+        loop i in 0..nl { buf[pos] = nb[i]  pos = pos + 1 }
+        buf[pos] = '\n'  pos = pos + 1
+        syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+        g_forge_test_fails = g_forge_test_fails + 1
+        ret false
+    }
+    ret true
+}
+
+fn forge_assert_body_has(res: &ForgeTestResponse, substr: []i8) -> bool {
+    let body = res.body
+    if substr.len == 0 { ret true }
+    loop i in 0..body.len {
+        if i + substr.len > body.len { break }
+        let match = true
+        loop j in 0..substr.len {
+            if body[i + j] != substr[j] { match = false  break }
+        }
+        if match { ret true }
+    }
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "  ASSERT BODY HAS FAILED: substring not found: "
+    loop i in 0..p1.len    { buf[pos] = p1[i]     pos = pos + 1 }
+    loop i in 0..substr.len { buf[pos] = substr[i]  pos = pos + 1 }
+    buf[pos] = '\n'  pos = pos + 1
+    syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+    g_forge_test_fails = g_forge_test_fails + 1
+    ret false
+}
+
+fn forge_assert_body_eq(res: &ForgeTestResponse, expected: []i8) -> bool {
+    if not forge_slice_eq(res.body, expected) {
+        let buf: &i8 = alloc_pages(1)
+        let pos = 0i64
+        let p1 = "  ASSERT BODY EQ FAILED\n"
+        loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
+        syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+        g_forge_test_fails = g_forge_test_fails + 1
+        ret false
+    }
+    ret true
+}
+
+fn forge_assert_redirect(res: &ForgeTestResponse) -> bool {
+    if res.status != 301 and res.status != 302 {
+        let buf: &i8 = alloc_pages(1)
+        let pos = 0i64
+        let p1 = "  ASSERT REDIRECT FAILED: status "
+        loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
+        let nb: &i8 = alloc_pages(1)
+        let nl = fmt_i64(nb, res.status as i64)
+        loop i in 0..nl { buf[pos] = nb[i]  pos = pos + 1 }
+        buf[pos] = '\n'  pos = pos + 1
+        syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+        g_forge_test_fails = g_forge_test_fails + 1
+        ret false
+    }
+    ret true
+}
+
+fn forge_test_db_truncate(table: []i8) {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "TRUNCATE TABLE "
+    let p2 = " RESTART IDENTITY CASCADE"
+    loop i in 0..p1.len    { buf[pos] = p1[i]    pos = pos + 1 }
+    loop i in 0..table.len  { buf[pos] = table[i]  pos = pos + 1 }
+    loop i in 0..p2.len    { buf[pos] = p2[i]    pos = pos + 1 }
+    forge_db_exec(buf[0..pos])
+}
+
+fn forge_test_db_count(table: []i8) -> i64 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "SELECT COUNT(*) FROM "
+    loop i in 0..p1.len    { buf[pos] = p1[i]    pos = pos + 1 }
+    loop i in 0..table.len  { buf[pos] = table[i]  pos = pos + 1 }
+    let res = forge_db_query(buf[0..pos])
+    if res.count == 0 { ret 0 }
+    let val = forge_row_col(res, 0, 0)
+    let acc = 0i64
+    loop i in 0..val.len {
+        let d = val[i] as i64 - 48
+        if d >= 0 and d <= 9 { acc = acc * 10 + d }
+    }
+    ret acc
+}
+
+// =============================================================================
+// Section K — Environment & Config
+// =============================================================================
+const FORGE_ENV_MAX  = 64
+const FORGE_ENV_KCAP = 64
+const FORGE_ENV_VCAP = 256
+
+struct ForgeEnvEntry {
+    key:  [64]i8
+    klen: i64
+    val:  [256]i8
+    vlen: i64
+    used: bool
+}
+
+let g_forge_env_store: &ForgeEnvEntry = 0
+let g_forge_env_count: i64            = 0
+
+const FORGE_LOG_DEBUG = 0
+const FORGE_LOG_INFO  = 1
+const FORGE_LOG_WARN  = 2
+const FORGE_LOG_ERROR = 3
+
+let g_forge_log_level: i64 = 1
+
+fn forge_env_init() {
+    if g_forge_env_store != 0 { ret }
+    g_forge_env_store = alloc_pages(4) as &ForgeEnvEntry
+}
+
+fn forge_env_get(name: []i8) -> []i8 {
+    forge_env_init()
+    let stride = 337i64   // 64+8+256+8+1
+    loop i in 0..g_forge_env_count {
+        let e: &ForgeEnvEntry = (g_forge_env_store as i64 + i * stride) as &ForgeEnvEntry
+        if not e.used { continue }
+        if forge_slice_eq(e.key[0..e.klen], name) {
+            ret e.val[0..e.vlen]
+        }
+    }
+    // Search /proc/self/environ
+    let env_buf: &i8 = alloc_pages(16)
+    let path_buf = [32]i8
+    let ps = "/proc/self/environ"
+    loop i in 0..ps.len { path_buf[i] = ps[i] }
+    path_buf[ps.len] = 0
+    let nread = fs_read_file(path_buf, env_buf, 65536)
+    if nread <= 0 { ret "" }
+    let i = 0i64
+    loop i < nread {
+        // Each entry is KEY=VALUE\0
+        let kstart = i
+        loop i < nread and env_buf[i] != '=' and env_buf[i] != 0 { i = i + 1 }
+        let kend = i
+        let key_s = env_buf[kstart..kend]
+        if env_buf[i] == '=' {
+            i = i + 1
+            let vstart = i
+            loop i < nread and env_buf[i] != 0 { i = i + 1 }
+            let vend = i
+            if forge_slice_eq(key_s, name) {
+                ret env_buf[vstart..vend]
+            }
+        }
+        i = i + 1  // skip null terminator
+    }
+    ret ""
+}
+
+fn forge_env() -> []i8 {
+    let v = forge_env_get("FORGE_ENV")
+    if v.len == 0 { ret "development" }
+    ret v
+}
+
+fn forge_env_is(env: []i8) -> bool {
+    ret forge_slice_eq(forge_env(), env)
+}
+
+fn forge_dotenv_load(path: []i8) {
+    forge_env_init()
+    let path_buf = [512]i8
+    let pl = path.len
+    if pl > 511 { pl = 511 }
+    loop i in 0..pl { path_buf[i] = path[i] }
+    path_buf[pl] = 0
+    let file_buf: &i8 = alloc_pages(8)
+    let nread = fs_read_file(path_buf, file_buf, 32768)
+    if nread <= 0 { ret }
+    let stride = 337i64
+    let i = 0i64
+    loop i < nread {
+        // Skip blank lines and comments
+        if file_buf[i] == '\n' or file_buf[i] == '\r' { i = i + 1  continue }
+        if file_buf[i] == '#' {
+            loop i < nread and file_buf[i] != '\n' { i = i + 1 }
+            continue
+        }
+        let kstart = i
+        loop i < nread and file_buf[i] != '=' and file_buf[i] != '\n' { i = i + 1 }
+        let kend = i
+        let key_s = file_buf[kstart..kend]
+        if file_buf[i] != '=' { continue }
+        i = i + 1
+        let vstart = i
+        loop i < nread and file_buf[i] != '\n' and file_buf[i] != '\r' { i = i + 1 }
+        let vend = i
+        let val_s = file_buf[vstart..vend]
+        // Check if key already in env store
+        let already = false
+        loop j in 0..g_forge_env_count {
+            let e2: &ForgeEnvEntry = (g_forge_env_store as i64 + j * stride) as &ForgeEnvEntry
+            if e2.used and forge_slice_eq(e2.key[0..e2.klen], key_s) {
+                already = true
+                break
+            }
+        }
+        if not already {
+            let cn = g_forge_env_count
+            if cn < FORGE_ENV_MAX {
+                let ne: &ForgeEnvEntry = (g_forge_env_store as i64 + cn * stride) as &ForgeEnvEntry
+                let kl = key_s.len
+                if kl > FORGE_ENV_KCAP { kl = FORGE_ENV_KCAP }
+                loop j in 0..kl { ne.key[j] = key_s[j] }
+                ne.klen = kl
+                let vl = val_s.len
+                if vl > FORGE_ENV_VCAP { vl = FORGE_ENV_VCAP }
+                loop j in 0..vl { ne.val[j] = val_s[j] }
+                ne.vlen = vl
+                ne.used = true
+                g_forge_env_count = cn + 1
+            }
+        }
+        i = i + 1
+    }
+}
+
+fn forge_log_level_set(level: i64) {
+    g_forge_log_level = level
+}
+
+fn forge_log_write(level: i64, prefix: []i8, msg: []i8) {
+    if level < g_forge_log_level { ret }
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    buf[pos] = '['  pos = pos + 1
+    loop i in 0..prefix.len { buf[pos] = prefix[i]  pos = pos + 1 }
+    buf[pos] = ']'  pos = pos + 1
+    buf[pos] = ' '  pos = pos + 1
+    loop i in 0..msg.len { buf[pos] = msg[i]  pos = pos + 1 }
+    buf[pos] = '\n'  pos = pos + 1
+    syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+}
+
+fn forge_log_debug(msg: []i8) { forge_log_write(FORGE_LOG_DEBUG, "DEBUG", msg) }
+fn forge_log_info (msg: []i8) { forge_log_write(FORGE_LOG_INFO,  "INFO",  msg) }
+fn forge_log_warn (msg: []i8) { forge_log_write(FORGE_LOG_WARN,  "WARN",  msg) }
+fn forge_log_error(msg: []i8) { forge_log_write(FORGE_LOG_ERROR, "ERROR", msg) }
+
+// =============================================================================
+// Section L — Concerns
+// =============================================================================
+
+fn forge_timestamps_create(table: []i8, id: []i8) -> bool {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "UPDATE "
+    let p2 = " SET created_at = NOW(), updated_at = NOW() WHERE id = '"
+    let p3 = "'"
+    loop i in 0..p1.len    { buf[pos] = p1[i]    pos = pos + 1 }
+    loop i in 0..table.len  { buf[pos] = table[i]  pos = pos + 1 }
+    loop i in 0..p2.len    { buf[pos] = p2[i]    pos = pos + 1 }
+    let el = forge_db_escape_str(id, buf + pos)
+    pos = pos + el
+    loop i in 0..p3.len    { buf[pos] = p3[i]    pos = pos + 1 }
+    ret forge_db_exec(buf[0..pos])
+}
+
+fn forge_timestamps_update(table: []i8, id: []i8) -> bool {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "UPDATE "
+    let p2 = " SET updated_at = NOW() WHERE id = '"
+    let p3 = "'"
+    loop i in 0..p1.len    { buf[pos] = p1[i]    pos = pos + 1 }
+    loop i in 0..table.len  { buf[pos] = table[i]  pos = pos + 1 }
+    loop i in 0..p2.len    { buf[pos] = p2[i]    pos = pos + 1 }
+    let el = forge_db_escape_str(id, buf + pos)
+    pos = pos + el
+    loop i in 0..p3.len    { buf[pos] = p3[i]    pos = pos + 1 }
+    ret forge_db_exec(buf[0..pos])
+}
+
+fn forge_tags_schema() -> []i8 {
+    ret "CREATE TABLE IF NOT EXISTS forge_tags (id BIGSERIAL PRIMARY KEY, model VARCHAR(64) NOT NULL, record_id VARCHAR(64) NOT NULL, tag VARCHAR(128) NOT NULL, created_at TIMESTAMP DEFAULT NOW())"
+}
+
+fn forge_tags_add(model: []i8, record_id: []i8, tag: []i8) -> bool {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "INSERT INTO forge_tags (model, record_id, tag) VALUES ('"
+    let p2 = "', '"
+    let p3 = "', '"
+    let p4 = "')"
+    loop i in 0..p1.len      { buf[pos] = p1[i]       pos = pos + 1 }
+    let el = forge_db_escape_str(model, buf + pos)     pos = pos + el
+    loop i in 0..p2.len      { buf[pos] = p2[i]       pos = pos + 1 }
+    el = forge_db_escape_str(record_id, buf + pos)     pos = pos + el
+    loop i in 0..p3.len      { buf[pos] = p3[i]       pos = pos + 1 }
+    el = forge_db_escape_str(tag, buf + pos)           pos = pos + el
+    loop i in 0..p4.len      { buf[pos] = p4[i]       pos = pos + 1 }
+    ret forge_db_exec(buf[0..pos])
+}
+
+fn forge_tags_remove(model: []i8, record_id: []i8, tag: []i8) -> bool {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "DELETE FROM forge_tags WHERE model = '"
+    let p2 = "' AND record_id = '"
+    let p3 = "' AND tag = '"
+    let p4 = "'"
+    loop i in 0..p1.len      { buf[pos] = p1[i]       pos = pos + 1 }
+    let el = forge_db_escape_str(model, buf + pos)     pos = pos + el
+    loop i in 0..p2.len      { buf[pos] = p2[i]       pos = pos + 1 }
+    el = forge_db_escape_str(record_id, buf + pos)     pos = pos + el
+    loop i in 0..p3.len      { buf[pos] = p3[i]       pos = pos + 1 }
+    el = forge_db_escape_str(tag, buf + pos)           pos = pos + el
+    loop i in 0..p4.len      { buf[pos] = p4[i]       pos = pos + 1 }
+    ret forge_db_exec(buf[0..pos])
+}
+
+fn forge_tags_for(model: []i8, record_id: []i8) -> &ForgeResult {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "SELECT tag FROM forge_tags WHERE model = '"
+    let p2 = "' AND record_id = '"
+    let p3 = "'"
+    loop i in 0..p1.len      { buf[pos] = p1[i]       pos = pos + 1 }
+    let el = forge_db_escape_str(model, buf + pos)     pos = pos + el
+    loop i in 0..p2.len      { buf[pos] = p2[i]       pos = pos + 1 }
+    el = forge_db_escape_str(record_id, buf + pos)     pos = pos + el
+    loop i in 0..p3.len      { buf[pos] = p3[i]       pos = pos + 1 }
+    ret forge_db_query(buf[0..pos])
+}
+
+fn forge_tags_find(model: []i8, tag: []i8) -> &ForgeResult {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "SELECT record_id FROM forge_tags WHERE model = '"
+    let p2 = "' AND tag = '"
+    let p3 = "'"
+    loop i in 0..p1.len      { buf[pos] = p1[i]       pos = pos + 1 }
+    let el = forge_db_escape_str(model, buf + pos)     pos = pos + el
+    loop i in 0..p2.len      { buf[pos] = p2[i]       pos = pos + 1 }
+    el = forge_db_escape_str(tag, buf + pos)           pos = pos + el
+    loop i in 0..p3.len      { buf[pos] = p3[i]       pos = pos + 1 }
+    ret forge_db_query(buf[0..pos])
+}
+
+fn forge_audit_schema() -> []i8 {
+    ret "CREATE TABLE IF NOT EXISTS forge_audit_log (id BIGSERIAL PRIMARY KEY, model VARCHAR(64), action VARCHAR(32), record_id VARCHAR(64), user_id VARCHAR(64), created_at TIMESTAMP DEFAULT NOW())"
+}
+
+fn forge_audit_log(ctx: i64, model: []i8, action: []i8, record_id: []i8) {
+    let user_id = ctx_session_get(ctx, "user_id")
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "INSERT INTO forge_audit_log (model, action, record_id, user_id, created_at) VALUES ('"
+    let p2 = "', '"
+    let p3 = "', '"
+    let p4 = "', '"
+    let p5 = "', NOW())"
+    loop i in 0..p1.len      { buf[pos] = p1[i]       pos = pos + 1 }
+    let el = forge_db_escape_str(model, buf + pos)     pos = pos + el
+    loop i in 0..p2.len      { buf[pos] = p2[i]       pos = pos + 1 }
+    el = forge_db_escape_str(action, buf + pos)        pos = pos + el
+    loop i in 0..p3.len      { buf[pos] = p3[i]       pos = pos + 1 }
+    el = forge_db_escape_str(record_id, buf + pos)     pos = pos + el
+    loop i in 0..p4.len      { buf[pos] = p4[i]       pos = pos + 1 }
+    el = forge_db_escape_str(user_id, buf + pos)       pos = pos + el
+    loop i in 0..p5.len      { buf[pos] = p5[i]       pos = pos + 1 }
+    forge_db_exec(buf[0..pos])
+}
+
+// =============================================================================
+// Section M — File Uploads (Multipart)
+// =============================================================================
+
+struct ForgeUpload {
+    field_name:   []i8
+    filename:     []i8
+    content_type: []i8
+    data:         []i8
+    size:         i64
+}
+
+fn forge_multipart_boundary(ctx: i64, dst: &i8) -> i64 {
+    let ct = ctx_header(ctx, "Content-Type")
+    let marker = "boundary="
+    loop i in 0..ct.len {
+        if i + marker.len > ct.len { break }
+        let match = true
+        loop j in 0..marker.len {
+            if ct[i + j] != marker[j] { match = false  break }
+        }
+        if match {
+            let start = i + marker.len
+            let blen = 0i64
+            loop k in start..ct.len {
+                let c = ct[k]
+                if c == ';' or c == ' ' or c == '\r' or c == '\n' { break }
+                dst[blen] = c
+                blen = blen + 1
+            }
+            ret blen
+        }
+    }
+    ret 0
+}
+
+fn forge_multipart_parse(ctx: i64, field: []i8, upload: &ForgeUpload) -> bool {
+    let body = ctx_body(ctx)
+    let bnd_buf = [256]i8
+    let bnd_len = forge_multipart_boundary(ctx, bnd_buf)
+    if bnd_len == 0 { ret false }
+    let boundary = bnd_buf[0..bnd_len]
+    let i = 0i64
+    loop i < body.len {
+        // Find "--boundary"
+        if body[i] == '-' and i + 2 + bnd_len <= body.len {
+            let is_bnd = body[i+1] == '-'
+            if is_bnd {
+                loop j in 0..bnd_len {
+                    if body[i + 2 + j] != boundary[j] { is_bnd = false  break }
+                }
+            }
+            if is_bnd {
+                i = i + 2 + bnd_len
+                if i < body.len and body[i] == '\r' { i = i + 1 }
+                if i < body.len and body[i] == '\n' { i = i + 1 }
+                // Parse headers until blank line
+                let part_name   = ""
+                let part_file   = ""
+                let part_ct     = "application/octet-stream"
+                loop i < body.len {
+                    let hdr_start = i
+                    loop i < body.len and body[i] != '\r' and body[i] != '\n' { i = i + 1 }
+                    let hdr_line = body[hdr_start..i]
+                    if i < body.len and body[i] == '\r' { i = i + 1 }
+                    if i < body.len and body[i] == '\n' { i = i + 1 }
+                    if hdr_line.len == 0 { break }
+                    let cd = "Content-Disposition:"
+                    let ctype = "Content-Type:"
+                    if forge_starts_with(hdr_line, cd) {
+                        let nm_marker = "name=\""
+                        loop k in 0..hdr_line.len {
+                            if k + nm_marker.len > hdr_line.len { break }
+                            let m2 = true
+                            loop j in 0..nm_marker.len {
+                                if hdr_line[k+j] != nm_marker[j] { m2 = false  break }
+                            }
+                            if m2 {
+                                let ns = k + nm_marker.len
+                                let ne = ns
+                                loop ne < hdr_line.len and hdr_line[ne] != '"' { ne = ne + 1 }
+                                part_name = hdr_line[ns..ne]
+                                break
+                            }
+                        }
+                        let fn_marker = "filename=\""
+                        loop k in 0..hdr_line.len {
+                            if k + fn_marker.len > hdr_line.len { break }
+                            let m3 = true
+                            loop j in 0..fn_marker.len {
+                                if hdr_line[k+j] != fn_marker[j] { m3 = false  break }
+                            }
+                            if m3 {
+                                let ns2 = k + fn_marker.len
+                                let ne2 = ns2
+                                loop ne2 < hdr_line.len and hdr_line[ne2] != '"' { ne2 = ne2 + 1 }
+                                part_file = hdr_line[ns2..ne2]
+                                break
+                            }
+                        }
+                    } else if forge_starts_with(hdr_line, ctype) {
+                        let vs = ctype.len
+                        loop vs < hdr_line.len and hdr_line[vs] == ' ' { vs = vs + 1 }
+                        part_ct = hdr_line[vs..hdr_line.len]
+                    }
+                }
+                // Find end of part: next "--boundary"
+                let data_start = i
+                let data_end   = body.len
+                let ki = i
+                loop ki < body.len {
+                    if body[ki] == '\r' and ki + 4 + bnd_len <= body.len {
+                        let is_b2 = body[ki+1] == '\n' and body[ki+2] == '-' and body[ki+3] == '-'
+                        if is_b2 {
+                            loop j in 0..bnd_len {
+                                if body[ki + 4 + j] != boundary[j] { is_b2 = false  break }
+                            }
+                        }
+                        if is_b2 { data_end = ki  break }
+                    }
+                    ki = ki + 1
+                }
+                if forge_slice_eq(part_name, field) {
+                    let data_slice = body[data_start..data_end]
+                    let data_copy: &i8 = alloc_pages(((data_slice.len / 4096) + 1) as i64)
+                    loop j in 0..data_slice.len { data_copy[j] = data_slice[j] }
+                    upload.field_name   = part_name
+                    upload.filename     = part_file
+                    upload.content_type = part_ct
+                    upload.data         = data_copy[0..data_slice.len]
+                    upload.size         = data_slice.len
+                    ret true
+                }
+                i = data_end
+                continue
+            }
+        }
+        i = i + 1
+    }
+    ret false
+}
+
+fn ctx_multipart_file(ctx: i64, field: []i8) -> &ForgeUpload {
+    let up: &ForgeUpload = alloc_pages(1)
+    forge_multipart_parse(ctx, field, up)
+    ret up
+}
+
+fn ctx_multipart_field(ctx: i64, field: []i8) -> []i8 {
+    let up: &ForgeUpload = alloc_pages(1)
+    if forge_multipart_parse(ctx, field, up) {
+        ret up.data
+    }
+    ret ""
+}
+
+fn forge_upload_save(upload: &ForgeUpload, dir: []i8) -> []i8 {
+    let path_buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    loop i in 0..dir.len      { path_buf[pos] = dir[i]              pos = pos + 1 }
+    path_buf[pos] = '/'  pos = pos + 1
+    loop i in 0..upload.filename.len { path_buf[pos] = upload.filename[i]  pos = pos + 1 }
+    path_buf[pos] = 0   // null terminate
+    let flags = 577i64   // O_WRONLY|O_CREAT|O_TRUNC
+    let mode  = 420i64   // 0644
+    let fd = syscall(2, path_buf, flags, mode, 0, 0, 0) as i32
+    if fd < 0 { ret "" }
+    let data = upload.data
+    // Write in 4096-byte chunks using a stack buffer
+    let wbuf: &i8 = alloc_pages(1)
+    let written = 0i64
+    loop written < data.len {
+        let chunk = data.len - written
+        if chunk > 4096 { chunk = 4096 }
+        loop j in 0..chunk { wbuf[j] = data[written + j] }
+        let w = syscall(FORGE_SYS_WRITE, fd, wbuf, chunk, 0, 0, 0) as i64
+        if w <= 0 { break }
+        written = written + w
+    }
+    syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+    ret path_buf[0..pos]
+}
+
+fn forge_validate_upload_type(upload: &ForgeUpload, allowed: []i8) -> bool {
+    let start = 0i64
+    loop i in 0..allowed.len {
+        if allowed[i] == ',' {
+            let seg = allowed[start..i]
+            if forge_slice_eq(seg, upload.content_type) { ret true }
+            start = i + 1
+        }
+    }
+    let seg = allowed[start..allowed.len]
+    if forge_slice_eq(seg, upload.content_type) { ret true }
+    ret false
+}
+
+fn forge_validate_upload_size(upload: &ForgeUpload, max_bytes: i64) -> bool {
+    ret upload.size <= max_bytes
+}
+
+// =============================================================================
+// Section N — Caching
+// =============================================================================
+const FORGE_CACHE_MAX  = 256
+const FORGE_CACHE_KCAP = 128
+
+struct ForgeCacheEntry {
+    key:     [FORGE_CACHE_KCAP]i8
+    klen:    i64
+    val_ptr: i64
+    val_len: i64
+    expires: i64
+    used:    bool
+}
+
+const FORGE_CACHE_ENTRY_STRIDE = 162
+
+let g_forge_cache_store: &ForgeCacheEntry = 0
+
+fn forge_cache_init() {
+    if g_forge_cache_store != 0 { ret }
+    g_forge_cache_store = alloc_pages(12) as &ForgeCacheEntry
+}
+
+fn forge_cache_entry_at(i: i64) -> &ForgeCacheEntry {
+    forge_cache_init()
+    ret (g_forge_cache_store as i64 + i * FORGE_CACHE_ENTRY_STRIDE) as &ForgeCacheEntry
+}
+
+fn forge_cache_get(key: []i8) -> []i8 {
+    forge_cache_init()
+    let now = time_now_ms()
+    loop i in 0..FORGE_CACHE_MAX {
+        let e = forge_cache_entry_at(i)
+        if not e.used { continue }
+        if e.expires > 0 and now >= e.expires {
+            e.used = false
+            continue
+        }
+        if forge_slice_eq(e.key[0..e.klen], key) {
+            let vp: &i8 = e.val_ptr as &i8
+            ret vp[0..e.val_len]
+        }
+    }
+    ret ""
+}
+
+fn forge_cache_set(key: []i8, val: []i8, ttl_sec: i64) {
+    forge_cache_init()
+    let now = time_now_ms()
+    let exp = 0i64
+    if ttl_sec > 0 { exp = now + ttl_sec * 1000 }
+    // Find existing slot
+    loop i in 0..FORGE_CACHE_MAX {
+        let e = forge_cache_entry_at(i)
+        if e.used and forge_slice_eq(e.key[0..e.klen], key) {
+            let vp: &i8 = alloc_pages(1)
+            loop j in 0..val.len { vp[j] = val[j] }
+            e.val_ptr = vp as i64
+            e.val_len = val.len
+            e.expires = exp
+            ret
+        }
+    }
+    // Find empty slot
+    loop i in 0..FORGE_CACHE_MAX {
+        let e = forge_cache_entry_at(i)
+        if not e.used or (e.expires > 0 and now >= e.expires) {
+            let kl = key.len
+            if kl > FORGE_CACHE_KCAP { kl = FORGE_CACHE_KCAP }
+            loop j in 0..kl { e.key[j] = key[j] }
+            e.klen    = kl
+            let vp: &i8 = alloc_pages(1)
+            loop j in 0..val.len { vp[j] = val[j] }
+            e.val_ptr = vp as i64
+            e.val_len = val.len
+            e.expires = exp
+            e.used    = true
+            ret
+        }
+    }
+}
+
+fn forge_cache_has(key: []i8) -> bool {
+    let v = forge_cache_get(key)
+    ret v.len > 0
+}
+
+fn forge_cache_del(key: []i8) {
+    forge_cache_init()
+    loop i in 0..FORGE_CACHE_MAX {
+        let e = forge_cache_entry_at(i)
+        if e.used and forge_slice_eq(e.key[0..e.klen], key) {
+            e.used = false
+            ret
+        }
+    }
+}
+
+fn forge_cache_clear() {
+    forge_cache_init()
+    loop i in 0..FORGE_CACHE_MAX {
+        let e = forge_cache_entry_at(i)
+        e.used = false
+    }
+}
+
+fn forge_cache_middleware(ctx: i64) {
+    let path = ctx_path(ctx)
+    let inm  = ctx_header(ctx, "If-None-Match")
+    if inm.len == 0 { ret }
+    let cached = forge_cache_get(inm)
+    if cached.len > 0 and forge_slice_eq(cached, path) {
+        ctx_not_modified(ctx)
+    }
+}
+
+fn forge_etag_middleware(ctx: i64) {
+    let c: &ForgeCtx = ctx
+    if not c.sent { ret }
+    let path = ctx_path(ctx)
+    // Build a simple hash-based ETag from path + timestamp
+    let hash_buf = [64]i8
+    let hp = 0i64
+    let ts_buf: &i8 = alloc_pages(1)
+    let ts_len = fmt_i64(ts_buf, time_now_ms())
+    loop i in 0..path.len  { if hp < 63 { hash_buf[hp] = path[i]    hp = hp + 1 } }
+    loop i in 0..ts_len    { if hp < 63 { hash_buf[hp] = ts_buf[i]  hp = hp + 1 } }
+    let etag_b64: &i8 = alloc_pages(1)
+    let etag_len = b64_encode(hash_buf, hp, etag_b64)
+    let etag_s = etag_b64[0..etag_len]
+    ctx_set_header(ctx, "ETag", etag_s)
+    forge_cache_set(etag_s, path, 3600)
 }

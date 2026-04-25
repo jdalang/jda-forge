@@ -1,0 +1,259 @@
+// =============================================================================
+// Controller: Users
+// =============================================================================
+// Demonstrates ForgeController, before filters, strong params,
+// format negotiation, and pagination.
+
+let g_users_ctrl: &ForgeController = 0
+
+fn users_ctrl_init() {
+    if g_users_ctrl != 0 { ret }
+    g_users_ctrl = forge_ctrl_new()
+    forge_ctrl_before(g_users_ctrl, fn_addr(users_require_login), "create")
+    forge_ctrl_before(g_users_ctrl, fn_addr(users_require_login), "update")
+    forge_ctrl_before(g_users_ctrl, fn_addr(users_require_login), "delete")
+    forge_ctrl_after(g_users_ctrl, fn_addr(users_log_action), "")
+}
+
+// Before filter — ensure user is authenticated
+fn users_require_login(ctx: i64) {
+    let uid = ctx_session_get(ctx, "user_id")
+    if uid.len == 0 {
+        ctx_redirect(ctx, "/login")
+    }
+}
+
+// After filter — log action
+fn users_log_action(ctx: i64) {
+    forge_log_info("users action completed")
+}
+
+// ---------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------
+
+fn users_index_action(ctx: i64) {
+    let page_s = ctx_query_default(ctx, "page", "1")
+    let page = 1i64
+    loop i in 0..page_s.len {
+        let d = page_s[i] as i64 - 48
+        if d >= 0 and d <= 9 { page = page * 10 + d }
+    }
+    let q = forge_q("users")
+    forge_q_where(q, "deleted_at", "IS", "NULL")
+    forge_q_order(q, "created_at", "DESC")
+    let res = forge_paginate_query(q, page, 20)
+    let total = forge_test_db_count("users")
+    let fmt = ctx_format(ctx)
+    if forge_slice_eq(fmt, "json") {
+        let arr = forge_result_to_json(res)
+        let meta = forge_page_meta_json(total, page, 20)
+        let out: &i8 = alloc_pages(2)
+        let pos = 0i64
+        let p1 = "{\"users\":"
+        let p2 = ",\"meta\":"
+        let p3 = "}"
+        loop i in 0..p1.len  { out[pos] = p1[i]   pos = pos + 1 }
+        loop i in 0..arr.len  { out[pos] = arr[i]   pos = pos + 1 }
+        loop i in 0..p2.len  { out[pos] = p2[i]   pos = pos + 1 }
+        loop i in 0..meta.len { out[pos] = meta[i]  pos = pos + 1 }
+        loop i in 0..p3.len  { out[pos] = p3[i]   pos = pos + 1 }
+        ctx_json(ctx, 200, out[0..pos])
+    } else {
+        let buf: &i8 = alloc_pages(8)
+        let pos = 0i64
+        let h1 = "<h1>Users</h1><a href=/users/new>New User</a><ul>"
+        loop i in 0..h1.len { buf[pos] = h1[i]  pos = pos + 1 }
+        loop r in 0..res.count {
+            let id_val   = forge_row_col(res, r, 0)
+            let name_val = forge_row_col(res, r, 2)
+            let li1 = "<li>"
+            let li2 = " "
+            let li3 = "</li>"
+            loop i in 0..li1.len    { buf[pos] = li1[i]      pos = pos + 1 }
+            loop i in 0..id_val.len  { buf[pos] = id_val[i]   pos = pos + 1 }
+            loop i in 0..li2.len    { buf[pos] = li2[i]      pos = pos + 1 }
+            loop i in 0..name_val.len { buf[pos] = name_val[i]  pos = pos + 1 }
+            loop i in 0..li3.len    { buf[pos] = li3[i]      pos = pos + 1 }
+        }
+        let h2 = "</ul>"
+        loop i in 0..h2.len { buf[pos] = h2[i]  pos = pos + 1 }
+        ctx_html(ctx, 200, buf[0..pos])
+    }
+}
+
+fn users_show_action(ctx: i64) {
+    let id = ctx_param(ctx, "id")
+    let res = user_find(id)
+    if res.count == 0 { ctx_not_found(ctx)  ret }
+    let fmt = ctx_format(ctx)
+    if forge_slice_eq(fmt, "json") {
+        ctx_json(ctx, 200, forge_row_to_json(res, 0))
+    } else {
+        let name_val = forge_row_col(res, 0, 2)
+        let buf: &i8 = alloc_pages(1)
+        let pos = 0i64
+        let h1 = "<h1>"
+        let h2 = "</h1>"
+        loop i in 0..h1.len      { buf[pos] = h1[i]       pos = pos + 1 }
+        loop i in 0..name_val.len { buf[pos] = name_val[i]  pos = pos + 1 }
+        loop i in 0..h2.len      { buf[pos] = h2[i]       pos = pos + 1 }
+        ctx_html(ctx, 200, buf[0..pos])
+    }
+}
+
+fn users_new_action(ctx: i64) {
+    let csrf = forge_csrf_token(ctx)
+    let form = forge_form_tag_open("/users", "post", csrf)
+    let buf: &i8 = alloc_pages(2)
+    let pos = 0i64
+    let h1 = "<h1>New User</h1>"
+    loop i in 0..h1.len   { buf[pos] = h1[i]    pos = pos + 1 }
+    loop i in 0..form.len  { buf[pos] = form[i]   pos = pos + 1 }
+    let lbl_n = forge_label_tag("name",     "Name")
+    let inp_n = forge_input_tag("text",     "name",     "")
+    let lbl_e = forge_label_tag("email",    "Email")
+    let inp_e = forge_input_tag("email",    "email",    "")
+    let lbl_p = forge_label_tag("password", "Password")
+    let inp_p = forge_input_tag("password", "password", "")
+    let sub   = forge_submit_tag("Create User")
+    let close = forge_form_tag_close()
+    loop i in 0..lbl_n.len { buf[pos] = lbl_n[i]  pos = pos + 1 }
+    loop i in 0..inp_n.len { buf[pos] = inp_n[i]  pos = pos + 1 }
+    loop i in 0..lbl_e.len { buf[pos] = lbl_e[i]  pos = pos + 1 }
+    loop i in 0..inp_e.len { buf[pos] = inp_e[i]  pos = pos + 1 }
+    loop i in 0..lbl_p.len { buf[pos] = lbl_p[i]  pos = pos + 1 }
+    loop i in 0..inp_p.len { buf[pos] = inp_p[i]  pos = pos + 1 }
+    loop i in 0..sub.len   { buf[pos] = sub[i]    pos = pos + 1 }
+    loop i in 0..close.len { buf[pos] = close[i]  pos = pos + 1 }
+    ctx_html(ctx, 200, buf[0..pos])
+}
+
+fn users_create_action(ctx: i64) {
+    let email    = forge_permit_form(ctx, "email,name,password", "email")
+    let name     = forge_permit_form(ctx, "email,name,password", "name")
+    let password = forge_permit_form(ctx, "email,name,password", "password")
+    let errs = user_validate(email, name, password)
+    if forge_errors_any(errs) {
+        ctx_json(ctx, 422, forge_errors_json(errs))
+        ret
+    }
+    let ok = user_create(email, name, password)
+    if ok {
+        forge_log_info("user created")
+        ctx_redirect(ctx, "/users")
+    } else {
+        ctx_internal_error(ctx, "Failed to create user")
+    }
+}
+
+fn users_edit_action(ctx: i64) {
+    let id = ctx_param(ctx, "id")
+    let res = user_find(id)
+    if res.count == 0 { ctx_not_found(ctx)  ret }
+    let name_val = forge_row_col(res, 0, 2)
+    let csrf = forge_csrf_token(ctx)
+    let action_buf: &i8 = alloc_pages(1)
+    let ap = 0i64
+    let p_pre = "/users/"
+    loop i in 0..p_pre.len { action_buf[ap] = p_pre[i]  ap = ap + 1 }
+    loop i in 0..id.len    { action_buf[ap] = id[i]      ap = ap + 1 }
+    let form  = forge_form_tag_open(action_buf[0..ap], "post", csrf)
+    let meth  = "<input type=\"hidden\" name=\"_method\" value=\"PUT\">"
+    let lbl_n = forge_label_tag("name", "Name")
+    let inp_n = forge_input_tag("text", "name", name_val)
+    let sub   = forge_submit_tag("Update User")
+    let close = forge_form_tag_close()
+    let buf: &i8 = alloc_pages(2)
+    let pos = 0i64
+    let h1 = "<h1>Edit User</h1>"
+    loop i in 0..h1.len    { buf[pos] = h1[i]     pos = pos + 1 }
+    loop i in 0..form.len   { buf[pos] = form[i]    pos = pos + 1 }
+    loop i in 0..meth.len   { buf[pos] = meth[i]    pos = pos + 1 }
+    loop i in 0..lbl_n.len  { buf[pos] = lbl_n[i]  pos = pos + 1 }
+    loop i in 0..inp_n.len  { buf[pos] = inp_n[i]  pos = pos + 1 }
+    loop i in 0..sub.len    { buf[pos] = sub[i]    pos = pos + 1 }
+    loop i in 0..close.len  { buf[pos] = close[i]  pos = pos + 1 }
+    ctx_html(ctx, 200, buf[0..pos])
+}
+
+fn users_update_action(ctx: i64) {
+    let id   = ctx_param(ctx, "id")
+    let name = ctx_form(ctx, "name")
+    let errs = forge_errors_new()
+    forge_validate_presence(errs, "name", name)
+    if forge_errors_any(errs) {
+        ctx_json(ctx, 422, forge_errors_json(errs))
+        ret
+    }
+    let ok = user_update(id, name)
+    if ok {
+        ctx_redirect(ctx, "/users")
+    } else {
+        ctx_internal_error(ctx, "Failed to update user")
+    }
+}
+
+fn users_delete_action(ctx: i64) {
+    let id = ctx_param(ctx, "id")
+    let ok = user_delete(id)
+    if ok {
+        ctx_redirect(ctx, "/users")
+    } else {
+        ctx_not_found(ctx)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch wrappers (registered as route handlers)
+// ---------------------------------------------------------------------------
+
+fn handle_users_index(ctx: i64) {
+    users_ctrl_init()
+    forge_ctrl_dispatch(g_users_ctrl, ctx, fn_addr(users_index_action), "index")
+}
+
+fn handle_users_show(ctx: i64) {
+    users_ctrl_init()
+    forge_ctrl_dispatch(g_users_ctrl, ctx, fn_addr(users_show_action), "show")
+}
+
+fn handle_users_new(ctx: i64) {
+    users_ctrl_init()
+    forge_ctrl_dispatch(g_users_ctrl, ctx, fn_addr(users_new_action), "new")
+}
+
+fn handle_users_create(ctx: i64) {
+    users_ctrl_init()
+    forge_ctrl_dispatch(g_users_ctrl, ctx, fn_addr(users_create_action), "create")
+}
+
+fn handle_users_edit(ctx: i64) {
+    users_ctrl_init()
+    forge_ctrl_dispatch(g_users_ctrl, ctx, fn_addr(users_edit_action), "edit")
+}
+
+fn handle_users_update(ctx: i64) {
+    users_ctrl_init()
+    forge_ctrl_dispatch(g_users_ctrl, ctx, fn_addr(users_update_action), "update")
+}
+
+fn handle_users_delete(ctx: i64) {
+    users_ctrl_init()
+    forge_ctrl_dispatch(g_users_ctrl, ctx, fn_addr(users_delete_action), "delete")
+}
+
+// ---------------------------------------------------------------------------
+// Route registration helper — call from main() or routes file
+// ---------------------------------------------------------------------------
+
+fn users_routes(app: &ForgeApp) {
+    users_ctrl_init()
+    app_get   (app, "/users",          fn_addr(handle_users_index))
+    app_get   (app, "/users/new",      fn_addr(handle_users_new))
+    app_get   (app, "/users/:id",      fn_addr(handle_users_show))
+    app_post  (app, "/users",          fn_addr(handle_users_create))
+    app_get   (app, "/users/:id/edit", fn_addr(handle_users_edit))
+    app_put   (app, "/users/:id",      fn_addr(handle_users_update))
+    app_delete(app, "/users/:id",      fn_addr(handle_users_delete))
+}

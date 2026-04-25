@@ -1,0 +1,81 @@
+// =============================================================================
+// Tests: Users
+// =============================================================================
+// Run via: make test
+// Each test fn is registered with forge_test(), then forge_test_run() executes all.
+
+fn test_users_index(_: i64) {
+    forge_test_db_truncate("users")
+    let res = forge_test_get("/users")
+    forge_assert_status(res, 200, "GET /users should return 200")
+    forge_assert_body_has(res, "Users", "index page should contain 'Users'")
+}
+
+fn test_users_show_not_found(_: i64) {
+    let res = forge_test_get("/users/99999")
+    forge_assert_status(res, 404, "GET /users/99999 should return 404")
+}
+
+fn test_users_create_missing_fields(_: i64) {
+    let res = forge_test_post("/users", "name=Alice")
+    forge_assert_status(res, 422, "POST /users without email should return 422")
+    forge_assert_body_has(res, "email", "error body should mention email field")
+}
+
+fn test_users_create_invalid_email(_: i64) {
+    let body = "email=notvalid&name=Alice&password=secret123"
+    let res = forge_test_post("/users", body)
+    forge_assert_status(res, 422, "POST /users with invalid email should return 422")
+    forge_assert_body_has(res, "email", "error body should mention email")
+}
+
+fn test_users_index_json(_: i64) {
+    forge_test_db_truncate("users")
+    let res = forge_test_get("/users?format=json")
+    forge_assert_status(res, 200, "GET /users.json should return 200")
+    forge_assert_body_has(res, "users", "JSON response should have users key")
+}
+
+fn test_users_create_and_show(_: i64) {
+    forge_test_db_truncate("users")
+    let body = "email=alice%40example.com&name=Alice&password=password123"
+    let create_res = forge_test_post("/users", body)
+    forge_assert_redirect(create_res, "create should redirect")
+    let count = forge_test_db_count("users")
+    forge_assert(count == 1, "should have 1 user after create")
+}
+
+fn test_users_new_form(_: i64) {
+    let res = forge_test_get("/users/new")
+    forge_assert_status(res, 200, "GET /users/new should return 200")
+    forge_assert_body_has(res, "<form", "new user page should have a form")
+    forge_assert_body_has(res, "email", "form should have email field")
+    forge_assert_body_has(res, "password", "form should have password field")
+}
+
+fn test_users_delete_soft(_: i64) {
+    forge_test_db_truncate("users")
+    // Create a user directly
+    user_create("bob@example.com", "Bob", "password123")
+    let all = forge_all("users")
+    if all.count > 0 {
+        let id = forge_row_col(all, 0, 0)
+        let del_res = forge_test_delete(forge_path_id("users", id))
+        forge_assert_redirect(del_res, "delete should redirect")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Registration — call this from main() before forge_test_run()
+// ---------------------------------------------------------------------------
+
+fn register_user_tests() {
+    forge_test("users: GET /users returns 200",         fn_addr(test_users_index))
+    forge_test("users: GET /users/99999 returns 404",   fn_addr(test_users_show_not_found))
+    forge_test("users: POST without email is 422",      fn_addr(test_users_create_missing_fields))
+    forge_test("users: POST with bad email is 422",     fn_addr(test_users_create_invalid_email))
+    forge_test("users: GET /users?format=json is 200",  fn_addr(test_users_index_json))
+    forge_test("users: create then show works",         fn_addr(test_users_create_and_show))
+    forge_test("users: GET /users/new has form",        fn_addr(test_users_new_form))
+    forge_test("users: DELETE soft-deletes user",       fn_addr(test_users_delete_soft))
+}

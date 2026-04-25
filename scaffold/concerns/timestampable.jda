@@ -1,0 +1,85 @@
+// =============================================================================
+// Concern: Timestampable
+// =============================================================================
+// Provides created_at / updated_at helpers via forge_timestamps_create/update.
+//
+// Usage:
+//   After INSERT, call:   timestampable_after_create("table", id_str)
+//   After UPDATE, call:   timestampable_after_update("table", id_str)
+//
+//   Or register as callbacks:
+//     forge_callback_add("posts", FORGE_CB_AFTER_CREATE, fn_addr(posts_ts_create))
+//     forge_callback_add("posts", FORGE_CB_AFTER_UPDATE, fn_addr(posts_ts_update))
+
+fn timestampable_after_create(table: []i8, id: []i8) -> bool {
+    ret forge_timestamps_create(table, id)
+}
+
+fn timestampable_after_update(table: []i8, id: []i8) -> bool {
+    ret forge_timestamps_update(table, id)
+}
+
+// ---------------------------------------------------------------------------
+// Per-model callback wrappers
+// These are called by forge_callback_run with a row_ptr (i64 → id string ptr).
+// The row_ptr is expected to point at the id []i8 fat pointer on the heap.
+// ---------------------------------------------------------------------------
+
+fn posts_ts_create(row_ptr: i64) -> i64 {
+    // row_ptr = heap address containing the LAST INSERTED id as a null-terminated string
+    if row_ptr == 0 { ret 1 }
+    let id_ptr: &i8 = row_ptr as &i8
+    // Compute length (null-terminated)
+    let id_len = 0i64
+    loop {
+        if id_ptr[id_len] == 0 { break }
+        id_len = id_len + 1
+    }
+    let ok = forge_timestamps_create("posts", id_ptr[0..id_len])
+    if ok { ret 1 }
+    ret 0
+}
+
+fn posts_ts_update(row_ptr: i64) -> i64 {
+    if row_ptr == 0 { ret 1 }
+    let id_ptr: &i8 = row_ptr as &i8
+    let id_len = 0i64
+    loop {
+        if id_ptr[id_len] == 0 { break }
+        id_len = id_len + 1
+    }
+    let ok = forge_timestamps_update("posts", id_ptr[0..id_len])
+    if ok { ret 1 }
+    ret 0
+}
+
+fn users_ts_create(row_ptr: i64) -> i64 {
+    if row_ptr == 0 { ret 1 }
+    let id_ptr: &i8 = row_ptr as &i8
+    let id_len = 0i64
+    loop {
+        if id_ptr[id_len] == 0 { break }
+        id_len = id_len + 1
+    }
+    let ok = forge_timestamps_create("users", id_ptr[0..id_len])
+    if ok { ret 1 }
+    ret 0
+}
+
+fn users_ts_update(row_ptr: i64) -> i64 {
+    if row_ptr == 0 { ret 1 }
+    let id_ptr: &i8 = row_ptr as &i8
+    let id_len = 0i64
+    loop {
+        if id_ptr[id_len] == 0 { break }
+        id_len = id_len + 1
+    }
+    let ok = forge_timestamps_update("users", id_ptr[0..id_len])
+    if ok { ret 1 }
+    ret 0
+}
+
+fn timestampable_register(table: []i8, create_fn: i64, update_fn: i64) {
+    forge_callback_add(table, FORGE_CB_AFTER_CREATE, create_fn)
+    forge_callback_add(table, FORGE_CB_AFTER_UPDATE, update_fn)
+}
