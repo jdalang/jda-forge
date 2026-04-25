@@ -1,5 +1,9 @@
 # JDA Forge
 
+<p align="center">
+  <img src="docs/logo.png" alt="JDA Forge" width="180">
+</p>
+
 A full-stack web framework for the [Jda language](https://github.com/jdalang/jda). Ships as a single `--include` file; everything from routing and ORM to mailer, WebSocket, testing, and background jobs is built in.
 
 ---
