@@ -4835,8 +4835,10 @@ fn forge_attrs_update(a: &ForgeAttrs, table: []i8, id: []i8) -> bool {
 // =============================================================================
 // Section H — Controller Layer
 // =============================================================================
-const FORGE_CTRL_MAX_FILTERS    = 8
-const FORGE_CTRL_FILTER_NAME_CAP = 32
+const FORGE_CTRL_MAX_FILTERS     = 8
+const FORGE_CTRL_FILTER_NAME_CAP = 64   // enough for "show, edit, update, delete"
+const FORGE_MAX_CTRLS            = 32
+const FORGE_CTRL_ENTRY_STRIDE    = 80   // sizeof(ForgeCtrlEntry): [64]i8 + i64 + ptr
 
 struct ForgeFilter {
     fn_ptr: i64
@@ -4883,11 +4885,32 @@ fn forge_ctrl_after(ctrl: &ForgeController, fn_ptr: i64, only: []i8) {
     ctrl.ac = n + 1
 }
 
+// forge__action_in_list — returns true if action appears in a comma-separated list.
+// Handles "show", "show, edit", "show,edit,update,delete" (spaces optional).
+fn forge__action_in_list(list: []i8, action: []i8) -> bool {
+    let i = 0i64
+    loop i < list.len {
+        loop i < list.len and (list[i] == ' ' or list[i] == ',') { i = i + 1 }
+        let j = i
+        loop j < list.len and list[j] != ',' { j = j + 1 }
+        let k = j
+        loop k > i and list[k-1] == ' ' { k = k - 1 }
+        if k - i == action.len {
+            let m = true
+            loop n in 0..action.len { if list[i+n] != action[n] { m = false  break } }
+            if m { ret true }
+        }
+        i = j
+        if i < list.len and list[i] == ',' { i = i + 1 }
+    }
+    ret false
+}
+
 fn forge_ctrl_dispatch(ctrl: &ForgeController, ctx: i64, action_fn: i64, action_name: []i8) {
     loop i in 0..ctrl.bc {
         let f = ctrl.before[i]
         if not f.used { continue }
-        let matches = f.only_l == 0 or forge_slice_eq(f.only[0..f.only_l], action_name)
+        let matches = f.only_l == 0 or forge__action_in_list(f.only[0..f.only_l], action_name)
         if matches { call_fn(f.fn_ptr, ctx) }
         let c: &ForgeCtx = ctx
         if c.sent { ret }
@@ -4896,9 +4919,62 @@ fn forge_ctrl_dispatch(ctrl: &ForgeController, ctx: i64, action_fn: i64, action_
     loop i in 0..ctrl.ac {
         let f = ctrl.after[i]
         if not f.used { continue }
-        let matches = f.only_l == 0 or forge_slice_eq(f.only[0..f.only_l], action_name)
+        let matches = f.only_l == 0 or forge__action_in_list(f.only[0..f.only_l], action_name)
         if matches { call_fn(f.fn_ptr, ctx) }
     }
+}
+
+// =============================================================================
+// Controller registry — maps resource name → ForgeController.
+// forge_ctrl_register("posts", ctrl)  called once at startup (before routes).
+// forge_ctrl_run("posts", "show", fn_addr(posts_show), ctx)  called per request
+//   by the generated dispatch shims in _build/controllers.jda.
+// =============================================================================
+
+struct ForgeCtrlEntry {
+    name: [64]i8
+    nlen: i64
+    ctrl: &ForgeController
+}
+
+let g_forge_ctrl_entries: &ForgeCtrlEntry = 0 as &ForgeCtrlEntry
+let g_forge_ctrl_count:   i64 = 0
+
+fn forge_ctrl_register(name: []i8, ctrl: &ForgeController) {
+    if g_forge_ctrl_entries == (0 as &ForgeCtrlEntry) {
+        g_forge_ctrl_entries = alloc_pages(1) as &ForgeCtrlEntry
+        g_forge_ctrl_count   = 0
+    }
+    if g_forge_ctrl_count >= FORGE_MAX_CTRLS { ret }
+    let e: &ForgeCtrlEntry = (g_forge_ctrl_entries as i64 + g_forge_ctrl_count * FORGE_CTRL_ENTRY_STRIDE) as &ForgeCtrlEntry
+    let nl = name.len
+    if nl > 64 { nl = 64 }
+    loop i in 0..nl { e.name[i] = name[i] }
+    e.nlen = nl
+    e.ctrl = ctrl
+    g_forge_ctrl_count = g_forge_ctrl_count + 1
+}
+
+fn forge_ctrl_lookup(name: []i8) -> &ForgeController {
+    if g_forge_ctrl_entries == (0 as &ForgeCtrlEntry) { ret 0 as &ForgeController }
+    loop i in 0..g_forge_ctrl_count {
+        let e: &ForgeCtrlEntry = (g_forge_ctrl_entries as i64 + i * FORGE_CTRL_ENTRY_STRIDE) as &ForgeCtrlEntry
+        if e.nlen == name.len {
+            let ok = true
+            loop j in 0..name.len { if e.name[j] != name[j] { ok = false  break } }
+            if ok { ret e.ctrl }
+        }
+    }
+    ret 0 as &ForgeController
+}
+
+// forge_ctrl_run — called by generated dispatch shims.
+// Looks up the registered controller for resource; runs filters then action.
+// If no controller is registered, calls the action directly (zero overhead path).
+fn forge_ctrl_run(resource: []i8, action: []i8, fn_ptr: i64, ctx: i64) {
+    let ctrl = forge_ctrl_lookup(resource)
+    if ctrl == (0 as &ForgeController) { call_fn(fn_ptr, ctx)  ret }
+    forge_ctrl_dispatch(ctrl, ctx, fn_ptr, action)
 }
 
 fn forge_permit_json(ctx: i64, allowed: []i8) -> []i8 {

@@ -2,6 +2,14 @@
 // Controller: Posts
 // =============================================================================
 
+// before_action equivalent — loads post and stores on context.
+// Registered for show, edit, update, delete in posts_before_actions().
+fn posts_set_post(ctx: i64) {
+    let post = post_find(ctx_param(ctx, "id"))
+    if post.count == 0 { ctx_not_found(ctx)  ret }
+    ctx_set(ctx, "post", post as i64)
+}
+
 fn posts_index(ctx: i64) {
     ctx_render(ctx, view_posts_index(ctx, post_published()))
 }
@@ -21,15 +29,12 @@ fn posts_create(ctx: i64) {
 }
 
 fn posts_show(ctx: i64) {
-    let id   = ctx_param(ctx, "id")
-    let post = post_find(id)
-    if post.count == 0 { ctx_not_found(ctx)  ret }
-    ctx_render(ctx, view_posts_show(ctx, post, comment_for_post(id)))
+    let post: &ForgeResult = ctx_get(ctx, "post") as &ForgeResult
+    ctx_render(ctx, view_posts_show(ctx, post, comment_for_post(ctx_param(ctx, "id"))))
 }
 
 fn posts_edit(ctx: i64) {
-    let post = post_find(ctx_param(ctx, "id"))
-    if post.count == 0 { ctx_not_found(ctx)  ret }
+    let post: &ForgeResult = ctx_get(ctx, "post") as &ForgeResult
     ctx_render(ctx, view_posts_edit(ctx, post))
 }
 
@@ -48,4 +53,11 @@ fn posts_delete(ctx: i64) {
     post_delete(ctx_param(ctx, "id"))
     ctx_flash_set(ctx, "notice", "Post deleted.")
     ctx_redirect(ctx, posts_path)
+}
+
+// Register before actions — call from main() before forge_controllers_init().
+fn posts_before_actions() {
+    let ctrl = forge_ctrl_new()
+    forge_ctrl_before(ctrl, fn_addr(posts_set_post), "show, edit, update, delete")
+    forge_ctrl_register("posts", ctrl)
 }

@@ -25,11 +25,12 @@ The Forge model layer provides database access, querying, validation, associatio
 6. [Validations](#validations)
 7. [Associations](#associations)
 8. [Callbacks](#callbacks)
-9. [Soft Delete](#soft-delete)
-10. [Model Utilities](#model-utilities)
-11. [Transactions](#transactions)
-12. [Serialization](#serialization)
-13. [Migrations](#migrations)
+9. [Before Actions (Controller Filters)](#before-actions-controller-filters)
+10. [Soft Delete](#soft-delete)
+11. [Model Utilities](#model-utilities)
+12. [Transactions](#transactions)
+13. [Serialization](#serialization)
+14. [Migrations](#migrations)
 
 ---
 
@@ -1083,6 +1084,88 @@ fn hash_password_before_save(row_ptr: i64) -> bool {
 - Multiple callbacks can be registered for the same table and event; they fire in registration order.
 - `update_all` and `delete_all` do not trigger callbacks.
 - A before-callback returning `false` prevents the operation and stops the callback chain.
+
+---
+
+## Before Actions (Controller Filters)
+
+Like Rails `before_action`, Forge lets you register filter functions that run before selected controller actions. The filter loads shared data (e.g. the current post) into the request context via `ctx_set`; actions read it back with `ctx_get`.
+
+### Pattern
+
+```jda
+// 1. The filter — loads post, stores on context, sends 404 on miss
+fn posts_set_post(ctx: i64) {
+    let post = post_find(ctx_param(ctx, "id"))
+    if post.count == 0 { ctx_not_found(ctx)  ret }
+    ctx_set(ctx, "post", post as i64)
+}
+
+// 2. Actions read from context instead of doing their own lookup
+fn posts_show(ctx: i64) {
+    let post: &ForgeResult = ctx_get(ctx, "post") as &ForgeResult
+    ctx_render(ctx, view_posts_show(ctx, post))
+}
+
+fn posts_edit(ctx: i64) {
+    let post: &ForgeResult = ctx_get(ctx, "post") as &ForgeResult
+    ctx_render(ctx, view_posts_edit(ctx, post))
+}
+
+// 3. Register — call once at startup, before forge_controllers_init()
+fn posts_before_actions() {
+    let ctrl = forge_ctrl_new()
+    forge_ctrl_before(ctrl, fn_addr(posts_set_post), "show, edit, update, delete")
+    forge_ctrl_register("posts", ctrl)
+}
+```
+
+In `main.jda`:
+
+```jda
+fn main() {
+    load_env()
+    let app = app_new_config(app_config())
+    // middleware ...
+    post_validations_init()
+    posts_before_actions()          // register before actions
+    forge_controllers_init()        // register action handlers
+    routes(app)
+    forge_migration_run("db/migrate")
+    app_listen(app, str_to_i32(forge_env_get("APP_PORT")))
+}
+```
+
+### How it works
+
+`forge build` generates a dispatch shim for every action in `_build/controllers.jda`:
+
+```jda
+fn forge__dispatch_posts_show(ctx: i64) {
+    forge_ctrl_run("posts", "show", fn_addr(posts_show), ctx)
+}
+```
+
+`forge_ctrl_run` looks up the registered controller for `"posts"`. If none is registered it calls the action directly (zero overhead). If one is registered, it runs through `forge_ctrl_dispatch` which fires matching before filters, then the action, then any after filters.
+
+If a filter sends a response (e.g. `ctx_not_found`), the action and remaining filters are skipped.
+
+### API
+
+| Function | Description |
+|---|---|
+| `forge_ctrl_new() -> &ForgeController` | Create a new controller filter set. |
+| `forge_ctrl_before(ctrl, fn_ptr, only)` | Register a before filter. `only` is a comma-separated action list or `""` for all actions. |
+| `forge_ctrl_after(ctrl, fn_ptr, only)` | Register an after filter. |
+| `forge_ctrl_register(name, ctrl)` | Bind the controller to a resource name (e.g. `"posts"`). |
+| `ctx_set(ctx, key, val)` | Store an `i64` value on the request context. |
+| `ctx_get(ctx, key) -> i64` | Retrieve a stored value; cast to the original type with `as`. |
+
+### only — matching rules
+
+- `""` — fires for every action
+- `"show"` — exact match
+- `"show, edit, update, delete"` — comma-separated, spaces optional
 
 ---
 

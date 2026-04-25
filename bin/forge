@@ -283,20 +283,28 @@ compile_routes() {
     ok "compiled config/routes.jda → _build/routes.jda"
 
     # Auto-generate _build/controllers.jda by scanning app/controllers/*.jda
-    # Picks up every fn name(ctx: i64) { handler (no return type = it's a route handler)
+    # Picks up every fn name(ctx: i64) { handler (no return type = it's a route handler).
+    # Each action gets a dispatch shim that routes through forge_ctrl_run so that
+    # before/after filters registered via forge_ctrl_register fire automatically.
     local ctrl_out="_build/controllers.jda"
     local ft; ft=$(mktemp)
-    printf 'fn forge_controllers_init() {\n' > "$ft"
+    local finit; finit=$(mktemp)
+    printf 'fn forge_controllers_init() {\n' > "$finit"
     for f in app/controllers/*.jda; do
         [ -f "$f" ] || continue
         while IFS= read -r fname; do
             local action="${fname##*_}"
             local ctrl="${fname%_*}"
-            printf '    forge_action_register("%s", "%s", fn_addr(%s))\n' "$ctrl" "$action" "$fname"
+            # dispatch shim — transparent wrapper; zero cost if no controller registered
+            printf 'fn forge__dispatch_%s_%s(ctx: i64) { forge_ctrl_run("%s", "%s", fn_addr(%s), ctx) }\n' \
+                "$ctrl" "$action" "$ctrl" "$action" "$fname" >> "$ft"
+            printf '    forge_action_register("%s", "%s", fn_addr(forge__dispatch_%s_%s))\n' \
+                "$ctrl" "$action" "$ctrl" "$action" >> "$finit"
         done < <(grep -E '^fn [a-z][a-z0-9_]+\(ctx: i64\) \{' "$f" | grep -oE 'fn [a-z][a-z0-9_]+' | sed 's/^fn //')
-    done >> "$ft"
-    printf '}\n' >> "$ft"
-    mv "$ft" "$ctrl_out"
+    done
+    printf '}\n' >> "$finit"
+    cat "$ft" "$finit" > "$ctrl_out"
+    rm -f "$ft" "$finit"
     ok "scanned controllers → _build/controllers.jda"
 }
 
