@@ -560,7 +560,7 @@ fn forge__act_from_str(s: []i8) -> []i8 {
 }
 
 // =============================================================================
-// Rails-style auto-discovery API — looks up actions from the registry.
+// Controller action auto-discovery API — looks up actions from the registry.
 // Use after forge_controllers_init() has been called in main().
 //
 // UFCS on &ForgeApp:   app.resources("posts")   app.root("posts#index")
@@ -614,7 +614,7 @@ fn forge_namespace(app: &ForgeApp, ns: []i8) -> &ForgeScope {
     ret forge_scope(app, forge__scope_join("/", ns))
 }
 
-// UFCS on &ForgeApp — Rails app.root / app.resources / app.namespace / app.get etc.
+// UFCS on &ForgeApp — app.root / app.resources / app.namespace / app.get etc.
 fn forge_app_root(app: &ForgeApp, s: []i8) {
     let h = forge_action_get(forge__ctrl_from_str(s), forge__act_from_str(s))
     if h != 0 { app_get(app, "/", h) }
@@ -2262,7 +2262,7 @@ fn ctx_session_clear(ctx_ptr: i64) {
 }
 
 // =============================================================================
-// Flash messages — Rails-style one-time session messages
+// Flash messages — one-time session messages
 // Requires forge_session_start middleware.
 // =============================================================================
 
@@ -4113,7 +4113,7 @@ fn forge_q_where_raw(q: &ForgeQuery, expr: []i8) -> &ForgeQuery {
     ret q
 }
 
-// where_bind — Rails-style parameterized WHERE: ? placeholders, pipe-separated args
+// where_bind — parameterized WHERE: ? placeholders, pipe-separated args
 // e.g. .where_bind("role = ? and name = ?", "admin|alice")
 // Each ? is replaced with the next pipe-delimited arg, SQL-escaped and quoted.
 // Values cannot contain '|'. For values with pipes, use separate where_eq calls.
@@ -4138,7 +4138,7 @@ fn forge_q_where_bind(q: &ForgeQuery, tmpl: []i8, args: []i8) -> &ForgeQuery {
     ret q
 }
 
-// where_eq(col, val) — equality shorthand; like Rails where(col: val)
+// where_eq(col, val) — equality shorthand
 fn forge_q_where_eq(q: &ForgeQuery, col: []i8, val: []i8) -> &ForgeQuery {
     forge__where_connector(q)
     forge__wbuf(q, col)
@@ -5203,7 +5203,7 @@ fn forge_validate_uniqueness(e: &ForgeErrors, table: []i8, field: []i8, val: []i
 }
 
 // =============================================================================
-// Section B3 — Declarative Validations (Rails-style)
+// Section B3 — Declarative Validations
 // =============================================================================
 const FORGE_V_PRESENCE      = 1
 const FORGE_V_EMAIL         = 2
@@ -6245,7 +6245,7 @@ fn forge_purge(table: []i8, id: []i8) -> bool {
 }
 
 // forge_touch — UPDATE table SET updated_at = NOW() WHERE id = '...'
-// Skips validations and callbacks (like Rails touch).
+// Skips validations and callbacks.
 fn forge_touch(table: []i8, id: []i8) -> bool {
     let buf: &i8 = alloc_pages(1)
     let pos = 0i64
@@ -6283,7 +6283,7 @@ fn forge_update_column(table: []i8, id: []i8, col: []i8, val: []i8) -> bool {
 }
 
 // forge_hard_delete — DELETE with BEFORE/AFTER_DELETE + AFTER_COMMIT callbacks.
-// Like Rails destroy; use forge_purge to skip callbacks.
+// Hard-deletes the row; use forge_purge to skip callbacks.
 fn forge_hard_delete(table: []i8, id: []i8) -> bool {
     if not forge_callback_run(table, FORGE_CB_BEFORE_DELETE, 0) { ret false }
     let buf: &i8 = alloc_pages(1)
@@ -8996,38 +8996,72 @@ fn forge_welcome_handler(ctx: i64) {
     b.write(".hint{font-size:.78rem;color:#94a3b8;line-height:1.6;margin-top:1rem}")
     b.write("</style></head><body><div class=\"page\">")
 
-    // SVG logo — blue shield, dark anvil, orange arrow, sparks, curly brace
+    // SVG logo — layered blue shield, blue anvil, flame arrow, integrated curly brace
     b.write("<div class=\"logo\">")
-    b.write("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 240 210\" width=\"160\" height=\"140\">")
+    b.write("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 280 230\" width=\"180\" height=\"148\">")
     b.write("<defs>")
-    b.write("<linearGradient id=\"sg\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"100%\">")
-    b.write("<stop offset=\"0%\" stop-color=\"#0d47a1\"/>")
-    b.write("<stop offset=\"100%\" stop-color=\"#42a5f5\"/>")
-    b.write("</linearGradient></defs>")
-    // Shield
-    b.write("<path d=\"M100 12 L166 36 L166 102 Q166 155 100 180 Q34 155 34 102 L34 36 Z\"")
-    b.write(" fill=\"white\" stroke=\"url(#sg)\" stroke-width=\"9\" stroke-linejoin=\"round\"/>")
+    // Shield outer gradient (deep navy → mid blue)
+    b.write("<linearGradient id=\"so\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"100%\">")
+    b.write("<stop offset=\"0%\" stop-color=\"#0a2564\"/>")
+    b.write("<stop offset=\"100%\" stop-color=\"#1976d2\"/>")
+    b.write("</linearGradient>")
+    // Shield inner fill
+    b.write("<linearGradient id=\"si\" x1=\"0%\" y1=\"0%\" x2=\"60%\" y2=\"100%\">")
+    b.write("<stop offset=\"0%\" stop-color=\"#17408b\"/>")
+    b.write("<stop offset=\"100%\" stop-color=\"#1565c0\"/>")
+    b.write("</linearGradient>")
+    // Anvil gradient — vibrant blue-teal
+    b.write("<linearGradient id=\"av\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"100%\">")
+    b.write("<stop offset=\"0%\" stop-color=\"#1565c0\"/>")
+    b.write("<stop offset=\"100%\" stop-color=\"#0288d1\"/>")
+    b.write("</linearGradient>")
+    // Warm glow behind flames
+    b.write("<radialGradient id=\"gl\" cx=\"42%\" cy=\"44%\" r=\"32%\">")
+    b.write("<stop offset=\"0%\" stop-color=\"#ff9800\" stop-opacity=\"0.45\"/>")
+    b.write("<stop offset=\"100%\" stop-color=\"#ff9800\" stop-opacity=\"0\"/>")
+    b.write("</radialGradient>")
+    b.write("</defs>")
+
+    // Shield outer (thick beveled border)
+    b.write("<path d=\"M118 10 L200 36 L200 118 Q200 176 118 204 Q36 176 36 118 L36 36 Z\"")
+    b.write(" fill=\"url(#so)\" stroke=\"#4fc3f7\" stroke-width=\"3\" stroke-linejoin=\"round\"/>")
+    // Shield inner panel
+    b.write("<path d=\"M118 24 L188 46 L188 118 Q188 166 118 190 Q48 166 48 118 L48 46 Z\"")
+    b.write(" fill=\"url(#si)\"/>")
+    // Warm glow overlay (fire lighting from inside)
+    b.write("<path d=\"M118 24 L188 46 L188 118 Q188 166 118 190 Q48 166 48 118 L48 46 Z\"")
+    b.write(" fill=\"url(#gl)\"/>")
+
+    // Curly brace — integrated into right shield edge
+    b.write("<path d=\"M196 72 Q218 80 210 102 Q204 120 216 132 Q204 144 210 164 Q218 184 196 192\"")
+    b.write(" fill=\"none\" stroke=\"#29b6f6\" stroke-width=\"9\" stroke-linecap=\"round\"/>")
+
     // Anvil base
-    b.write("<rect x=\"58\" y=\"148\" width=\"84\" height=\"11\" rx=\"4\" fill=\"#1a237e\"/>")
-    // Anvil body (lower block)
-    b.write("<rect x=\"62\" y=\"128\" width=\"76\" height=\"22\" rx=\"3\" fill=\"#1a237e\"/>")
-    // Anvil face (upper platform) with left horn
-    b.write("<path d=\"M52 128 L52 118 L70 112 L70 104 L130 104 L130 112 L148 112 L148 128 Z\"")
-    b.write(" fill=\"#1a237e\"/>")
-    // Arrow shaft (orange, diagonal lower-left to upper-right)
-    b.write("<line x1=\"72\" y1=\"100\" x2=\"122\" y2=\"62\" stroke=\"#e65100\" stroke-width=\"7\"")
+    b.write("<rect x=\"68\" y=\"164\" width=\"100\" height=\"14\" rx=\"5\" fill=\"url(#av)\"/>")
+    // Anvil lower body
+    b.write("<rect x=\"74\" y=\"142\" width=\"88\" height=\"24\" rx=\"3\" fill=\"url(#av)\"/>")
+    // Anvil upper platform + left horn
+    b.write("<path d=\"M56 142 L56 130 L76 120 L76 112 L160 112 L160 120 L172 120 L172 142 Z\"")
+    b.write(" fill=\"url(#av)\"/>")
+
+    // Flames (three shapes, trailing left of arrow)
+    b.write("<path d=\"M82 108 Q72 94 78 82 Q81 94 86 91 Q78 80 84 69 Q90 81 82 108\"")
+    b.write(" fill=\"#ff6d00\" opacity=\"0.95\"/>")
+    b.write("<path d=\"M94 110 Q83 96 90 83 Q93 96 98 93 Q90 82 96 70 Q103 83 94 110\"")
+    b.write(" fill=\"#ff9800\" opacity=\"0.85\"/>")
+    b.write("<path d=\"M106 108 Q97 95 103 83 Q106 95 110 92 Q104 82 109 71 Q115 83 106 108\"")
+    b.write(" fill=\"#ffc107\" opacity=\"0.7\"/>")
+
+    // Arrow (orange, lower-left to upper-right)
+    b.write("<line x1=\"96\" y1=\"108\" x2=\"158\" y2=\"68\" stroke=\"#ef6c00\" stroke-width=\"8\"")
     b.write(" stroke-linecap=\"round\"/>")
     // Arrow head
-    b.write("<polygon points=\"128,56 110,64 118,74\" fill=\"#ff6d00\"/>")
-    // Sparks / flames
-    b.write("<circle cx=\"133\" cy=\"50\" r=\"4\" fill=\"#ffd740\"/>")
-    b.write("<circle cx=\"140\" cy=\"60\" r=\"2.5\" fill=\"#ffc400\"/>")
-    b.write("<circle cx=\"126\" cy=\"44\" r=\"2.5\" fill=\"#ffe57f\"/>")
-    b.write("<line x1=\"138\" y1=\"48\" x2=\"144\" y2=\"42\" stroke=\"#ffab00\" stroke-width=\"2\"")
-    b.write(" stroke-linecap=\"round\"/>")
-    // Curly brace (right side, outside shield)
-    b.write("<text x=\"174\" y=\"128\" font-family=\"Georgia,serif\" font-size=\"72\" font-weight=\"bold\"")
-    b.write(" fill=\"#1565c0\" opacity=\"0.85\">}</text>")
+    b.write("<polygon points=\"165,62 144,72 154,84\" fill=\"#ff6d00\"/>")
+    // Glow sparks at tip
+    b.write("<circle cx=\"168\" cy=\"56\" r=\"5\" fill=\"#ffd740\" opacity=\"0.9\"/>")
+    b.write("<circle cx=\"177\" cy=\"66\" r=\"3\" fill=\"#ffb300\" opacity=\"0.8\"/>")
+    b.write("<circle cx=\"161\" cy=\"50\" r=\"3\" fill=\"#fff176\" opacity=\"0.8\"/>")
+
     b.write("</svg></div>")
 
     b.write("<h1>JDA Forge</h1>")

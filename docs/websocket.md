@@ -144,7 +144,7 @@ get "/ws"   "ws#handle"
 
 # Channels
 
-Channels are a higher-level pub/sub layer built on top of WebSocket — similar to Action Cable in Rails. A channel is a named topic; clients subscribe to it and the server broadcasts to all subscribers.
+Channels are a higher-level pub/sub layer built on top of WebSocket. A channel is a named topic; clients subscribe to it and the server broadcasts to all subscribers.
 
 ## Setup
 

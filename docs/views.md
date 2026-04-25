@@ -507,7 +507,7 @@ Wraps every occurrence of a phrase in an HTML tag. Useful for search result high
 
 ```jda
 let highlighted = forge_highlight(post.title, query, "mark")
-// <mark>Rails</mark>-style routing
+// <mark>routing</mark>
 ```
 
 Arguments: `(source, phrase, tag_name)`

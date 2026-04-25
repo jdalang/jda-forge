@@ -1,6 +1,6 @@
 # Library Management
 
-JDA Forge uses a `Forgefile` to declare dependencies — similar to a Gemfile or package.json. Libraries are plain `.jda` files fetched from git repositories and placed in `libs/`.
+JDA Forge uses a `Forgefile` to declare dependencies. Libraries are plain `.jda` files fetched from git repositories and placed in `libs/`.
 
 ---
 

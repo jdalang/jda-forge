@@ -1,6 +1,6 @@
 # Asset Pipeline
 
-Forge ships a Rails-style asset pipeline: CSS and JS files are fingerprinted in production so browsers cache them forever, and stale assets are busted automatically on deploy.
+Forge ships a built-in asset pipeline: CSS and JS files are fingerprinted in production so browsers cache them forever, and stale assets are busted automatically on deploy.
 
 ---
 

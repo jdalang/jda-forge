@@ -9,7 +9,7 @@ A complete multi-file Forge application demonstrating:
 - Model validations and soft delete
 - Multi-environment configuration (development / staging / production / test)
 - Database migrations
-- Rails-style MVC directory layout
+- MVC directory layout
 - Chainable request tests
 
 ---

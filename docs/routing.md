@@ -166,7 +166,7 @@ app.post("/login", "sessions#create")
 app.delete("/logout", "sessions#delete")
 ```
 
-These use the registry to look up the handler — same `"controller#action"` string as Rails.
+These use the registry to look up the handler.
 
 ### 2.7 Concerns
 
@@ -951,7 +951,7 @@ fn edit_post_comment_path(post_id: []i8, id: []i8) -> []i8 {
 |---|---|
 | `forge_scope(app, "/prefix")` | Scope at arbitrary prefix |
 | `forge_scope_nested(scope, "/suffix")` | Child scope — concatenates prefix + suffix |
-| `forge_namespace(app, "admin")` | Scope at `/admin` (Rails namespace alias) |
+| `forge_namespace(app, "admin")` | Scope all routes under `/admin` |
 | `forge_resources(app, "posts", ...)` | 7 routes + returns `&ForgeScope` at `/posts/:post_id` |
 | `forge_scope_resources(scope, "comments", ...)` | 7 nested routes + returns deeper `&ForgeScope` |
 | `forge_resource(app, "profile", ...)` | 6 singular routes (no index, no :id) |
@@ -1045,7 +1045,7 @@ fn posts_before_actions() {
 
 ## 16. Controller rescue handler
 
-`forge_ctrl_rescue(ctrl, fn_ptr)` registers a fallback that runs when the action exits without sending a response — the JDA equivalent of Rails `rescue_from`. Use it for a consistent error page across a whole controller without repeating error-handling logic in every action.
+`forge_ctrl_rescue(ctrl, fn_ptr)` registers a fallback that runs when the action exits without sending a response — a controller-level fallback for unhandled errors. Use it for a consistent error page across a whole controller without repeating error-handling logic in every action.
 
 ```jda
 fn rescue(ctx: i64) {

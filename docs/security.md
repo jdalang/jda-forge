@@ -488,7 +488,7 @@ let valid = forge_bcrypt_verify(password, hash)  // returns bool
 
 ### forge_secure_password_set / forge_secure_password_verify
 
-Convenience wrappers that mirror Rails `has_secure_password`. The column must be named `password_hash`.
+Convenience wrappers for password hashing. The column must be named `password_hash`.
 
 ```jda
 fn user_create(email: []i8, password: []i8) -> bool {

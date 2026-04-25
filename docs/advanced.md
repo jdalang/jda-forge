@@ -1,6 +1,6 @@
 # Advanced Features
 
-This page covers features added beyond the core MVC stack — closer parity with what Rails provides out of the box.
+This page covers advanced capabilities built into Forge.
 
 ---
 
@@ -246,7 +246,7 @@ Values are stored in the cache with a 30-second TTL using the composite key `"__
 
 ## 8. Controller rescue handler
 
-Register a fallback handler that's called when an action completes without sending any response. This is the JDA Forge equivalent of Rails' `rescue_from`.
+Register a fallback handler that's called when an action completes without sending any response. Use it to provide a consistent error page across an entire controller.
 
 ```jda
 fn application_rescue(ctx: i64) {
@@ -610,7 +610,7 @@ forge_instrument (event: []i8, payload: i64)
 
 ## 16. Single Table Inheritance (STI)
 
-STI lets multiple model types share one database table, differentiated by a type column. It is identical to Rails STI: one migration, one table, subtype-scoped query helpers generated automatically.
+STI lets multiple model types share one database table, differentiated by a type column. One migration, one table, subtype-scoped query helpers generated automatically.
 
 ### Schema
 

@@ -448,7 +448,7 @@ forge_q("posts").where_not_null("published_at")
 Pattern matching. `where_ilike` is case-insensitive. Use `%` as a wildcard.
 
 ```jda
-forge_q("posts").where_ilike("title", "%rails%")
+forge_q("posts").where_ilike("title", "%jda%")
 ```
 
 #### .where_between(col, lo, hi)
@@ -484,7 +484,7 @@ forge_q("posts").where_raw("published_at < NOW() - INTERVAL '7 days'")
 
 #### .where_bind(template, args) — parameterized conditions
 
-Rails-style `?` placeholder substitution. Each `?` is replaced with the next pipe-separated value, SQL-escaped and single-quoted. Values must not contain `|`.
+`?` placeholder substitution. Each `?` is replaced with the next pipe-separated value, SQL-escaped and single-quoted. Values must not contain `|`.
 
 ```jda
 // Two conditions in one call
@@ -867,7 +867,7 @@ Use `find_each` when you want full query builder control (filters, ordering) or 
 
 ## Validations
 
-Forge supports two validation styles: **declarative** (Rails-style, fires automatically on save) and **manual** (explicit calls you control). Prefer declarative for standard rules; fall back to manual for complex cross-field logic.
+Forge supports two validation styles: **declarative** (fires automatically on save) and **manual** (explicit calls you control). Prefer declarative for standard rules; fall back to manual for complex cross-field logic.
 
 ### Model init — the full picture
 
@@ -931,30 +931,30 @@ fn posts_create(ctx: i64) {
 }
 ```
 
-#### Rails → Forge validation reference
+#### Validation reference
 
-| Rails | Forge (declarative) | Notes |
-|---|---|---|
-| `validates :f, presence: true` | `forge_field("f", FORGE_V_PRESENCE)` | |
-| `validates :f, absence: true` | `forge_field("f", FORGE_V_ABSENCE)` | |
-| `validates :f, :g, presence: true` | `forge_field("f, g", FORGE_V_PRESENCE)` | comma-separated |
-| `validates :f, length: { minimum: 2 }` | `forge_field_min("f", 2)` | |
-| `validates :f, length: { maximum: 255 }` | `forge_field_param("f", FORGE_V_MAX_LEN, "255")` | |
-| `validates :f, length: { minimum: 2, maximum: 255 }` | `forge_field_length("f", 2, 255)` | |
-| `validates :f, length: { is: 10 }` | `forge_field_exact("f", 10)` | |
-| `validates :f, numericality: true` | `forge_field("f", FORGE_V_NUMERICALITY)` | digits only |
-| `validates :f, numericality: { greater_than: 0 }` | `forge_field_gt("f", 0)` | |
-| `validates :f, numericality: { greater_than_or_equal_to: 18 }` | `forge_field_gte("f", 18)` | |
-| `validates :f, numericality: { less_than: 100 }` | `forge_field_lt("f", 100)` | |
-| `validates :f, numericality: { less_than_or_equal_to: 65 }` | `forge_field_lte("f", 65)` | |
-| `validates :f, numericality: { equal_to: 42 }` | `forge_field_equal_to("f", 42)` | |
-| `validates :f, format: { with: URI::MailTo::EMAIL_REGEXP }` | `forge_field("f", FORGE_V_EMAIL)` | |
-| `validates :f, format: { with: URI }` | `forge_field("f", FORGE_V_URL)` | http/https + dot |
-| `validates :f, inclusion: { in: %w[a b c] }` | `forge_field_param("f", FORGE_V_INCLUSION, "a,b,c")` | |
-| `validates :f, exclusion: { in: %w[admin root] }` | `forge_field_param("f", FORGE_V_EXCLUSION, "admin,root")` | |
-| `validates :f, acceptance: true` | `forge_field_acceptance("f")` | "1" or "true" |
-| `validates :f, confirmation: true` | `forge_field_confirm("f", "f_confirmation")` | ¹ |
-| `validates :f, uniqueness: true` | `forge_validate_uniqueness(e, table, f, val, id)` | manual only ² |
+| Forge (declarative) | Notes |
+|---|---|
+| `forge_field("f", FORGE_V_PRESENCE)` | |
+| `forge_field("f", FORGE_V_ABSENCE)` | |
+| `forge_field("f, g", FORGE_V_PRESENCE)` | comma-separated |
+| `forge_field_min("f", 2)` | |
+| `forge_field_param("f", FORGE_V_MAX_LEN, "255")` | |
+| `forge_field_length("f", 2, 255)` | |
+| `forge_field_exact("f", 10)` | |
+| `forge_field("f", FORGE_V_NUMERICALITY)` | digits only |
+| `forge_field_gt("f", 0)` | |
+| `forge_field_gte("f", 18)` | |
+| `forge_field_lt("f", 100)` | |
+| `forge_field_lte("f", 65)` | |
+| `forge_field_equal_to("f", 42)` | |
+| `forge_field("f", FORGE_V_EMAIL)` | |
+| `forge_field("f", FORGE_V_URL)` | http/https + dot |
+| `forge_field_param("f", FORGE_V_INCLUSION, "a,b,c")` | |
+| `forge_field_param("f", FORGE_V_EXCLUSION, "admin,root")` | |
+| `forge_field_acceptance("f")` | "1" or "true" |
+| `forge_field_confirm("f", "f_confirmation")` | ¹ |
+| `forge_validate_uniqueness(e, table, f, val, id)` | manual only ² |
 
 ¹ The confirmation field must be included in `forge_attrs_set` calls — it is not a DB column but must be passed as an attribute.
 
@@ -1171,7 +1171,7 @@ Declare associations at the model level so the complete relationship graph is vi
 
 ### Declaring associations (model-level)
 
-Inside `*_model_init`, after `forge_model()`. Forge supports the full set of Rails-style associations including HABTM, polymorphic, and self-referential (parent/child).
+Inside `*_model_init`, after `forge_model()`. Forge supports the full set of associations including HABTM, polymorphic, and self-referential (parent/child).
 
 #### belongs_to / has_many / has_one
 
@@ -1358,7 +1358,7 @@ forge_callback_add("users", FORGE_CB_AFTER_CREATE,  fn_addr(user_send_welcome_em
 
 ## Before Actions (Controller Filters)
 
-Like Rails `before_action`, Forge lets you register filter functions that run before selected controller actions. The filter loads shared data (e.g. the current post) into the request context via `ctx_set`; actions read it back with `ctx_get`.
+Forge lets you register filter functions that run before selected controller actions. The filter loads shared data (e.g. the current post) into the request context via `ctx_set`; actions read it back with `ctx_get`.
 
 ### Pattern
 
@@ -1487,7 +1487,7 @@ Fires the full `BEFORE_DELETE` → SQL → `AFTER_DELETE` → `AFTER_COMMIT` cal
 let ok = forge_purge("posts", id)           // raw DELETE, skips all callbacks
 ```
 
-Permanently removes the row without firing any callbacks. Like Rails `Model.delete` vs `Model.destroy`.
+Permanently removes the row without firing any callbacks. Use `forge_destroy` when you need callbacks to run.
 
 ### Querying deleted rows
 
@@ -2117,7 +2117,7 @@ Inserts multiple rows with a single SQL statement. Pass a CSV of column names an
 ```jda
 forge_insert_all("tags",
     "name, color",
-    "'elixir','#6e4494' | 'ruby','#cc342d' | 'go','#00aed8'")
+    "'elixir','#6e4494' | 'rust','#ce412b' | 'go','#00aed8'")
 ```
 
 Rows are separated by `|`. Values must be pre-quoted (single-quoted strings, bare numbers). Returns `true` if the INSERT succeeded.

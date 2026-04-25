@@ -1952,7 +1952,7 @@ gen_controller() {
     local snake; snake=$(snake_case "$name")
     local table; table=$(plural "$snake")
     mkdir -p app/controllers
-    # Rails convention: app/controllers/<resource>_controller.jda
+    # Convention: app/controllers/<resource>_controller.jda
     local out="app/controllers/${snake}_controller.jda"
     cat > "$out" <<JDA
 // Controller: ${name}
@@ -2000,7 +2000,7 @@ JDA
 
 gen_scaffold() {
     local name="$1"; shift; local fields=("$@")
-    # Enforce PascalCase resource name — same rule as Rails
+    # Enforce PascalCase resource name
     if [[ ! "$name" =~ ^[A-Z][a-zA-Z0-9]*$ ]]; then
         err "Resource name must be PascalCase (e.g. Post, BlogPost). Got: $name"
     fi
@@ -2075,7 +2075,7 @@ cmd_build() {
 }
 
 # ---------------------------------------------------------------------------
-# forge test — run test suite (like rails test)
+# forge test — run test suite
 # ---------------------------------------------------------------------------
 
 cmd_test() {
@@ -2103,7 +2103,7 @@ cmd_test() {
 }
 
 # ---------------------------------------------------------------------------
-# forge server — build and start the app (like rails s)
+# forge server — build and start the app
 # ---------------------------------------------------------------------------
 
 cmd_server() {
@@ -2146,7 +2146,7 @@ cmd_server() {
 }
 
 # ---------------------------------------------------------------------------
-# forge console — open a database console (like rails c / rails db)
+# forge console — open a database console
 # ---------------------------------------------------------------------------
 
 # Extract SQL from the -- migrate:up section (everything before -- migrate:down).

@@ -77,7 +77,7 @@ Walkthrough: [docs/blog-example.md](docs/blog-example.md)
 
 **Multiple databases** — register named connections by URL (`forge_db_add("analytics", url)`), query any of them with `forge_q_on("analytics", "events")`, mix PostgreSQL and MySQL/MariaDB in one app.
 
-**ORM** — Rails-style query builder (`where_eq`, `order`, `limit`, `joins`, `group`, `having`, aggregates, scopes, batch processing). Tables with `deleted_at` get automatic soft-delete scoping — `post_all()` excludes deleted rows; `post_with_deleted()` and `post_only_deleted()` opt back in. Auto-generates typed CRUD per table including `post_reload`, `post_toggle`, `post_increment`, `post_decrement`, plus `forge_q_pick`, `forge_q_reorder`, `forge_q_reverse_order`, `forge_q_find_each`. Also generates a typed row struct (`PostRow`) and converter (`post_row(result, r)`) per table so templates can use `post.title`, `post.id` instead of `forge_result_col` calls. Pessimistic locking via `.lock()`, `forge_find_or_init_by`, and `forge_insert_all` for bulk inserts. **Single Table Inheritance** — declare `forge_sti_subtype("parent_table", "type", "Car")` in a model init file; `forge compile-models` generates fully-scoped `car_all`, `car_find`, `car_create_from`, etc. with the type discriminator applied automatically.
+**ORM** — query builder (`where_eq`, `order`, `limit`, `joins`, `group`, `having`, aggregates, scopes, batch processing). Tables with `deleted_at` get automatic soft-delete scoping — `post_all()` excludes deleted rows; `post_with_deleted()` and `post_only_deleted()` opt back in. Auto-generates typed CRUD per table including `post_reload`, `post_toggle`, `post_increment`, `post_decrement`, plus `forge_q_pick`, `forge_q_reorder`, `forge_q_reverse_order`, `forge_q_find_each`. Also generates a typed row struct (`PostRow`) and converter (`post_row(result, r)`) per table so templates can use `post.title`, `post.id` instead of `forge_result_col` calls. Pessimistic locking via `.lock()`, `forge_find_or_init_by`, and `forge_insert_all` for bulk inserts. **Single Table Inheritance** — declare `forge_sti_subtype("parent_table", "type", "Car")` in a model init file; `forge compile-models` generates fully-scoped `car_all`, `car_find`, `car_create_from`, etc. with the type discriminator applied automatically.
 
 **Model init** — associations, callbacks, and validations declared together in one `*_model_init` function so the full shape of a model is visible in one place:
 
@@ -106,7 +106,7 @@ fn post_model_init() {
 
 **Controllers** — thin action functions, `ctx_render`, `ctx_redirect`, `ctx_redirect_back`, `ctx_head` (status-only response), flash (`ctx_flash_now`, `ctx_flash_keep`), strong params, format-aware `ctx_respond_to`. HTTP caching via `ctx_etag`, `ctx_last_modified`, `ctx_stale`. Request-scoped store via `forge_current_set/get`. Rescue handler via `forge_ctrl_rescue`.
 
-**Before actions** — `forge_ctrl_before(ctrl, fn_ptr, "show, edit")` and `forge_ctrl_before_except(ctrl, fn_ptr, "index, new")` for Rails-style controller filters.
+**Before actions** — `forge_ctrl_before(ctrl, fn_ptr, "show, edit")` and `forge_ctrl_before_except(ctrl, fn_ptr, "index, new")` for controller filters.
 
 **JSON API** — `ctx_json_ok`, `ctx_json_created`, `ctx_json_errors` (422 with validation body), `forge_result_to_json`, `ForgeJson` builder for selective fields.
 
@@ -128,7 +128,7 @@ fn post_model_init() {
 
 **View helpers** — `forge_time_ago`, `forge_distance_of_time`, `forge_number_to_currency`, `forge_number_with_delimiter`, `forge_word_wrap` for formatting in templates.
 
-**Asset pipeline** — Rails-style fingerprinting for CSS/JS. `forge compile-assets` copies files to `public/assets/`, fingerprints them in production (`application-abc123def4567890.css`), and generates `_build/assets.jda` with `forge_stylesheet_tag`, `forge_javascript_tag`, `forge_image_tag`, and `forge_asset_path` baked in at compile time — zero runtime overhead.
+**Asset pipeline** — production fingerprinting for CSS/JS. `forge compile-assets` copies files to `public/assets/`, fingerprints them in production (`application-abc123def4567890.css`), and generates `_build/assets.jda` with `forge_stylesheet_tag`, `forge_javascript_tag`, `forge_image_tag`, and `forge_asset_path` baked in at compile time — zero runtime overhead.
 
 **Caching** — `forge_cache_fetch(key, ttl, fn_ptr)` for memoized caching. File uploads, i18n, serializers all built in.
 

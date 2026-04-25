@@ -8,7 +8,7 @@ Format: [Semantic Versioning](https://semver.org) — `MAJOR.MINOR.PATCH`
 ## [3.0.0] — 2026-04-22
 
 ### Added
-- **Phases 1–9 complete** — framework now at parity with Rails/Django
+- **Phases 1–9 complete** — framework now at parity with major web frameworks
 - Phase 1 — Model layer: query builder (`forge_q`), validations, callbacks, associations, transactions, soft delete, JSON serializer
 - Phase 2 — Controller layer: `ForgeController`, before/after filters, strong params (`forge_permit_json`), `respond_to`, pagination, content negotiation
 - Phase 3 — View layer: layouts, partials, `content_for`/`yield`, `forge_link_to`, `forge_form_tag_*`, path helpers, asset helpers

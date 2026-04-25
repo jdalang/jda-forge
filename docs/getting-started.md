@@ -157,7 +157,7 @@ myapp/
 
 ### File-by-file
 
-**`Forgefile`** declares dependencies, similar to a Gemfile or package.json:
+**`Forgefile`** declares the Forge version and any libraries your project depends on:
 
 ```
 forge "github.com/jdalang/jda-forge" version "3.0.0"
@@ -201,7 +201,7 @@ Here is where each kind of code lives and why.
 | `patches/` | Optional — overrides for library functions (see [overriding.md](overriding.md)) |
 | `main.jda` | Wires everything together — always the last file compiled |
 
-**Naming conventions** — Forge enforces Rails-style conventions and raises an error if they are violated:
+**Naming conventions** — Forge enforces these conventions and raises an error if they are violated:
 
 | Layer | File | Functions |
 |---|---|---|
@@ -279,15 +279,7 @@ forge server --watch
 
 Save a file → the binary recompiles → server restarts automatically. You just wait a few seconds.
 
-Compare to Rails:
-
-| Change | Rails | Forge |
-|---|---|---|
-| Controller / model | Auto-reloads, no restart | Recompile + restart |
-| View | Auto-reloads | Recompile + restart |
-| `config/routes.jda` | Server restart | Recompile + restart |
-
-The compile step is the tradeoff for a fast, GC-free production binary with no runtime dependencies. For dev-heavy iteration, `forge server --watch` makes the loop automatic.
+Any source file change requires a recompile and server restart. Use `forge server --watch` — it detects changes and restarts automatically.
 
 ---
 
