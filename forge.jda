@@ -652,6 +652,35 @@ fn forge_app_delete(app: &ForgeApp, path: []i8, s: []i8) {
     if h != 0 { app_delete(app, path, h) }
 }
 
+fn forge_app_scope(app: &ForgeApp, prefix: []i8) -> &ForgeScope {
+    ret forge_scope(app, prefix)
+}
+
+fn forge_scope_app_get(s: &ForgeScope, path: []i8, act: []i8) {
+    let h = forge_action_get(forge__ctrl_from_str(act), forge__act_from_str(act))
+    if h != 0 { forge_scope_get(s, path, h) }
+}
+
+fn forge_scope_app_post(s: &ForgeScope, path: []i8, act: []i8) {
+    let h = forge_action_get(forge__ctrl_from_str(act), forge__act_from_str(act))
+    if h != 0 { forge_scope_post(s, path, h) }
+}
+
+fn forge_scope_app_put(s: &ForgeScope, path: []i8, act: []i8) {
+    let h = forge_action_get(forge__ctrl_from_str(act), forge__act_from_str(act))
+    if h != 0 { forge_scope_put(s, path, h) }
+}
+
+fn forge_scope_app_delete(s: &ForgeScope, path: []i8, act: []i8) {
+    let h = forge_action_get(forge__ctrl_from_str(act), forge__act_from_str(act))
+    if h != 0 { forge_scope_delete(s, path, h) }
+}
+
+fn forge_scope_app_patch(s: &ForgeScope, path: []i8, act: []i8) {
+    let h = forge_action_get(forge__ctrl_from_str(act), forge__act_from_str(act))
+    if h != 0 { forge_scope_patch(s, path, h) }
+}
+
 fn app_ws(app: &ForgeApp, pattern: []i8, handler: i64) {
     let n = app.route_count
     if n < FORGE_MAX_ROUTES {

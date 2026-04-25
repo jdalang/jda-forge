@@ -87,6 +87,15 @@ plural() {
         *) echo "${w}s" ;;
     esac
 }
+singularize() {
+    local w="$1"
+    case "$w" in
+        *ies) echo "${w%ies}y" ;;
+        *ses|*xes|*zes|*shes|*ches) echo "${w%es}" ;;
+        *s) echo "${w%s}" ;;
+        *) echo "$w" ;;
+    esac
+}
 sql_type() {
     case "$1" in
         string)     echo "VARCHAR(255)" ;;
@@ -104,12 +113,173 @@ next_migration_number() {
     local dir="db/migrate"
     mkdir -p "$dir"
     local max=0
-    for f in "$dir"/*.sql 2>/dev/null; do
+    for f in "$dir"/*.sql; do
         [ -f "$f" ] || continue
         local num; num=$(basename "$f" | cut -d_ -f1); num=$((10#${num}))
         [ "$num" -gt "$max" ] && max=$num
     done
     printf "%03d" $((max + 1))
+}
+
+# ---------------------------------------------------------------------------
+# compile_routes — DSL config/routes → config/routes.jda
+# ---------------------------------------------------------------------------
+
+compile_routes() {
+    local dsl="config/routes"
+    [ ! -f "$dsl" ] && return 0
+
+    local out="config/routes.jda"
+    local fh; fh=$(mktemp)   # path helper declarations
+    local fb; fb=$(mktemp)   # routes() body
+
+    local var_idx=0
+
+    # Stack parallel arrays (index = nesting depth)
+    local s_type=()   # resources | namespace | scope
+    local s_var=()    # jda variable name (_s0, _s1, …)
+    local s_res=()    # resource name / namespace name / scope prefix
+    local s_sing=()   # singular (for resources parent)
+
+    _cr_sing() {
+        case "$1" in
+            *ies) printf '%s' "${1%ies}y" ;;
+            *ses|*xes|*zes|*shes|*ches) printf '%s' "${1%es}" ;;
+            *s)   printf '%s' "${1%s}" ;;
+            *)    printf '%s' "$1" ;;
+        esac
+    }
+
+    while IFS= read -r raw || [[ -n "$raw" ]]; do
+        # trim whitespace
+        local L="${raw#"${raw%%[![:space:]]*}"}"
+        L="${L%"${L##*[![:space:]]}"}"
+        [[ -z "$L" || "$L" == "#"* ]] && continue
+
+        local depth=${#s_type[@]}
+        local par_var="" par_type="" par_res="" par_sing=""
+        if (( depth > 0 )); then
+            par_var="${s_var[$((depth-1))]}"
+            par_type="${s_type[$((depth-1))]}"
+            par_res="${s_res[$((depth-1))]}"
+            par_sing="${s_sing[$((depth-1))]}"
+        fi
+
+        if [[ "$L" == "end" ]]; then
+            (( depth > 0 )) && {
+                local n=$((depth-1))
+                s_type=("${s_type[@]:0:$n}")
+                s_var=("${s_var[@]:0:$n}")
+                s_res=("${s_res[@]:0:$n}")
+                s_sing=("${s_sing[@]:0:$n}")
+            }
+            continue
+        fi
+
+        if [[ "$L" =~ ^root[[:space:]]+\"([^\"]+)\" ]]; then
+            printf '    app.root("%s")\n' "${BASH_REMATCH[1]}" >> "$fb"
+
+        elif [[ "$L" =~ ^resources[[:space:]]+\"([^\"]+)\"(.*) ]]; then
+            local res="${BASH_REMATCH[1]}"
+            local rest="${BASH_REMATCH[2]}"
+            local sing; sing=$(_cr_sing "$res")
+            local has_block=false
+            [[ "$rest" =~ (^|[[:space:]])do($|[[:space:]]) ]] && has_block=true
+
+            case "$par_type" in
+                "")
+                    printf 'let %s_path: []i8    = "/%s"\n' "$res" "$res" >> "$fh"
+                    printf 'let new_%s_path: []i8 = "/%s/new"\n' "$sing" "$res" >> "$fh"
+                    printf 'fn %s_path(id: []i8) -> []i8      { ret forge_path_id("%s", id) }\n' "$sing" "$res" >> "$fh"
+                    printf 'fn edit_%s_path(id: []i8) -> []i8 { ret forge_path_edit("%s", id) }\n' "$sing" "$res" >> "$fh"
+                    ;;
+                "resources")
+                    printf 'fn %s_%s_path(%s_id: []i8) -> []i8                { ret forge_nested_path("%s", %s_id, "%s") }\n' \
+                        "$par_sing" "$res" "$par_sing" "$par_res" "$par_sing" "$res" >> "$fh"
+                    printf 'fn %s_%s_path(%s_id: []i8, id: []i8) -> []i8     { ret forge_nested_path_id("%s", %s_id, "%s", id) }\n' \
+                        "$par_sing" "$sing" "$par_sing" "$par_res" "$par_sing" "$res" >> "$fh"
+                    printf 'fn new_%s_%s_path(%s_id: []i8) -> []i8           { ret forge_nested_path_new("%s", %s_id, "%s") }\n' \
+                        "$par_sing" "$sing" "$par_sing" "$par_res" "$par_sing" "$res" >> "$fh"
+                    printf 'fn edit_%s_%s_path(%s_id: []i8, id: []i8) -> []i8 { ret forge_nested_path_edit("%s", %s_id, "%s", id) }\n' \
+                        "$par_sing" "$sing" "$par_sing" "$par_res" "$par_sing" "$res" >> "$fh"
+                    ;;
+                "namespace")
+                    printf 'let %s_%s_path: []i8    = "/%s/%s"\n' "$par_res" "$res" "$par_res" "$res" >> "$fh"
+                    printf 'let new_%s_%s_path: []i8 = "/%s/%s/new"\n' "$par_res" "$sing" "$par_res" "$res" >> "$fh"
+                    printf 'fn %s_%s_path(id: []i8) -> []i8      { ret forge_path_id("%s/%s", id) }\n' "$par_res" "$sing" "$par_res" "$res" >> "$fh"
+                    printf 'fn edit_%s_%s_path(id: []i8) -> []i8 { ret forge_path_edit("%s/%s", id) }\n' "$par_res" "$sing" "$par_res" "$res" >> "$fh"
+                    ;;
+                "scope")
+                    local sp="${par_res#/}"; sp="${sp//\//_}"
+                    local sp_bare="${par_res#/}"
+                    printf 'let %s_%s_path: []i8    = "%s/%s"\n' "$sp" "$res" "$par_res" "$res" >> "$fh"
+                    printf 'let new_%s_%s_path: []i8 = "%s/%s/new"\n' "$sp" "$sing" "$par_res" "$res" >> "$fh"
+                    printf 'fn %s_%s_path(id: []i8) -> []i8      { ret forge_path_id("%s/%s", id) }\n' "$sp" "$sing" "$sp_bare" "$res" >> "$fh"
+                    printf 'fn edit_%s_%s_path(id: []i8) -> []i8 { ret forge_path_edit("%s/%s", id) }\n' "$sp" "$sing" "$sp_bare" "$res" >> "$fh"
+                    ;;
+            esac
+
+            if $has_block; then
+                local vname="_s${var_idx}"; var_idx=$((var_idx+1))
+                if [[ -z "$par_var" ]]; then
+                    printf '    let %s = app.resources("%s")\n' "$vname" "$res" >> "$fb"
+                else
+                    printf '    let %s = %s.resources("%s")\n' "$vname" "$par_var" "$res" >> "$fb"
+                fi
+                s_type+=("resources"); s_var+=("$vname"); s_res+=("$res"); s_sing+=("$sing")
+            else
+                if [[ -z "$par_var" ]]; then
+                    printf '    app.resources("%s")\n' "$res" >> "$fb"
+                else
+                    printf '    %s.resources("%s")\n' "$par_var" "$res" >> "$fb"
+                fi
+            fi
+
+        elif [[ "$L" =~ ^namespace[[:space:]]+\"([^\"]+)\"[[:space:]]+do ]]; then
+            local ns="${BASH_REMATCH[1]}"
+            local vname="_s${var_idx}"; var_idx=$((var_idx+1))
+            printf '    let %s = app.namespace("%s")\n' "$vname" "$ns" >> "$fb"
+            s_type+=("namespace"); s_var+=("$vname"); s_res+=("$ns"); s_sing+=("$ns")
+
+        elif [[ "$L" =~ ^scope[[:space:]]+\"([^\"]+)\"[[:space:]]+do ]]; then
+            local pfx="${BASH_REMATCH[1]}"
+            local vname="_s${var_idx}"; var_idx=$((var_idx+1))
+            printf '    let %s = app.scope("%s")\n' "$vname" "$pfx" >> "$fb"
+            s_type+=("scope"); s_var+=("$vname"); s_res+=("$pfx"); s_sing+=("")
+
+        elif [[ "$L" =~ ^(get|post|put|delete|patch)[[:space:]]+\"([^\"]+)\"[[:space:]]+\"([^\"]+)\"(.*) ]]; then
+            local method="${BASH_REMATCH[1]}"
+            local path="${BASH_REMATCH[2]}"
+            local act="${BASH_REMATCH[3]}"
+            local rest2="${BASH_REMATCH[4]}"
+            local alias_name=""
+            [[ "$rest2" =~ [[:space:]]+as[[:space:]]+\"([^\"]+)\" ]] && alias_name="${BASH_REMATCH[1]}"
+
+            if [[ -n "$alias_name" ]]; then
+                local full_path="$path"
+                [[ -n "$par_res" && "$par_type" != "resources" ]] && full_path="${par_res}${path}"
+                printf 'let %s_path: []i8 = "%s"\n' "$alias_name" "$full_path" >> "$fh"
+            fi
+
+            if [[ -z "$par_var" ]]; then
+                printf '    app.%s("%s", "%s")\n' "$method" "$path" "$act" >> "$fb"
+            else
+                printf '    forge_scope_app_%s(%s, "%s", "%s")\n' "$method" "$par_var" "$path" "$act" >> "$fb"
+            fi
+        fi
+
+    done < "$dsl"
+
+    {
+        printf '// Auto-generated from config/routes — do not edit directly\n\n'
+        cat "$fh"
+        printf '\nfn routes(app: &ForgeApp) {\n'
+        cat "$fb"
+        printf '}\n'
+    } > "$out"
+
+    rm -f "$fh" "$fb"
+    ok "compiled config/routes → config/routes.jda"
 }
 
 # Normalise version tag: "3.0.0" → "v3.0.0"
@@ -374,7 +544,7 @@ cmd_list() {
     echo -e "${BOLD}Installed libraries${NC} (libs/*.jda):"
     echo ""
     local found=0
-    for f in libs/*.jda 2>/dev/null; do
+    for f in libs/*.jda; do
         [ -f "$f" ] || continue
         local name; name=$(basename "$f" .jda)
         local lines; lines=$(wc -l < "$f" | tr -d ' ')
@@ -592,18 +762,27 @@ fn app_config() -> ForgeConfig {
 JDA
     ok "created config/application.jda"
 
-    cat > "$name/config/routes.jda" <<'JDA'
-// Routes — config/routes.jda
+    cat > "$name/config/routes" <<'DSL'
+root "pages#home"
 
-fn routes(app: &ForgeApp) {
-    app_root(app, fn_addr(handle_root))
+# resources "posts" do
+#   resources "comments"
+# end
+#
+# namespace "admin" do
+#   resources "users"
+# end
+#
+# get "/about" "pages#about" as "about"
+DSL
+    ok "created config/routes"
 
-    // forge_resources(app, "posts",
-    //     fn_addr(posts_index), fn_addr(posts_new),   fn_addr(posts_create),
-    //     fn_addr(posts_show),  fn_addr(posts_edit),  fn_addr(posts_update), fn_addr(posts_delete))
+    cat > "$name/config/controllers.jda" <<'JDA'
+fn forge_controllers_init() {
+    // forge_action_register("pages", "home", fn_addr(pages_home))
 }
 JDA
-    ok "created config/routes.jda"
+    ok "created config/controllers.jda"
 
     cat > "$name/app/controllers/application_controller.jda" <<'JDA'
 // ApplicationController — shared helpers for all controllers
@@ -687,7 +866,7 @@ JDA
     ok "created app/views/shared/_errors.html.jda"
 
     cat > "$name/main.jda" <<'JDA'
-fn handle_root(ctx: i64) {
+fn pages_home(ctx: i64) {
     ctx_html(ctx, 200, "<h1>Welcome</h1>")
 }
 
@@ -705,6 +884,7 @@ fn main() {
 
     app_static(app, "/static", "./public")
 
+    forge_controllers_init()
     routes(app)
 
     app_listen(app, str_to_i32(forge_env_get("APP_PORT")))
@@ -723,17 +903,18 @@ FORGE = libs/forge.jda
 LIBS  = $(filter-out $(FORGE), $(wildcard libs/*.jda))
 LINCS = $(addprefix --include ,$(LIBS))
 
-CONFIG      = config/application.jda
-HELPERS     = $(shell find app/helpers     -name "*.jda"      2>/dev/null | sort)
-MODELS      = $(shell find app/models      -name "*.jda"      2>/dev/null | sort)
-VIEWS       = $(shell find app/views       -name "*.html.jda" 2>/dev/null | sort)
-CONTROLLERS = $(shell find app/controllers -name "*.jda"      2>/dev/null | sort)
-ROUTES      = config/routes.jda
-MAIN        = main.jda
+CONFIG           = config/application.jda
+HELPERS          = $(shell find app/helpers     -name "*.jda"      2>/dev/null | sort)
+MODELS           = $(shell find app/models      -name "*.jda"      2>/dev/null | sort)
+VIEWS            = $(shell find app/views       -name "*.html.jda" 2>/dev/null | sort)
+CONTROLLERS      = $(shell find app/controllers -name "*.jda"      2>/dev/null | sort)
+CONTROLLERS_INIT = config/controllers.jda
+ROUTES           = config/routes.jda
+MAIN             = main.jda
 
-SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) $(MAIN)
+SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CONTROLLERS_INIT) $(ROUTES) $(MAIN)
 
-TEST_SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) \
+TEST_SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CONTROLLERS_INIT) $(ROUTES) \
            $(shell find test -name "*.jda" 2>/dev/null | sort)
 TEST_OUT = _build/test.jda
 
@@ -910,7 +1091,7 @@ gen_migration() {
 check_naming_conventions() {
     local errors=0
     # controllers must be *_controller.jda
-    for f in app/controllers/*.jda 2>/dev/null; do
+    for f in app/controllers/*.jda; do
         [[ "$f" == *_controller.jda ]] || { warn "Bad name: $f — must be <resource>_controller.jda"; errors=$((errors+1)); }
     done
     # views must live in app/views/<resource>/ and be *.html.jda
@@ -1083,46 +1264,37 @@ gen_scaffold() {
     gen_views "$name"
     gen_controller "$name"
 
-    # Append route helpers + forge_resources call to config/routes.jda
+    # Append resources entry to config/routes DSL
     mkdir -p config
-    if [ ! -f "config/routes.jda" ]; then
-        cat > "config/routes.jda" <<JDA
-// Routes — config/routes.jda
-
-fn routes(app: &ForgeApp) {
-    app_root(app, fn_addr(handle_root))
-}
-JDA
-        ok "created config/routes.jda"
+    if [ ! -f "config/routes" ]; then
+        cat > "config/routes" <<DSL
+root "pages#home"
+DSL
+        ok "created config/routes"
     fi
+    printf '\nresources "%s"\n' "$table" >> "config/routes"
+    ok "appended resources \"${table}\" to config/routes"
 
-    # Append path helpers and forge_resources call before the closing brace of routes()
-    cat >> "config/routes.jda" <<JDA
-
-// --- ${name} routes ---
-let ${table}_path: []i8     = "/${table}"
-let new_${snake}_path: []i8 = "/${table}/new"
-fn ${snake}_path(id: []i8) -> []i8      { ret forge_path_id("${table}", id) }
-fn edit_${snake}_path(id: []i8) -> []i8 { ret forge_path_edit("${table}", id) }
-JDA
-    ok "appended ${name} path helpers to config/routes.jda"
-
-    # Add forge_resources call inside routes() — patch the closing brace
-    # Append a separate registration function instead to keep routes() clean
-    cat >> "config/routes.jda" <<JDA
-
-fn register_${snake}_routes(app: &ForgeApp) {
-    forge_resources(app, "${table}",
-        fn_addr(${table}_index),
-        fn_addr(${table}_new),
-        fn_addr(${table}_create),
-        fn_addr(${table}_show),
-        fn_addr(${table}_edit),
-        fn_addr(${table}_update),
-        fn_addr(${table}_delete))
+    # Register actions in config/controllers.jda
+    if [ ! -f "config/controllers.jda" ]; then
+        printf 'fn forge_controllers_init() {\n}\n' > "config/controllers.jda"
+        ok "created config/controllers.jda"
+    fi
+    # Insert registrations before the closing brace
+    local ctrl_tmp; ctrl_tmp=$(mktemp)
+    grep -v '^}$' "config/controllers.jda" > "$ctrl_tmp"
+    cat >> "$ctrl_tmp" <<JDA
+    forge_action_register("${table}", "index",  fn_addr(${table}_index))
+    forge_action_register("${table}", "new",    fn_addr(${table}_new))
+    forge_action_register("${table}", "create", fn_addr(${table}_create))
+    forge_action_register("${table}", "show",   fn_addr(${table}_show))
+    forge_action_register("${table}", "edit",   fn_addr(${table}_edit))
+    forge_action_register("${table}", "update", fn_addr(${table}_update))
+    forge_action_register("${table}", "delete", fn_addr(${table}_delete))
 }
 JDA
-    ok "appended register_${snake}_routes to config/routes.jda"
+    mv "$ctrl_tmp" "config/controllers.jda"
+    ok "registered ${name} actions in config/controllers.jda"
 
     mkdir -p test
     cat > "test/test_${snake}s.jda" <<JDA
@@ -1142,10 +1314,9 @@ JDA
     echo "  app/views/${table}/show.html.jda"
     echo "  app/views/${table}/new.html.jda"
     echo "  app/views/${table}/edit.html.jda"
-    echo "  config/routes.jda  (appended)"
+    echo "  config/routes         (appended)"
+    echo "  config/controllers.jda (appended)"
     echo "  test/test_${snake}s.jda"
-    echo ""
-    echo "  Add to routes() in config/routes.jda:  register_${snake}_routes(app)"
 }
 
 # ---------------------------------------------------------------------------
@@ -1167,6 +1338,7 @@ cmd_build() {
 
     export FORGE_ENV="$env_name"
     info "Building (${env_name})"
+    compile_routes
     exec make build
 }
 
@@ -1189,6 +1361,7 @@ cmd_test() {
 
     export FORGE_ENV="$env_name"
     info "Running tests (${env_name})"
+    compile_routes
     exec make test
 }
 
@@ -1216,11 +1389,13 @@ cmd_server() {
     export FORGE_ENV="$env_name"
     [ -n "$port" ] && export APP_PORT="$port"
 
+    compile_routes
     if $watch; then
         command -v entr >/dev/null 2>&1 || err "'entr' not found. Install with: brew install entr  or  apt install entr"
         info "Starting Forge server with live reload (${env_name})"
         [ -n "$port" ] && dim "Port: ${port}"
-        find . -name '*.jda' -not -path './libs/*' -not -path './_build/*' | entr -r make run
+        { find . -name '*.jda' -not -path './libs/*' -not -path './_build/*'; [ -f config/routes ] && echo config/routes; } \
+            | entr -rn sh -c 'forge compile-routes 2>/dev/null; make run'
     else
         info "Starting Forge server (${env_name})"
         [ -n "$port" ] && dim "Port: ${port}"
@@ -1296,6 +1471,7 @@ case "$CMD" in
             *) err "Unknown generator: $SUB" ;;
         esac
         ;;
+    compile-routes) compile_routes ;;
     version|--version|-v) echo "JDA Forge CLI v${FORGE_VERSION}" ;;
     help|--help|-h) usage ;;
     *) err "Unknown command: $CMD. Run 'forge help'." ;;

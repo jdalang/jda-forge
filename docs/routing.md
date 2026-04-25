@@ -125,9 +125,33 @@ fn handle_files(ctx: i64) {
 
 A wildcard matches across `/` boundaries and must appear at the end of the pattern.
 
-### 2.5 The action registry
+### 2.5 The routes DSL
 
-Forge uses a two-file convention to achieve Rails-like routing. Scaffold generates both files automatically; you only edit them when adding custom routes.
+Forge uses a two-file convention to achieve Rails-like routing. Scaffold generates both files automatically.
+
+**`config/routes`** — the DSL file you edit (never the generated `.jda`):
+
+```
+root "posts#index"
+
+resources "posts" do
+  resources "comments"
+end
+
+namespace "admin" do
+  resources "users"
+end
+
+scope "/api/v2" do
+  get "/status" "api#status" as "api_v2_status"
+end
+
+get "/login"  "sessions#new"    as "login"
+post "/login" "sessions#create"
+delete "/logout" "sessions#delete" as "logout"
+```
+
+Run `forge build` (or `forge server`, `forge test`) — Forge compiles `config/routes` into `config/routes.jda` automatically before calling make. The generated file contains path helpers and the `routes()` function. **Do not edit `config/routes.jda` directly.**
 
 **`config/controllers.jda`** — registers every controller action once, using `fn_addr`:
 
@@ -146,16 +170,7 @@ fn forge_controllers_init() {
 }
 ```
 
-`main.jda` calls `forge_controllers_init()` once before `routes(app)`.
-
-**`config/routes.jda`** — looks up handlers by name, no `fn_addr` needed:
-
-```jda
-fn routes(app: &ForgeApp) {
-    app.root("posts#index")
-    app.resources("posts").resources("comments")
-}
-```
+`main.jda` calls `forge_controllers_init()` once before `routes(app)`. Scaffold appends to this file automatically.
 
 `app.resources("posts")` looks up `posts_index`, `posts_new`, … `posts_delete` from the registry. If an action is not registered (e.g. `comments` only has `create` and `delete`), that route is simply skipped.
 
@@ -884,7 +899,7 @@ app/views/posts/edit.html.jda
 test/test_posts.jda
 ```
 
-It also appends a `forge_resources` call to `config/routes.jda` automatically. No manual wiring in `main.jda`.
+It also appends `resources "posts"` to `config/routes` and registers all actions in `config/controllers.jda` automatically. No manual wiring required.
 
 Generated controller actions for a `Post` resource:
 
@@ -900,7 +915,7 @@ Generated controller actions for a `Post` resource:
 
 ### Path helpers
 
-Scaffold generates path helpers in `config/routes.jda` for the resource:
+`forge build` generates path helpers in `config/routes.jda` from your `config/routes` DSL:
 
 ```jda
 // Zero-arg paths — constants, no call needed

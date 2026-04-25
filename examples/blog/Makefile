@@ -33,7 +33,7 @@ run: build
 	./$(APP)
 
 watch:
-	@find app config -name "*.jda" -o -name "*.html.jda" | entr -r make run
+	@{ find app config -name "*.jda" -o -name "*.html.jda"; [ -f config/routes ] && echo config/routes; } | entr -rn sh -c 'forge compile-routes 2>/dev/null; make run'
 
 test: $(TEST_OUT)
 	jda build --include $(FORGE) $(TEST_OUT) -o test_runner
