@@ -1,14 +1,17 @@
-fn comment_find(id: []i8) -> &ForgeResult {
-    ret forge_find("comments", id)
-}
+// app/models/comment.jda
+// CRUD functions (comment_q, comment_all, comment_find, comment_create, …) are
+// auto-generated into _build/models.jda from db/migrate/*.sql
+
+// --- Custom scopes ---
 
 fn comment_for_post(post_id: []i8) -> &ForgeResult {
     ret forge_q("comments")
         .where_eq("post_id", post_id)
-        .where_null("deleted_at")
         .order_asc("created_at")
         .exec()
 }
+
+// --- Validations ---
 
 fn comment_validate(body: []i8, author: []i8) -> &ForgeErrors {
     let e = forge_errors_new()
@@ -16,17 +19,4 @@ fn comment_validate(body: []i8, author: []i8) -> &ForgeErrors {
     forge_validate_min_length(e, "body",   body, 2)
     forge_validate_presence  (e, "author", author)
     ret e
-}
-
-fn comment_create(post_id: []i8, author: []i8, body: []i8) -> bool {
-    let buf = forge_buf_new(1)
-    buf.write("INSERT INTO comments (post_id, author, body) VALUES ('")
-       .write_esc(post_id).write("', '")
-       .write_esc(author).write("', '")
-       .write_esc(body).write("')")
-    ret forge_db_exec(buf.done())
-}
-
-fn comment_delete(id: []i8) -> bool {
-    ret forge_soft_delete("comments", id)
 }

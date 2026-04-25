@@ -215,15 +215,14 @@ fetch('/api/resource', {
 CSRF protection is session-cookie-specific. API endpoints that authenticate via `Authorization: Bearer` headers are not vulnerable to CSRF because attackers cannot set arbitrary headers cross-origin. Register those routes before `forge_csrf`, or verify the bearer token manually in the handler:
 
 ```jda
-// Routes registered before forge_csrf are not subject to CSRF checking
+// In main.jda — add forge_csrf after session middleware
 app_use(app, fn_addr(forge_logger))
 app_use(app, fn_addr(forge_session_start))
-// API routes with bearer auth go here (before forge_csrf)
-app_get(app, "/api/data", fn_addr(handle_api_data))
 app_use(app, fn_addr(forge_csrf))
-// Web routes that use cookie sessions go here (after forge_csrf)
-app_post(app, "/form", fn_addr(handle_form_post))
+routes(app)
 ```
+
+API routes are exempt because attackers cannot set `Authorization: Bearer` headers cross-origin — CSRF only applies to cookie-authenticated requests. Verify the bearer token inside the handler and return early before any state-mutating logic.
 
 ---
 
@@ -488,24 +487,23 @@ let valid = forge_bcrypt_verify(password, hash)  // returns bool
 
 ### Usage pattern
 
+`user_create` is a custom function in `app/models/user.jda` — it hashes the password before calling the auto-generated insert:
+
 ```jda
 fn user_create(email: []i8, password: []i8) -> bool {
     let hash = forge_bcrypt_hash(password)
-    // Store hash, never the raw password
-    let q = forge_query("users")
-    forge_query_insert(q, "email",         email)
-    forge_query_insert(q, "password_hash", hash)
-    ret forge_query_exec(q)
+    ret forge_attrs_new()
+        .set("email",         email)
+        .set("password_hash", hash)
+        .insert("users")
 }
 
 fn user_authenticate(email: []i8, password: []i8) -> []i8 {
-    let q = forge_query("users")
-    where_eq(q, "email", email)
-    let result = forge_query_one(q)
-    if result == 0 { ret "" }
-    let stored_hash = forge_row_get(result, "password_hash")
+    let res = forge_q("users").where_eq("email", email).first()
+    if res.count == 0 { ret "" }
+    let stored_hash = forge_result_col(res, 0, "password_hash")
     if !forge_bcrypt_verify(password, stored_hash) { ret "" }
-    ret forge_row_get(result, "id")
+    ret forge_result_col(res, 0, "id")
 }
 ```
 

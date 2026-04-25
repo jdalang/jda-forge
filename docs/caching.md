@@ -84,16 +84,19 @@ fn get_homepage_data() -> []i8 {
 
 ## Cache invalidation
 
-Delete affected keys when the underlying data changes:
+Delete affected keys when the underlying data changes. Do this in the controller action after calling the auto-generated update function:
 
 ```jda
-fn post_update(id: []i8, title: []i8, body: []i8) -> bool {
-    let ok = forge_db_exec("UPDATE posts SET title = ... WHERE id = ...")
+fn posts_update(ctx: i64) {
+    let id    = ctx_param(ctx, "id")
+    let title = ctx_param(ctx, "title")
+    let body  = ctx_param(ctx, "body")
+    let ok = post_update(id, title, body)   // auto-generated from migration
     if ok {
         forge_cache_del("homepage_posts")
         forge_cache_del("post_" + id)
     }
-    ret ok
+    ctx_redirect(ctx, post_path(id))
 }
 ```
 

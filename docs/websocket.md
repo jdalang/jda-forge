@@ -16,10 +16,12 @@ fn handle_ws(ctx: i64) {
     // conn is now a file descriptor for the WebSocket connection
     ws_loop(conn)
 }
+```
 
-fn register_ws_routes(app: i64) {
-    app_get(app, "/ws", fn_addr(handle_ws))
-}
+Add the route in `config/routes.jda`:
+
+```
+get "/ws" "ws#handle"
 ```
 
 `forge_ws_upgrade` performs the HTTP → WebSocket handshake and returns an `i32` file descriptor on success, or `-1` on failure.
@@ -124,11 +126,11 @@ fn handle_chat(ctx: i64) {
 }
 ```
 
-Route registration:
+Add the routes in `config/routes.jda`:
 
-```jda
-app_get(app, "/chat", fn_addr(handle_chat))
-app_get(app, "/ws",   fn_addr(handle_ws))
+```
+get "/chat" "chat#handle"
+get "/ws"   "ws#handle"
 ```
 
 ## Protocol notes

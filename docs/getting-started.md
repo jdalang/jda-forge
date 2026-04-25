@@ -345,7 +345,7 @@ The order of `$(SRC)` is not arbitrary:
 | Third | `app/models/*.jda` | Defines types and query functions that controllers and views call |
 | Fourth | `app/views/**/*.html.jda` | Defines view functions that controllers call |
 | Fifth | `app/controllers/*.jda` | Defines action functions registered as route handlers |
-| Sixth | `config/routes.jda` | Path helpers + `routes(app)` — references controller function pointers |
+| Sixth | `config/routes.jda` | Routes DSL you write — compiled to `_build/routes.jda` (path helpers + `routes(app)`) before every build |
 | Last | `main.jda` | Calls `routes(app)` and all middleware — must see all of the above |
 
 The `--include libs/forge.jda` flag makes Forge's definitions available to your entire app. Because `--include` files are processed before the app source, you can shadow any library function by defining it in your own code (see [overriding.md](overriding.md)).
@@ -413,18 +413,14 @@ Run `forge server`. The full CRUD interface for posts is now live:
 
 ### What the generated model looks like
 
+`forge generate scaffold Post title:string body:text author:string` creates two files:
+
+**`db/migrate/001_create_posts.sql`** — the schema. Runs automatically on `forge server`.
+
+**`app/models/post.jda`** — only what you write: validations and custom scopes.
+
 ```jda
 // app/models/post.jda
-
-fn post_q() -> &ForgeQuery { ret forge_q("posts") }
-
-fn post_all() -> &ForgeResult {
-    ret forge_q("posts").order_desc("created_at").exec()
-}
-
-fn post_find(id: []i8) -> &ForgeResult {
-    ret forge_q("posts").where_eq("id", id).exec()
-}
 
 fn post_validate(title: []i8, body: []i8, author: []i8) -> &ForgeErrors {
     let e = forge_errors_new()
@@ -434,24 +430,40 @@ fn post_validate(title: []i8, body: []i8, author: []i8) -> &ForgeErrors {
     forge_validate_presence(e, "author", author)
     ret e
 }
+```
 
+That's the entire file. Every time you run `forge build`, Forge reads the migration and emits `_build/models.jda` automatically:
+
+```jda
+// _build/models.jda  — auto-generated, do not edit
+
+fn post_q()                            -> &ForgeQuery  { ret forge_q("posts") }
+fn post_all()                          -> &ForgeResult { ret forge_q("posts").order_desc("created_at").exec() }
+fn post_find(id: []i8)                 -> &ForgeResult { ret forge_find("posts", id) }
+fn post_find_by(col: []i8, val: []i8) -> &ForgeResult { ret forge_find_by("posts", col, val) }
+fn post_where(col: []i8, val: []i8)   -> &ForgeQuery  { ret forge_q("posts").where_eq(col, val) }
+fn post_count()                        -> i64          { ret forge_q("posts").count() }
+fn post_exists(id: []i8)              -> bool         { ret forge_q("posts").where_eq("id", id).exists() }
+fn post_delete(id: []i8)              -> bool         { ret forge_soft_delete("posts", id) }
 fn post_create(title: []i8, body: []i8, author: []i8) -> bool {
-    ret forge_insert("posts",
-        "title",  title,
-        "body",   body,
-        "author", author)
+    ret forge_attrs_new()
+        .set("title",  title)
+        .set("body",   body)
+        .set("author", author)
+        .insert("posts")
 }
-
-fn post_update(id: []i8, title: []i8, body: []i8) -> bool {
-    ret forge_update("posts", id, "title", title, "body", body)
-}
-
-fn post_delete(id: []i8) -> bool {
-    ret forge_soft_delete("posts", id)
+fn post_update(id: []i8, title: []i8, body: []i8, author: []i8) -> bool {
+    ret forge_attrs_new()
+        .set("title",  title)
+        .set("body",   body)
+        .set("author", author)
+        .update("posts", id)
 }
 ```
 
-`forge_q("posts")` automatically excludes soft-deleted rows (`deleted_at IS NOT NULL`). You can chain any query method off `post_q()`:
+You never write or touch this file.
+
+`forge_q("posts")` automatically excludes soft-deleted rows (`deleted_at IS NOT NULL`). Chain any query method off `post_q()`:
 
 ```jda
 let res = post_q()

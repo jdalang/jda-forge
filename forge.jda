@@ -4087,6 +4087,88 @@ fn forge_json_array_done(a: &ForgeJsonArray) -> []i8 {
     ret a.buf[0..a.pos]
 }
 
+// ---------------------------------------------------------------------------
+// ForgeAttrs — key/value builder for safe INSERT and UPDATE
+//
+//   forge_attrs_new().set("title", title).set("body", body).insert("posts")
+//   forge_attrs_new().set("title", title).set("body", body).update("posts", id)
+// ---------------------------------------------------------------------------
+
+struct ForgeAttrs {
+    kbuf:  &i8   // column names:  "title, body, author"
+    vbuf:  &i8   // quoted values: "'val1', 'val2', 'val3'"
+    sbuf:  &i8   // SET clauses:   "title = 'val1', body = 'val2'"
+    kpos:  i64
+    vpos:  i64
+    spos:  i64
+    empty: bool
+}
+
+fn forge_attrs_new() -> &ForgeAttrs {
+    let a: &ForgeAttrs = alloc_pages(1)
+    a.kbuf  = alloc_pages(2)
+    a.vbuf  = alloc_pages(8)
+    a.sbuf  = alloc_pages(8)
+    a.kpos  = 0
+    a.vpos  = 0
+    a.spos  = 0
+    a.empty = true
+    ret a
+}
+
+fn forge_attrs_set(a: &ForgeAttrs, key: []i8, val: []i8) -> &ForgeAttrs {
+    if !a.empty {
+        a.kbuf[a.kpos] = ','   a.kpos = a.kpos + 1
+        a.kbuf[a.kpos] = ' '   a.kpos = a.kpos + 1
+        a.vbuf[a.vpos] = ','   a.vpos = a.vpos + 1
+        a.vbuf[a.vpos] = ' '   a.vpos = a.vpos + 1
+        a.sbuf[a.spos] = ','   a.spos = a.spos + 1
+        a.sbuf[a.spos] = ' '   a.spos = a.spos + 1
+    }
+    a.empty = false
+    loop i in 0..key.len { a.kbuf[a.kpos] = key[i]   a.kpos = a.kpos + 1 }
+    a.vbuf[a.vpos] = '\''   a.vpos = a.vpos + 1
+    let vn = forge_db_escape_str(val, a.vbuf + a.vpos)
+    a.vpos = a.vpos + vn
+    a.vbuf[a.vpos] = '\''   a.vpos = a.vpos + 1
+    loop i in 0..key.len { a.sbuf[a.spos] = key[i]   a.spos = a.spos + 1 }
+    let eq = " = '"
+    loop i in 0..eq.len  { a.sbuf[a.spos] = eq[i]    a.spos = a.spos + 1 }
+    let sn = forge_db_escape_str(val, a.sbuf + a.spos)
+    a.spos = a.spos + sn
+    a.sbuf[a.spos] = '\''   a.spos = a.spos + 1
+    ret a
+}
+
+fn forge_attrs_insert(a: &ForgeAttrs, table: []i8) -> bool {
+    let buf: &i8 = alloc_pages(8)
+    let pos = 0i64
+    let p1 = "INSERT INTO "; let p2 = " ("; let p3 = ") VALUES ("; let p4 = ")"
+    loop i in 0..p1.len    { buf[pos] = p1[i]       pos = pos + 1 }
+    loop i in 0..table.len { buf[pos] = table[i]    pos = pos + 1 }
+    loop i in 0..p2.len    { buf[pos] = p2[i]       pos = pos + 1 }
+    loop i in 0..a.kpos    { buf[pos] = a.kbuf[i]   pos = pos + 1 }
+    loop i in 0..p3.len    { buf[pos] = p3[i]       pos = pos + 1 }
+    loop i in 0..a.vpos    { buf[pos] = a.vbuf[i]   pos = pos + 1 }
+    loop i in 0..p4.len    { buf[pos] = p4[i]       pos = pos + 1 }
+    ret forge_db_exec(buf[0..pos])
+}
+
+fn forge_attrs_update(a: &ForgeAttrs, table: []i8, id: []i8) -> bool {
+    let buf: &i8 = alloc_pages(8)
+    let pos = 0i64
+    let p1 = "UPDATE "; let p2 = " SET "; let p3 = ", updated_at = NOW() WHERE id = '"
+    loop i in 0..p1.len    { buf[pos] = p1[i]       pos = pos + 1 }
+    loop i in 0..table.len { buf[pos] = table[i]    pos = pos + 1 }
+    loop i in 0..p2.len    { buf[pos] = p2[i]       pos = pos + 1 }
+    loop i in 0..a.spos    { buf[pos] = a.sbuf[i]   pos = pos + 1 }
+    loop i in 0..p3.len    { buf[pos] = p3[i]       pos = pos + 1 }
+    let en = forge_db_escape_str(id, buf + pos)
+    pos = pos + en
+    buf[pos] = '\''   pos = pos + 1
+    ret forge_db_exec(buf[0..pos])
+}
+
 // =============================================================================
 // Section H — Controller Layer
 // =============================================================================

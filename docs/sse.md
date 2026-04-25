@@ -20,10 +20,12 @@ fn handle_events(ctx: i64) {
         forge_sleep_ms(1000)   // send every second
     }
 }
+```
 
-fn register_events_routes(app: i64) {
-    app_get(app, "/events", fn_addr(handle_events))
-}
+Add the route in `config/routes.jda`:
+
+```
+get "/events" "events#handle"
 ```
 
 ## forge_sse_start

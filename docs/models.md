@@ -58,15 +58,17 @@ forge generate model Post title:string body:text user:references
 The generator creates two files:
 
 ```
-models/post.jda              — generated query functions
-db/migrations/001_create_posts.sql  — migration (numbered automatically)
+app/models/post.jda         — validations + custom scopes (you write this)
+db/migrate/001_create_posts.sql  — migration (numbered automatically)
 ```
+
+`_build/models.jda` is a third file generated automatically at build time from the migration — you never edit it.
 
 ### Generated migration
 
 ```sql
--- db/migrations/001_create_posts.sql
-CREATE TABLE posts (
+-- db/migrate/001_create_posts.sql
+CREATE TABLE IF NOT EXISTS posts (
   id         BIGSERIAL PRIMARY KEY,
   title      VARCHAR(255),
   body       TEXT,
@@ -79,57 +81,62 @@ CREATE TABLE posts (
 
 `deleted_at` is always included to support soft deletes. `id`, `created_at`, `updated_at`, and `deleted_at` are added automatically — do not declare them explicitly.
 
-### Generated model file
+### Your model file
+
+The generator creates a minimal file with only your validation logic:
 
 ```jda
-// models/post.jda — generated, extend by adding functions below
+// app/models/post.jda
 
-fn post_q() -> &ForgeQuery {
-    ret forge_q("posts")
-}
-
-fn post_all() -> &ForgeResult {
-    ret forge_q("posts").order_desc("created_at").exec()
-}
-
-fn post_find(id: []i8) -> &ForgeResult {
-    ret forge_find("posts", id)
-}
-
-fn post_find_by(col: []i8, val: []i8) -> &ForgeResult {
-    ret forge_find_by("posts", col, val)
-}
-
-fn post_where(col: []i8, val: []i8) -> &ForgeQuery {
-    ret forge_q("posts").where_eq(col, val)
-}
-
-fn post_count() -> i64 {
-    ret forge_q_count(forge_q("posts"))
-}
-
-fn post_exists(id: []i8) -> bool {
-    ret forge_q("posts").where_eq("id", id).exists()
-}
-
-fn post_delete(id: []i8) -> bool {
-    ret forge_soft_delete("posts", id)
-}
-
-fn post_validate(title: []i8, body: []i8) -> &ForgeErrors {
+fn post_validate(title: []i8, body: []i8, user_id: []i8) -> &ForgeErrors {
     let e = forge_errors_new()
-    forge_validate_presence(e, "title", title)
-    forge_validate_length(e, "title", title, 2, 255)
-    forge_validate_presence(e, "body", body)
+    forge_validate_presence(e, "title",   title)
+    forge_validate_length  (e, "title",   title,   2, 255)
+    forge_validate_presence(e, "body",    body)
+    forge_validate_presence(e, "user_id", user_id)
     ret e
 }
 ```
+
+Everything else (`post_q`, `post_all`, `post_find`, `post_create`, `post_update`, `post_delete`, …) is generated automatically into `_build/models.jda` by reading the migration. Add custom scopes and helper functions below the validation.
+
+### Auto-generated CRUD (`_build/models.jda`)
+
+`forge build` (and `forge server`) runs `forge compile-models` which reads every `CREATE TABLE` in `db/migrate/` and emits one block per table:
+
+```jda
+// === posts ===
+fn post_q()                              -> &ForgeQuery  { ret forge_q("posts") }
+fn post_all()                            -> &ForgeResult { ret forge_q("posts").order_desc("created_at").exec() }
+fn post_find(id: []i8)                   -> &ForgeResult { ret forge_find("posts", id) }
+fn post_find_by(col: []i8, val: []i8)   -> &ForgeResult { ret forge_find_by("posts", col, val) }
+fn post_where(col: []i8, val: []i8)     -> &ForgeQuery  { ret forge_q("posts").where_eq(col, val) }
+fn post_count()                          -> i64          { ret forge_q("posts").count() }
+fn post_exists(id: []i8)                -> bool         { ret forge_q("posts").where_eq("id", id).exists() }
+fn post_delete(id: []i8)                -> bool         { ret forge_soft_delete("posts", id) }
+fn post_create(title: []i8, body: []i8, user_id: []i8) -> bool {
+    ret forge_attrs_new()
+        .set("title",   title)
+        .set("body",    body)
+        .set("user_id", user_id)
+        .insert("posts")
+}
+fn post_update(id: []i8, title: []i8, body: []i8, user_id: []i8) -> bool {
+    ret forge_attrs_new()
+        .set("title",   title)
+        .set("body",    body)
+        .set("user_id", user_id)
+        .update("posts", id)
+}
+```
+
+Column order in `post_create` / `post_update` matches the migration. `BOOLEAN` columns with defaults (e.g. `published`) are excluded from the generated params since the database default handles them — toggle them with a custom function or `.update_all`.
 
 ---
 
 ## Generated Query Interface
 
-The generator produces a small set of named functions per model. These cover the most common operations and serve as the starting point for all queries.
+The functions auto-generated per model. These cover the most common operations and serve as the starting point for all queries.
 
 ### post_q
 
@@ -200,7 +207,7 @@ let ok = post_delete("42")
 
 ### post_validate
 
-Runs field validations and returns a `&ForgeErrors`. See [Validations](#validations) for full details.
+Defined by you in `app/models/post.jda`. Runs field validations and returns a `&ForgeErrors`. See [Validations](#validations) for full details.
 
 ```jda
 let errs = post_validate(title, body)
@@ -212,7 +219,7 @@ if forge_errors_any(errs) {
 
 ### Extending the generated interface
 
-Add your own functions to `models/post.jda` below the generated block. These are plain Jda functions and can use any query builder method.
+Add custom scopes, helpers, and domain logic to `app/models/post.jda`. These are plain Jda functions and can use any query builder method.
 
 ```jda
 // Custom scope: published posts for a given user
@@ -674,9 +681,8 @@ let res = forge_q("posts")
 
 ```jda
 fn process_batch(res: &ForgeResult) {
-    let i = 0
-    loop i in 0..forge_result_len(res) {
-        let row = forge_result_row(res, i)
+    loop i in 0..res.count {
+        let email = forge_result_col(res, i, "email")
         // process row...
     }
 }
@@ -759,13 +765,16 @@ forge_validate_inclusion(e, "role", role, "admin,user,guest")
 ### Checking and rendering errors
 
 ```jda
-fn create_post(ctx: &ForgeCtx, title: []i8, body: []i8) {
-    let errs = post_validate(title, body)
+fn posts_create(ctx: i64) {
+    let title = ctx_param(ctx, "title")
+    let body  = ctx_param(ctx, "body")
+    let errs  = post_validate(title, body)
     if forge_errors_any(errs) {
         ctx_unprocessable(ctx, forge_errors_json(errs))
         ret
     }
-    // proceed to insert...
+    post_create(title, body)
+    ctx_redirect(ctx, posts_path)
 }
 ```
 
@@ -1006,18 +1015,14 @@ The second argument to `forge_row_to_json` is the row index (zero-based). All co
 ### Typical controller usage
 
 ```jda
-fn handle_post_show(ctx: &ForgeCtx, id: []i8) {
-    let res = post_find(id)
-    if forge_result_len(res) == 0 {
-        ctx_not_found(ctx)
-        ret
-    }
-    ctx_json(ctx, forge_row_to_json(res, 0))
+fn api_post_show(ctx: i64) {
+    let res = post_find(ctx_param(ctx, "id"))
+    if res.count == 0 { ctx_not_found(ctx)  ret }
+    ctx_json(ctx, 200, forge_row_to_json(res, 0))
 }
 
-fn handle_posts_index(ctx: &ForgeCtx) {
-    let res = post_all()
-    ctx_json(ctx, forge_result_to_json(res))
+fn api_posts_index(ctx: i64) {
+    ctx_json(ctx, 200, forge_result_to_json(post_all()))
 }
 ```
 

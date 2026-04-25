@@ -30,8 +30,8 @@ examples/blog/
       posts_controller.jda         # 7 thin action functions
       comments_controller.jda      # create + delete actions
     models/
-      post.jda                     # validations, finders, create/update/delete/publish
-      comment.jda                  # validations, finders, create/delete
+      post.jda                     # validations + custom scopes (CRUD auto-generated)
+      comment.jda                  # validations + custom scopes (CRUD auto-generated)
     views/
       layouts/
         application.html.jda       # tmpl_layout, tmpl_flash
@@ -160,21 +160,17 @@ post_comment_path(post_id, id)          // "/posts/42/comments/7"
 
 ---
 
-## app/models/post.jda — query interface + validation + soft delete
+## app/models/post.jda — validations + custom scopes
+
+`post_q`, `post_all`, `post_find`, `post_create`, `post_update`, `post_delete`, etc. are auto-generated into `_build/models.jda` from the migration. The model file only contains what you write:
 
 ```jda
-fn post_q() -> &ForgeQuery { ret forge_q("posts") }
-fn post_all() -> &ForgeResult {
-    ret forge_q("posts").order_desc("created_at").exec()
-}
+// Custom scopes
 fn post_published() -> &ForgeResult {
     ret forge_q("posts").where_eq("published", "true").order_desc("created_at").exec()
 }
-fn post_count() -> i64    { ret forge_q("posts").count() }
-fn post_exists(id: []i8) -> bool {
-    ret forge_q("posts").where_eq("id", id).exists()
-}
 
+// Validations
 fn post_validate(title: []i8, body: []i8, author: []i8) -> &ForgeErrors {
     let e = forge_errors_new()
     forge_validate_presence  (e, "title",  title)
@@ -185,8 +181,9 @@ fn post_validate(title: []i8, body: []i8, author: []i8) -> &ForgeErrors {
     ret e
 }
 
-fn post_delete(id: []i8) -> bool {
-    ret forge_soft_delete("posts", id)
+// Custom action
+fn post_publish(id: []i8) -> bool {
+    ret forge_q("posts").where_eq("id", id).update_all("published = true, updated_at = NOW()")
 }
 ```
 
