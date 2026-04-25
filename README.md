@@ -6,13 +6,19 @@ A full-stack web framework for the [Jda language](https://github.com/jdalang/jda
 
 ## Installation
 
-### One-line install
+### One-line install (latest)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jdalang/jda-forge/main/install.sh | sh
 ```
 
-This clones Forge to `~/.jda/forge/`, adds the `forge` CLI to `~/.jda/bin/`, and configures your shell.
+### Install a specific version
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jdalang/jda-forge/main/install.sh | sh -s -- --version v3.0.0
+```
+
+This clones Forge to `~/.jda/forge/`, checks out the requested tag, links the `forge` CLI to `~/.jda/bin/`, and patches your shell rc.
 
 ### Manual install
 
@@ -20,23 +26,21 @@ This clones Forge to `~/.jda/forge/`, adds the `forge` CLI to `~/.jda/bin/`, and
 git clone https://github.com/jdalang/jda-forge.git ~/.jda/forge
 echo 'export PATH="$HOME/.jda/bin:$PATH"'            >> ~/.zshrc
 echo 'export JDA_FORGE="$HOME/.jda/forge/forge.jda"' >> ~/.zshrc
-ln -s ~/.jda/forge/bin/forge ~/.jda/bin/forge
+ln -sf ~/.jda/forge/bin/forge ~/.jda/bin/forge
 source ~/.zshrc
 ```
 
 ### Verify
 
 ```bash
-forge version        # JDA Forge CLI v3.0
-jda build --include $JDA_FORGE hello.jda -o hello
+forge version        # JDA Forge CLI v3.0.0
 ```
 
-### Updating
+### Upgrade the CLI
 
 ```bash
-forge update         # updates forge.jda + all Forgefile libs
-# or
-cd ~/.jda/forge && git pull
+forge self-update                      # update to latest
+forge self-update --version v3.1.0    # update to specific version
 ```
 
 ---
@@ -793,37 +797,55 @@ app_use(app, fn_addr(forge_etag_middleware))
 
 ## Third-Party Libraries (Forgefile)
 
-Libraries are plain `.jda` files declared in a `Forgefile` and installed into `libs/` — similar to a Gemfile or package.json. The Makefile auto-discovers everything in `libs/*.jda` and passes it to the compiler.
+Libraries are plain `.jda` files declared in a `Forgefile` and installed into `libs/` — the same idea as Gemfile / package.json. The Makefile auto-discovers everything in `libs/*.jda`.
 
-### Forgefile
+### Forgefile — declare dependencies + pin versions
 
 ```
 # Forgefile
 
-forge "github.com/jdalang/jda-forge"
+forge "github.com/jdalang/jda-forge"        version "3.0.0"
 
-lib "github.com/jdalang/forge-markdown"
-lib "github.com/jdalang/forge-slugify"
-lib "github.com/myorg/jda-payments"
+lib   "github.com/jdalang/forge-markdown"   version "1.2.0"
+lib   "github.com/jdalang/forge-slugify"    version "1.0.0"
+lib   "github.com/myorg/jda-payments"                        # latest
 ```
+
+Omitting `version` always pulls the latest default branch. Pinning a version checks out that exact git tag.
+
+### Forgefile.lock — reproducible installs
+
+`forge install` writes a `Forgefile.lock` recording the exact git SHA of every installed library:
+
+```
+# Forgefile.lock — commit this file
+forge jda-forge   github.com/jdalang/jda-forge   v3.0.0  abc1234
+lib   forge-markdown  github.com/jdalang/forge-markdown  v1.2.0  def5678
+lib   forge-slugify   github.com/jdalang/forge-slugify   v1.0.0  9a8b7c6
+```
+
+Teammates run `forge install --locked` to get byte-for-byte the same versions. CI always uses `--locked`.
 
 ### Commands
 
 ```bash
-forge install                               # install all libs from Forgefile
-forge add forge-markdown                    # add jdalang/forge-markdown + install
-forge add payments https://github.com/myorg/jda-payments  # custom URL
-forge update                                # update all to latest
-forge update forge-markdown                 # update one library
-forge list                                  # show installed libs
+forge install                                  # install from Forgefile, write lock
+forge install --locked                         # install exact versions from lock (CI)
+forge add forge-markdown                       # add + install from github.com/jdalang/
+forge add forge-markdown --version v1.2.0     # add at a specific version
+forge add mylib https://github.com/org/jda-mylib --version v2.0.0
+forge update                                   # update all to latest/pinned
+forge update forge-markdown                    # update one library
+forge list                                     # show installed libs + lock info
 ```
 
 ### How it works
 
-`forge install` clones each library from GitHub into `libs/.src/<name>/`, then copies the `.jda` file to `libs/<name>.jda`. The Makefile picks it up automatically:
+`forge install` clones each library into `libs/.src/<name>/`, checks out the pinned tag, copies the `.jda` file to `libs/<name>.jda`. The Makefile auto-discovers it:
 
 ```makefile
-LIBS  = $(wildcard libs/*.jda)
+FORGE = libs/forge.jda
+LIBS  = $(filter-out $(FORGE), $(wildcard libs/*.jda))
 LINCS = $(addprefix --include ,$(LIBS))
 
 build:
@@ -832,10 +854,10 @@ build:
 
 ### Writing a library
 
-A library is any `.jda` file that defines functions and structs. Publish it as a GitHub repository with one `.jda` file at the root:
+A library is a single `.jda` file at the root of a GitHub repo. Tag releases with `git tag v1.0.0`.
 
 ```jda
-// forge-slugify.jda  (root of github.com/jdalang/forge-slugify)
+// forge-slugify.jda  →  github.com/jdalang/forge-slugify
 
 fn slugify(src: []i8, dst: &i8) -> i64 {
     let pos = 0i64
@@ -850,17 +872,24 @@ fn slugify(src: []i8, dst: &i8) -> i64 {
 }
 ```
 
-Use it after `forge add forge-slugify`:
-
 ```jda
-let slug_buf = [256]i8
-let slug_len = slugify(title, slug_buf)
-let slug = slug_buf[0..slug_len]
+// in your app after: forge add forge-slugify
+let buf = [256]i8
+let len = slugify(title, buf)
+let slug = buf[0..len]
+```
+
+### Releasing a new Forge version (maintainers)
+
+```bash
+forge release 3.1.0
+# → updates version string, commits, tags v3.1.0, pushes, creates GitHub release
 ```
 
 ### Naming convention
 
-Official Forge libraries live at `github.com/jdalang/forge-<name>`. Community libraries can be any git URL — just pass the full URL to `forge add`.
+Official libraries: `github.com/jdalang/forge-<name>`  
+Community libraries: any git URL, pass it directly to `forge add`.
 
 ---
 

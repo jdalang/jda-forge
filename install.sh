@@ -1,7 +1,9 @@
 #!/bin/bash
 # =============================================================================
 # JDA Forge — Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/jdalang/jda-forge/main/install.sh | sh
+#
+# Latest:          curl -fsSL https://raw.githubusercontent.com/jdalang/jda-forge/main/install.sh | sh
+# Specific version: curl -fsSL .../install.sh | sh -s -- --version v3.0.0
 # =============================================================================
 
 set -euo pipefail
@@ -10,20 +12,51 @@ REPO="https://github.com/jdalang/jda-forge.git"
 INSTALL_DIR="${JDA_HOME:-$HOME/.jda}"
 FORGE_DIR="$INSTALL_DIR/forge"
 BIN_DIR="$INSTALL_DIR/bin"
+VERSION=""
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
-
 info()    { echo -e "${GREEN}==>${NC} ${BOLD}$*${NC}"; }
 warn()    { echo -e "${YELLOW}warning:${NC} $*"; }
-success() { echo -e "${GREEN}✓${NC} $*"; }
+success() { echo -e "  ${GREEN}✓${NC} $*"; }
 err()     { echo -e "${RED}error:${NC} $*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
-# Pre-flight checks
+# Parse flags
 # ---------------------------------------------------------------------------
 
-command -v git  >/dev/null 2>&1 || err "git is required. Install it and re-run."
-command -v jda  >/dev/null 2>&1 || warn "jda compiler not found. Install from https://github.com/jdalang/jda"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --version|-v)
+            VERSION="${2:-}"
+            [ -z "$VERSION" ] && err "--version requires a value (e.g. --version v3.0.0)"
+            shift 2
+            ;;
+        --dir)
+            INSTALL_DIR="${2:-}"
+            [ -z "$INSTALL_DIR" ] && err "--dir requires a path"
+            FORGE_DIR="$INSTALL_DIR/forge"
+            BIN_DIR="$INSTALL_DIR/bin"
+            shift 2
+            ;;
+        --help|-h)
+            echo "Usage: install.sh [--version v3.0.0] [--dir /path]"
+            exit 0
+            ;;
+        *) err "Unknown flag: $1. Use --help for usage." ;;
+    esac
+done
+
+# Normalise version: accept "3.0.0" or "v3.0.0"
+if [ -n "$VERSION" ]; then
+    [[ "$VERSION" == v* ]] || VERSION="v${VERSION}"
+fi
+
+# ---------------------------------------------------------------------------
+# Pre-flight
+# ---------------------------------------------------------------------------
+
+command -v git >/dev/null 2>&1 || err "git is required. Install it and re-run."
+command -v jda >/dev/null 2>&1 || warn "jda compiler not found in PATH. Install from https://github.com/jdalang/jda"
 
 # ---------------------------------------------------------------------------
 # Clone or update
@@ -32,17 +65,33 @@ command -v jda  >/dev/null 2>&1 || warn "jda compiler not found. Install from ht
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
 if [ -d "$FORGE_DIR/.git" ]; then
-    info "Updating JDA Forge..."
-    git -C "$FORGE_DIR" pull --ff-only --quiet
-    success "Updated to latest version"
+    info "Updating JDA Forge repository..."
+    git -C "$FORGE_DIR" fetch --tags --quiet
+    if [ -n "$VERSION" ]; then
+        git -C "$FORGE_DIR" checkout "$VERSION" --quiet \
+            || err "Version $VERSION not found. Run: git -C $FORGE_DIR tag | sort -V"
+        success "Checked out $VERSION"
+    else
+        git -C "$FORGE_DIR" pull --ff-only --quiet
+        success "Updated to latest ($(git -C "$FORGE_DIR" describe --tags --always 2>/dev/null || echo 'main'))"
+    fi
 else
-    info "Installing JDA Forge..."
-    git clone --depth=1 --quiet "$REPO" "$FORGE_DIR"
-    success "Cloned to $FORGE_DIR"
+    if [ -n "$VERSION" ]; then
+        info "Installing JDA Forge $VERSION..."
+        git clone --quiet "$REPO" "$FORGE_DIR"
+        git -C "$FORGE_DIR" checkout "$VERSION" --quiet \
+            || err "Version $VERSION not found."
+    else
+        info "Installing JDA Forge (latest)..."
+        git clone --depth=1 --quiet "$REPO" "$FORGE_DIR"
+    fi
+    success "Installed to $FORGE_DIR"
 fi
 
+INSTALLED_VERSION=$(git -C "$FORGE_DIR" describe --tags --always 2>/dev/null || echo 'main')
+
 # ---------------------------------------------------------------------------
-# Symlink forge CLI
+# Symlink CLI
 # ---------------------------------------------------------------------------
 
 chmod +x "$FORGE_DIR/bin/forge"
@@ -59,12 +108,9 @@ FORGE_LINE="export JDA_FORGE=\"\$HOME/.jda/forge/forge.jda\""
 add_to_shell() {
     local rc="$1"
     if [ -f "$rc" ]; then
-        if ! grep -q '.jda/bin' "$rc" 2>/dev/null; then
-            echo "" >> "$rc"
-            echo "# JDA Forge" >> "$rc"
-            echo "$EXPORT_LINE" >> "$rc"
-            echo "$FORGE_LINE"  >> "$rc"
-            success "Added PATH to $rc"
+        if ! grep -q '\.jda/bin' "$rc" 2>/dev/null; then
+            printf '\n# JDA Forge\n%s\n%s\n' "$EXPORT_LINE" "$FORGE_LINE" >> "$rc"
+            success "Updated $rc"
         else
             success "$rc already configured"
         fi
@@ -73,9 +119,13 @@ add_to_shell() {
 
 SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
 case "$SHELL_NAME" in
-    zsh)  add_to_shell "$HOME/.zshrc"  ;;
-    bash) add_to_shell "$HOME/.bashrc" && add_to_shell "$HOME/.bash_profile" ;;
-    fish) info "Add to ~/.config/fish/config.fish: set -x PATH \$HOME/.jda/bin \$PATH" ;;
+    zsh)  add_to_shell "$HOME/.zshrc" ;;
+    bash) add_to_shell "$HOME/.bashrc"; add_to_shell "$HOME/.bash_profile" ;;
+    fish)
+        success "Add to ~/.config/fish/config.fish:"
+        echo "    set -x PATH \$HOME/.jda/bin \$PATH"
+        echo "    set -x JDA_FORGE \$HOME/.jda/forge/forge.jda"
+        ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -83,16 +133,14 @@ esac
 # ---------------------------------------------------------------------------
 
 echo ""
-echo -e "${BOLD}JDA Forge installed successfully!${NC}"
+echo -e "${BOLD}JDA Forge ${INSTALLED_VERSION} installed successfully!${NC}"
 echo ""
 echo "  forge.jda  →  $FORGE_DIR/forge.jda"
 echo "  forge CLI  →  $BIN_DIR/forge"
 echo ""
-echo "Reload your shell or run:"
-echo -e "  ${BOLD}source ~/.zshrc${NC}   (or .bashrc)"
+echo "Reload your shell:"
+echo -e "  ${BOLD}source ~/.zshrc${NC}  (or .bashrc)"
 echo ""
-echo "Create a new project:"
-echo -e "  ${BOLD}forge new myapp${NC}"
-echo ""
-echo "Use in an existing project:"
-echo -e "  ${BOLD}jda build --include \$JDA_FORGE app.jda -o app${NC}"
+echo "Create a project:   ${BOLD}forge new myapp${NC}"
+echo "Upgrade later:      ${BOLD}forge self-update${NC}"
+echo "Install a version:  ${BOLD}forge self-update --version v3.1.0${NC}"
