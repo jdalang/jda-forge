@@ -62,7 +62,7 @@ fn main() {
 cd examples/blog
 forge install
 cp .env.example .env.development
-make run
+forge server
 ```
 
 Walkthrough: [docs/blog-example.md](docs/blog-example.md)

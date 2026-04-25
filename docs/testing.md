@@ -86,14 +86,14 @@ When `FORGE_ENV=test`:
 ## Running tests
 
 ```bash
-make test
+forge test
 # Runs: FORGE_ENV=test ./test_runner
 
 # Or run a single test file directly
 FORGE_ENV=test jda run test/test_blog.jda
 ```
 
-The `test_runner` binary is built by `make` and discovers all functions named `test_*` in the files under `test/`. Each test function runs in order; the runner reports pass/fail and exits non-zero if any assertion fails.
+The `test_runner` binary is built by `forge test` and discovers all functions named `test_*` in the files under `test/`. Each test function runs in order; the runner reports pass/fail and exits non-zero if any assertion fails.
 
 ---
 
@@ -226,4 +226,4 @@ Fill in the remaining cases (create, update, delete, validation errors) to match
 | `forge_test_res_header(res, name)` | Read response header as `[]i8` |
 | `forge_exec_sql(query)` | Run SQL against test database |
 
-Run tests: `make test` or `FORGE_ENV=test jda run test/test_posts.jda`
+Run tests: `forge test` or `FORGE_ENV=test jda run test/test_posts.jda`

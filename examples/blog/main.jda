@@ -3,8 +3,8 @@
 // =============================================================================
 //
 // Build:  make
-// Run:    make run
-// Test:   make test
+// Run:    forge server
+// Test:   forge test
 
 fn handle_root(ctx: i64) {
     ctx_redirect(ctx, "/posts")

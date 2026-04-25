@@ -80,7 +80,7 @@ psql postgres://postgres:postgres@localhost:5432/postgres -c '\l'
 
 **GNU Make** — the generated `Makefile` uses standard `make` syntax. It ships with most Linux distributions and with Xcode Command Line Tools on macOS.
 
-**entr** (optional) — used by `make watch` for live reload. Install with your system package manager (`brew install entr`, `apt install entr`, etc.).
+**entr** (optional) — used by `forge server --watch` for live reload. Install with your system package manager (`brew install entr`, `apt install entr`, etc.).
 
 ---
 
@@ -158,7 +158,7 @@ Additional libraries are added with `lib` lines. See [libraries.md](libraries.md
 
 **`Forgefile.lock`** records the exact git SHA for every dependency after `forge install` resolves them. Commit this file. It ensures every developer and every CI run installs identical code.
 
-**`Makefile`** handles three operations: `make` (or `make build`) compiles the app, `make run` compiles and starts it, `make test` compiles and runs the test suite. It uses GNU Make's `wildcard` to pick up new `.jda` files automatically — you do not need to edit it when you add a model or a route file.
+**`Makefile`** is the internal build pipeline. You never run `make` directly — `forge server`, `forge build`, and `forge test` call into it for you. It uses GNU Make's `wildcard` to pick up new `.jda` files automatically — you do not need to edit it when you add a model or route file.
 
 **`config.jda`** defines two functions that `main.jda` calls first:
 - `load_env()` — reads `.env` then the environment-specific file (`.env.development`, `.env.production`, etc.) based on `$FORGE_ENV`.
@@ -224,13 +224,10 @@ createdb myapp_development
 ### 3. Start the server
 
 ```bash
-make run
+forge server
 ```
 
-The Makefile:
-1. Concatenates all source files into `_build/app.jda`
-2. Compiles with `jda build --include libs/forge.jda _build/app.jda -o app`
-3. Runs `./app`
+`forge server` concatenates all source files, compiles, and starts the app. The Makefile is the internal build pipeline — you never run `make` directly.
 
 Forge runs migrations automatically on startup (`forge_migration_run("db/migrations")`), so your tables are created on first launch.
 
@@ -239,7 +236,7 @@ Visit `http://localhost:8080` in a browser. You should get a 404 — that is cor
 ### 4. Live reload (optional)
 
 ```bash
-make watch
+forge server --watch
 ```
 
 This uses `entr` to recompile and restart the server whenever any source file changes.
@@ -254,46 +251,32 @@ Understanding the build pipeline prevents a whole class of confusing compiler er
 
 Jda compiles a single file. To support a multi-file project, the Makefile concatenates everything into one file before the compiler sees it. This is explicit and transparent — you can inspect `_build/app.jda` at any time to see exactly what the compiler received.
 
-### The Makefile in full
+### Commands
+
+```bash
+forge server          # concatenate → compile → run
+forge server --watch  # same, restarts on .jda file changes (requires entr)
+forge build           # concatenate → compile only
+forge test            # concatenate test sources → compile → run test_runner
+```
+
+The Makefile is the build engine behind these commands. You never invoke `make` directly. Here is what it does internally:
 
 ```makefile
-APP  = myapp
-OUT  = _build/$(APP).jda
+SRC = config.jda $(wildcard models/*.jda) $(wildcard views/*.jda) \
+      $(wildcard routes/*.jda) $(wildcard patches/*.jda) main.jda
 
-CONFIG  = config.jda
-MODELS  = $(wildcard models/*.jda)
-VIEWS   = $(wildcard views/*.jda)
-ROUTES  = $(wildcard routes/*.jda)
-PATCHES = $(wildcard patches/*.jda)
-MAIN    = main.jda
-
-SRC = $(CONFIG) $(MODELS) $(VIEWS) $(ROUTES) $(PATCHES) $(MAIN)
-
-TEST_SRC = $(CONFIG) $(MODELS) $(VIEWS) $(ROUTES) $(wildcard test/*.jda)
-TEST_OUT = _build/test.jda
-
-all: build
-
-$(OUT): $(SRC)
-	@mkdir -p _build
-	@cat $(SRC) > $(OUT)
-
-build: $(OUT)
-	jda build --include libs/forge.jda $(OUT) -o $(APP)
+build:
+    cat $(SRC) > _build/app.jda
+    jda build --include libs/forge.jda _build/app.jda -o app
 
 run: build
-	./$(APP)
+    ./app
 
-test: $(TEST_OUT)
-	jda build --include libs/forge.jda $(TEST_OUT) -o test_runner
-	FORGE_ENV=test ./test_runner
-
-$(TEST_OUT): $(TEST_SRC)
-	@mkdir -p _build
-	@cat $(TEST_SRC) > $(TEST_OUT)
-
-clean:
-	rm -rf _build $(APP) test_runner
+test:
+    cat config.jda models/*.jda views/*.jda routes/*.jda test/*.jda > _build/test.jda
+    jda build --include libs/forge.jda _build/test.jda -o test_runner
+    FORGE_ENV=test ./test_runner
 ```
 
 ### Order rules
@@ -367,7 +350,7 @@ fn main() {
 }
 ```
 
-Run `make run`. The full CRUD interface for posts is now live:
+Run `forge server`. The full CRUD interface for posts is now live:
 
 | Method | Path | Action |
 |---|---|---|
@@ -597,7 +580,7 @@ fn main() {
 ### Running the tests
 
 ```bash
-make test
+forge test
 # compiles test_runner, then: FORGE_ENV=test ./test_runner
 ```
 
@@ -642,9 +625,9 @@ Forge runs migrations at startup, so the schema is always up to date.
 `FORGE_ENV` controls which `.env.*` file is loaded and how the app behaves:
 
 ```bash
-FORGE_ENV=development make run    # loads .env.development, debug logging
-FORGE_ENV=production  make run    # loads .env.production, info logging
-FORGE_ENV=test        make test   # loads .env.test, SMTP disabled
+forge server -e development    # loads .env.development, debug logging
+forge server -e production    # loads .env.production, info logging
+forge test   # loads .env.test, SMTP disabled
 ```
 
 `.env` file summary:
@@ -678,6 +661,6 @@ Once your project is running and you have a feel for the request cycle, these gu
 
 **Add a library** — edit `Forgefile` to add a `lib` line, run `forge install`, and the Makefile picks it up automatically.
 
-**Deploy** — compile with `FORGE_ENV=production make build`, copy the `app` binary and the `db/migrations/` directory to the server, set environment variables, and run `./app`. The binary has no runtime dependencies.
+**Deploy** — run `forge build -e production`, copy the `app` binary and `db/migrations/` to the server, set environment variables, and run `./app`. The binary has no runtime dependencies.
 
 **Override a library function** — create a `patches/` directory, write your replacement function, and add `$(wildcard patches/*.jda)` to `SRC` in the Makefile. See [overriding.md](overriding.md) for the full procedure.

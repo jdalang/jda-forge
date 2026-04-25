@@ -30,6 +30,11 @@ Run:
   forge server                              Build and start the dev server  (alias: forge s)
   forge server --port 3000                  Start on a custom port
   forge server --environment production     Use a different environment
+  forge server --watch                      Live-reload on file changes (requires entr)
+  forge build                               Compile only, don't start
+  forge build --environment production      Production build
+  forge test                                Run test suite  (alias: forge t)
+  forge test --environment staging          Test against a different environment
   forge console                             Open a database console  (alias: forge c)
   forge console --environment staging       Connect to a different environment
 
@@ -59,6 +64,8 @@ Examples:
   forge new myblog
   forge server
   forge server --port 3000
+  forge server --watch
+  forge test
   forge console
   forge add forge-markdown --version v1.0.0
   forge add payments https://github.com/myorg/jda-payments
@@ -889,16 +896,62 @@ JDA
 }
 
 # ---------------------------------------------------------------------------
+# forge build — compile only (like rake assets:precompile / just compiling)
+# ---------------------------------------------------------------------------
+
+cmd_build() {
+    local env_name="${FORGE_ENV:-development}"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --environment|-e) env_name="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    [ ! -f "Forgefile" ] && err "No Forgefile found. Are you in a Forge project directory?"
+    [ ! -d "libs" ]      && err "libs/ not found. Run 'forge install' first."
+    [ ! -f "Makefile" ]  && err "No Makefile found."
+
+    export FORGE_ENV="$env_name"
+    info "Building (${env_name})"
+    exec make build
+}
+
+# ---------------------------------------------------------------------------
+# forge test — run test suite (like rails test)
+# ---------------------------------------------------------------------------
+
+cmd_test() {
+    local env_name="${FORGE_ENV:-test}"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --environment|-e) env_name="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    [ ! -f "Forgefile" ] && err "No Forgefile found. Are you in a Forge project directory?"
+    [ ! -d "libs" ]      && err "libs/ not found. Run 'forge install' first."
+    [ ! -f "Makefile" ]  && err "No Makefile found."
+
+    export FORGE_ENV="$env_name"
+    info "Running tests (${env_name})"
+    exec make test
+}
+
+# ---------------------------------------------------------------------------
 # forge server — build and start the app (like rails s)
 # ---------------------------------------------------------------------------
 
 cmd_server() {
     local env_name="${FORGE_ENV:-development}"
     local port=""
+    local watch=false
     while [ $# -gt 0 ]; do
         case "$1" in
             --port|-p)        port="$2";     shift 2 ;;
             --environment|-e) env_name="$2"; shift 2 ;;
+            --watch|-w)       watch=true;    shift ;;
             *) shift ;;
         esac
     done
@@ -910,10 +963,16 @@ cmd_server() {
     export FORGE_ENV="$env_name"
     [ -n "$port" ] && export APP_PORT="$port"
 
-    info "Starting Forge server (${env_name})"
-    [ -n "$port" ] && dim "Port: ${port}"
-
-    exec make run
+    if $watch; then
+        command -v entr >/dev/null 2>&1 || err "'entr' not found. Install with: brew install entr  or  apt install entr"
+        info "Starting Forge server with live reload (${env_name})"
+        [ -n "$port" ] && dim "Port: ${port}"
+        find . -name '*.jda' -not -path './libs/*' -not -path './_build/*' | entr -r make run
+    else
+        info "Starting Forge server (${env_name})"
+        [ -n "$port" ] && dim "Port: ${port}"
+        exec make run
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -962,6 +1021,8 @@ CMD="$1"; shift
 
 case "$CMD" in
     server|s)     cmd_server "$@" ;;
+    build|b)      cmd_build "$@" ;;
+    test|t)       cmd_test "$@" ;;
     console|c)    cmd_console "$@" ;;
     new)          cmd_new "${1:-}" ;;
     install)      cmd_install "${1:-}" ;;

@@ -49,7 +49,7 @@ cd examples/blog
 forge install                          # downloads forge.jda into libs/
 cp .env.example .env.development
 # edit .env.development — set DATABASE_URL, APP_SECRET
-make run                               # build + start on :8080
+forge server                               # build + start on :8080
 ```
 
 ---
@@ -209,7 +209,7 @@ fn test_post_show_not_found() {
 Run tests:
 
 ```bash
-make test               # FORGE_ENV=test ./test_runner
+forge test               # FORGE_ENV=test ./test_runner
 ```
 
 In test mode (`FORGE_ENV=test`):
