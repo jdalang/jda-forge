@@ -73,6 +73,8 @@ Walkthrough: [docs/blog-example.md](docs/blog-example.md)
 
 **Routing** — resources DSL, namespaces, middleware, path helpers, before/after filters.
 
+**Multiple databases** — register named connections by URL (`forge_db_add("analytics", url)`), query any of them with `forge_q_on("analytics", "events")`, mix PostgreSQL and MySQL/MariaDB in one app.
+
 **ORM** — Rails-style query builder (`where_eq`, `order`, `limit`, `joins`, `group`, `having`, aggregates, scopes, batch processing). Tables with `deleted_at` get automatic soft-delete scoping — `post_all()` excludes deleted rows; `post_with_deleted()` and `post_only_deleted()` opt back in. Auto-generates typed CRUD per table including `post_reload`, `post_toggle`, `post_increment`, `post_decrement`, plus `forge_q_pick`, `forge_q_reorder`, `forge_q_reverse_order`, `forge_q_find_each`.
 
 **Declarative validations** — declare once at startup, fire automatically on every save with full lifecycle (`FORGE_CB_BEFORE_VALIDATION` / `FORGE_CB_AFTER_VALIDATION`). Supports create-only or update-only rules via `forge_field_on_create` / `forge_field_on_update`:

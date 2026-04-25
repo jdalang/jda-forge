@@ -1431,6 +1431,75 @@ let ok = forge_attrs_new()
 
 ---
 
+## Multiple Databases
+
+Forge supports multiple named database connections in a single app. Connections are registered at startup by URL and can target different database servers — including a mix of PostgreSQL and MySQL/MariaDB.
+
+### Supported databases
+
+| URL scheme | Database |
+|---|---|
+| `postgres://` / `postgresql://` | PostgreSQL 12+ |
+| `mysql://` / `mariadb://` | MySQL 5.7+ / MariaDB 10.3+ |
+
+### Registering connections
+
+In `config/application.jda`, add connections inside `app_config`:
+
+```jda
+fn app_config() -> ForgeConfig {
+    let cfg = forge_default_config()
+    forge_db_add("primary",   forge_env_get("DATABASE_URL"))
+    forge_db_add("analytics", forge_env_get("ANALYTICS_DATABASE_URL"))
+    forge_db_add("warehouse", forge_env_get("WAREHOUSE_DATABASE_URL"))
+    // ...
+    ret cfg
+}
+```
+
+The first registered connection (`"primary"`) is the default for all queries.
+
+### Querying a specific connection
+
+Use `forge_q_on(conn_name, table)` to pin a query to a named connection:
+
+```jda
+// All queries on the analytics connection
+forge_q_on("analytics", "events")
+    .where_eq("type", "click")
+    .order_desc("created_at")
+    .limit(100)
+    .exec()
+
+// Scalar aggregate on the warehouse
+forge_q_on("warehouse", "sales").sum("amount")
+```
+
+Generated model functions use the primary connection by default. To route a model to a different connection, override `post_q`:
+
+```jda
+fn post_q() -> &ForgeQuery { ret forge_q_on("analytics", "posts") }
+```
+
+### Switching the active connection
+
+`forge_db_use` sets the default connection for the current goroutine's subsequent unscoped `forge_db_query` / `forge_db_exec` calls:
+
+```jda
+forge_db_use("analytics")
+forge_db_exec("INSERT INTO events ...")
+forge_db_use("primary")
+```
+
+### Raw queries on a specific connection
+
+```jda
+forge_db_query_on(forge_db_conn_idx("analytics"), "SELECT COUNT(*) FROM events")
+forge_db_exec_on(forge_db_conn_idx("warehouse"),  "TRUNCATE staging_table")
+```
+
+---
+
 ## Transactions
 
 Use transactions when multiple writes must succeed or fail together.

@@ -975,7 +975,12 @@ fn load_env() {
 
 fn app_config() -> ForgeConfig {
     let cfg = forge_default_config()
-    cfg.db_url     = forge_env_get("DATABASE_URL")
+    // Register named database connections.
+    // Add more connections for multiple databases:
+    //   forge_db_add("analytics", forge_env_get("ANALYTICS_DATABASE_URL"))
+    //   forge_db_add("warehouse", forge_env_get("WAREHOUSE_DATABASE_URL"))
+    // Supported URL schemes: postgres://, postgresql://, mysql://, mariadb://
+    forge_db_add("primary", forge_env_get("DATABASE_URL"))
     cfg.smtp_host  = forge_env_get("SMTP_HOST")
     cfg.smtp_port  = 587
     cfg.smtp_user  = forge_env_get("SMTP_USER")

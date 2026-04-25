@@ -2750,6 +2750,176 @@ struct ForgeResult {
     col_count: i64
 }
 
+// =============================================================================
+// Multi-database registry — named connections, multiple drivers
+//
+// Register connections at startup:
+//   forge_db_add("primary",   forge_env_get("DATABASE_URL"))
+//   forge_db_add("analytics", forge_env_get("ANALYTICS_DATABASE_URL"))
+//
+// Switch the active connection for subsequent queries:
+//   forge_db_use("analytics")
+//
+// Pin a query to a specific connection:
+//   forge_q_on("analytics", "events").where_eq("type", "click").exec()
+//
+// Supported URL schemes: postgres://, postgresql://, mysql://, mariadb://
+// =============================================================================
+
+const FORGE_DB_POSTGRES  = 1
+const FORGE_DB_MYSQL     = 2
+const FORGE_DB_MAX_CONNS = 8
+
+struct ForgeDBConn {
+    name:      [32]i8
+    name_len:  i64
+    driver:    i64
+    host:      [256]i8
+    host_len:  i64
+    port:      i32
+    _pad:      i32
+    user:      [64]i8
+    user_len:  i64
+    pass:      [64]i8
+    pass_len:  i64
+    dbname:    [64]i8
+    dbname_len: i64
+}
+
+let g_forge_db_conns:      &i64 = 0
+let g_forge_db_conn_count: i64  = 0
+let g_forge_db_current:    i64  = 0   // active connection index
+
+fn forge_db_parse_url(url: []i8, conn: &ForgeDBConn) {
+    // Find "://"
+    let scheme_end = -1i64
+    loop i in 0..url.len {
+        if i + 2 < url.len {
+            if url[i] == ':' and url[i+1] == '/' and url[i+2] == '/' {
+                scheme_end = i  break
+            }
+        }
+    }
+    if scheme_end < 0 { ret }
+
+    let s = url[0..scheme_end]
+    let pg1 = "postgres"    let pg2 = "postgresql"
+    let my1 = "mysql"       let my2 = "mariadb"
+    if forge_slice_eq(s, pg1) or forge_slice_eq(s, pg2) {
+        conn.driver = FORGE_DB_POSTGRES
+    } else if forge_slice_eq(s, my1) or forge_slice_eq(s, my2) {
+        conn.driver = FORGE_DB_MYSQL
+    } else {
+        conn.driver = FORGE_DB_POSTGRES
+    }
+
+    let rstart = scheme_end + 3
+    // Find "@" for credentials/host split
+    let at_pos = -1i64
+    let i = rstart
+    loop i < url.len { if url[i] == '@' { at_pos = i  break }  i = i + 1 }
+
+    let host_start = rstart
+    if at_pos >= 0 {
+        let colon = -1i64
+        let j = rstart
+        loop j < at_pos { if url[j] == ':' { colon = j  break }  j = j + 1 }
+        if colon >= 0 {
+            let ulen = colon - rstart
+            loop k in 0..ulen { conn.user[k] = url[rstart + k] }
+            conn.user_len = ulen
+            let plen = at_pos - colon - 1
+            loop k in 0..plen { conn.pass[k] = url[colon + 1 + k] }
+            conn.pass_len = plen
+        } else {
+            let ulen = at_pos - rstart
+            loop k in 0..ulen { conn.user[k] = url[rstart + k] }
+            conn.user_len = ulen
+        }
+        host_start = at_pos + 1
+    }
+
+    // Find "/" for host:port / dbname split
+    let slash = -1i64
+    let i2 = host_start
+    loop i2 < url.len { if url[i2] == '/' { slash = i2  break }  i2 = i2 + 1 }
+    let host_end = url.len
+    if slash >= 0 { host_end = slash }
+
+    // Split host:port
+    let port_colon = -1i64
+    let i3 = host_start
+    loop i3 < host_end { if url[i3] == ':' { port_colon = i3  break }  i3 = i3 + 1 }
+    if port_colon >= 0 {
+        let hlen = port_colon - host_start
+        loop k in 0..hlen { conn.host[k] = url[host_start + k] }
+        conn.host_len = hlen
+        let port_acc = 0i64
+        let i4 = port_colon + 1
+        loop i4 < host_end {
+            let d = url[i4] as i64 - 48
+            if d >= 0 and d <= 9 { port_acc = port_acc * 10 + d }
+            i4 = i4 + 1
+        }
+        conn.port = port_acc as i32
+    } else {
+        let hlen = host_end - host_start
+        loop k in 0..hlen { conn.host[k] = url[host_start + k] }
+        conn.host_len = hlen
+        if conn.driver == FORGE_DB_MYSQL { conn.port = 3306 }
+        else                             { conn.port = 5432 }
+    }
+
+    // Database name from path
+    if slash >= 0 and slash + 1 < url.len {
+        let dlen = url.len - slash - 1
+        loop k in 0..dlen { conn.dbname[k] = url[slash + 1 + k] }
+        conn.dbname_len = dlen
+    }
+}
+
+// Register a named database connection from a URL.
+fn forge_db_add(name: []i8, url: []i8) {
+    if g_forge_db_conns == 0 { g_forge_db_conns = alloc_pages(1) }
+    if g_forge_db_conn_count >= FORGE_DB_MAX_CONNS { ret }
+    let conn: &ForgeDBConn = alloc_pages(1)
+    let nlen = name.len
+    if nlen > 32 { nlen = 32 }
+    loop i in 0..nlen { conn.name[i] = name[i] }
+    conn.name_len = nlen
+    forge_db_parse_url(url, conn)
+    g_forge_db_conns[g_forge_db_conn_count] = conn as i64
+    g_forge_db_conn_count = g_forge_db_conn_count + 1
+    // First connection populates legacy globals too
+    if g_forge_db_conn_count == 1 {
+        g_forge_db_host = conn.host[0..conn.host_len]
+        g_forge_db_port = conn.port
+        g_forge_db_user = conn.user[0..conn.user_len]
+        g_forge_db_pass = conn.pass[0..conn.pass_len]
+        g_forge_db_name = conn.dbname[0..conn.dbname_len]
+    }
+}
+
+// Set the active connection by name for subsequent queries.
+fn forge_db_use(name: []i8) {
+    loop i in 0..g_forge_db_conn_count {
+        let conn = g_forge_db_conns[i] as &ForgeDBConn
+        if forge_slice_eq(conn.name[0..conn.name_len], name) {
+            g_forge_db_current = i  ret
+        }
+    }
+}
+
+// Return the index of a named connection (0 = primary fallback).
+fn forge_db_conn_idx(name: []i8) -> i64 {
+    loop i in 0..g_forge_db_conn_count {
+        let conn = g_forge_db_conns[i] as &ForgeDBConn
+        if forge_slice_eq(conn.name[0..conn.name_len], name) { ret i }
+    }
+    ret 0
+}
+
+// Legacy globals — kept for backward compat and used when no registry is set.
 let g_forge_db_host: []i8 = ""
 let g_forge_db_port: i32  = 5432
 let g_forge_db_user: []i8 = ""
@@ -2762,6 +2932,22 @@ fn forge_db_config(host: []i8, port: i32, user: []i8, pass: []i8, name: []i8) {
     g_forge_db_user = user
     g_forge_db_pass = pass
     g_forge_db_name = name
+    // Also register as "primary" in the registry
+    if g_forge_db_conn_count == 0 {
+        let url_buf: &i8 = alloc_pages(1)
+        let up = 0i64
+        let scheme = "postgres://"
+        loop i in 0..scheme.len { url_buf[up] = scheme[i]  up = up + 1 }
+        loop i in 0..user.len  { url_buf[up] = user[i]    up = up + 1 }
+        url_buf[up] = ':'  up = up + 1
+        loop i in 0..pass.len  { url_buf[up] = pass[i]    up = up + 1 }
+        url_buf[up] = '@'  up = up + 1
+        loop i in 0..host.len  { url_buf[up] = host[i]    up = up + 1 }
+        url_buf[up] = '/'  up = up + 1
+        loop i in 0..name.len  { url_buf[up] = name[i]    up = up + 1 }
+        let primary = "primary"
+        forge_db_add(primary, url_buf[0..up])
+    }
 }
 
 // Read exactly n bytes from fd into buf.
@@ -2800,31 +2986,28 @@ fn forge_db_write_i16(buf: &i8, off: i64, val: i64) {
     buf[off+1] = (val        and 0xFF) as i8
 }
 
-// Open a PostgreSQL connection and authenticate. Returns fd, or -1 on error.
-fn forge_db_connect() -> i32 {
-    let fd = TcpStream::connect(g_forge_db_host, g_forge_db_port as u16).fd
-    if fd < 0 { ret -1 }
+// =============================================================================
+// PostgreSQL driver — wire protocol v3
+// =============================================================================
 
-    // Build startup message: {int32 len, int32 protocol, "user\0", user, "\0", "database\0", db, "\0", "\0"}
+fn forge_pg_connect(host: []i8, port: i32, user: []i8, pass: []i8, dbname: []i8) -> i32 {
+    let fd = TcpStream::connect(host, port as u16).fd
+    if fd < 0 { ret -1 }
     let msg = [512]i8
-    let proto: i64 = 196608   // 3.0
-    forge_db_write_i32(msg, 4, proto)
+    forge_db_write_i32(msg, 4, 196608)   // protocol 3.0
     let pos = 8i64
-    let kuser = "user"
-    let kdb   = "database"
-    loop i in 0..kuser.len         { msg[pos] = kuser[i]             pos = pos + 1 }
+    let kuser = "user"      let kdb = "database"
+    loop i in 0..kuser.len  { msg[pos] = kuser[i]   pos = pos + 1 }
     msg[pos] = 0  pos = pos + 1
-    loop i in 0..g_forge_db_user.len { msg[pos] = g_forge_db_user[i]  pos = pos + 1 }
+    loop i in 0..user.len   { msg[pos] = user[i]    pos = pos + 1 }
     msg[pos] = 0  pos = pos + 1
-    loop i in 0..kdb.len           { msg[pos] = kdb[i]               pos = pos + 1 }
+    loop i in 0..kdb.len    { msg[pos] = kdb[i]     pos = pos + 1 }
     msg[pos] = 0  pos = pos + 1
-    loop i in 0..g_forge_db_name.len { msg[pos] = g_forge_db_name[i]  pos = pos + 1 }
+    loop i in 0..dbname.len { msg[pos] = dbname[i]  pos = pos + 1 }
     msg[pos] = 0  pos = pos + 1
-    msg[pos] = 0  pos = pos + 1   // terminator
+    msg[pos] = 0  pos = pos + 1
     forge_db_write_i32(msg, 0, pos)
     forge_tcp_write_all(fd, msg, pos)
-
-    // Read auth response
     let hdr = [5]i8
     loop {
         if not forge_db_recv_n(fd, hdr, 5) { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret -1 }
@@ -2834,39 +3017,30 @@ fn forge_db_connect() -> i32 {
         if mlen > 0 { forge_db_recv_n(fd, body, mlen) }
         if mtype == 'R' {
             let auth_type = forge_db_read_i32(body, 0)
-            if auth_type == 0 { }   // AuthenticationOk — continue
+            if auth_type == 0 { }
             else if auth_type == 3 {
-                // CleartextPassword
-                let pmsg = [256]i8
-                let pp = 1i64
+                let pmsg = [256]i8   let pp = 1i64
                 pmsg[0] = 'p'
-                let plen = g_forge_db_pass.len + 5
-                forge_db_write_i32(pmsg, 1, plen)
+                forge_db_write_i32(pmsg, 1, pass.len + 5)
                 pp = 5
-                loop i in 0..g_forge_db_pass.len { pmsg[pp] = g_forge_db_pass[i]  pp = pp + 1 }
+                loop i in 0..pass.len { pmsg[pp] = pass[i]  pp = pp + 1 }
                 pmsg[pp] = 0
                 forge_tcp_write_all(fd, pmsg, pp + 1)
-            } else {
-                // Unsupported auth type (MD5, SCRAM) — close
-                syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
-                ret -1
-            }
-        } else if mtype == 'Z' {
-            ret fd   // ReadyForQuery — connected!
-        } else if mtype == 'E' {
-            syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
-            ret -1   // ErrorResponse
-        }
+            } else { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret -1 }
+        } else if mtype == 'Z' { ret fd }
+        else if mtype == 'E' { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret -1 }
     }
 }
 
-// Execute a query and return results (caller owns the ForgeResult).
-fn forge_db_query(sql: []i8) -> &ForgeResult {
+fn forge_db_connect() -> i32 {
+    ret forge_pg_connect(g_forge_db_host, g_forge_db_port, g_forge_db_user, g_forge_db_pass, g_forge_db_name)
+}
+
+fn forge_pg_query(host: []i8, port: i32, user: []i8, pass: []i8, dbname: []i8, sql: []i8) -> &ForgeResult {
     let result: &ForgeResult = alloc_pages(1)
     result.count    = 0
     result.affected = 0
-
-    let fd = forge_db_connect()
+    let fd = forge_pg_connect(host, port, user, pass, dbname)
     if fd < 0 { ret result }
 
     // Send simple query: 'Q' + int32(len+5) + sql + '\0'
@@ -2961,9 +3135,245 @@ fn forge_db_query(sql: []i8) -> &ForgeResult {
     ret result
 }
 
-// Execute a statement (INSERT/UPDATE/DELETE). Returns true if no error.
+fn forge_db_query(sql: []i8) -> &ForgeResult {
+    ret forge_pg_query(g_forge_db_host, g_forge_db_port, g_forge_db_user, g_forge_db_pass, g_forge_db_name, sql)
+}
+
 fn forge_db_exec(sql: []i8) -> bool {
     let res = forge_db_query(sql)
+    ret res.affected >= 0
+}
+
+// =============================================================================
+// MySQL driver — wire protocol v4.1 / v10 handshake
+// Supports mysql_native_password authentication.
+// =============================================================================
+
+fn forge_mysql_write_i24le(buf: &i8, off: i64, val: i64) {
+    buf[off]   = (val and 0xFF) as i8
+    buf[off+1] = ((val >> 8)  and 0xFF) as i8
+    buf[off+2] = ((val >> 16) and 0xFF) as i8
+}
+
+fn forge_mysql_write_i32le(buf: &i8, off: i64, val: i64) {
+    buf[off]   = (val and 0xFF) as i8
+    buf[off+1] = ((val >> 8)  and 0xFF) as i8
+    buf[off+2] = ((val >> 16) and 0xFF) as i8
+    buf[off+3] = ((val >> 24) and 0xFF) as i8
+}
+
+fn forge_mysql_send_pkt(fd: i32, payload: &i8, plen: i64, seq: i64) {
+    let hdr = [4]i8
+    forge_mysql_write_i24le(hdr, 0, plen)
+    hdr[3] = seq as i8
+    forge_tcp_write_all(fd, hdr, 4)
+    forge_tcp_write_all(fd, payload, plen)
+}
+
+fn forge_mysql_recv_pkt(fd: i32, buf: &i8, max: i64) -> i64 {
+    let hdr = [4]i8
+    if not forge_db_recv_n(fd, hdr, 4) { ret -1 }
+    let plen = (hdr[0] as i64 and 0xFF) or
+               ((hdr[1] as i64 and 0xFF) << 8) or
+               ((hdr[2] as i64 and 0xFF) << 16)
+    if plen > max { ret -1 }
+    if plen == 0  { ret 0 }
+    if not forge_db_recv_n(fd, buf, plen) { ret -1 }
+    ret plen
+}
+
+// Read a length-encoded integer from buf at pos; advances pos in-place.
+fn forge_mysql_lenenc(buf: &i8, pos: &i64) -> i64 {
+    let b = buf[pos[0]] as i64 and 0xFF
+    if b < 0xFB  { pos[0] = pos[0] + 1  ret b }
+    if b == 0xFB { pos[0] = pos[0] + 1  ret 0 }   // NULL
+    if b == 0xFC {
+        let v = (buf[pos[0]+1] as i64 and 0xFF) or ((buf[pos[0]+2] as i64 and 0xFF) << 8)
+        pos[0] = pos[0] + 3   ret v
+    }
+    if b == 0xFD {
+        let v = (buf[pos[0]+1] as i64 and 0xFF) or
+                ((buf[pos[0]+2] as i64 and 0xFF) << 8) or
+                ((buf[pos[0]+3] as i64 and 0xFF) << 16)
+        pos[0] = pos[0] + 4   ret v
+    }
+    let v = 0i64
+    loop i in 0..8 { v = v or ((buf[pos[0]+1+i] as i64 and 0xFF) << (i * 8)) }
+    pos[0] = pos[0] + 9   ret v
+}
+
+fn forge_mysql_connect(conn: &ForgeDBConn) -> i32 {
+    let fd = TcpStream::connect(conn.host[0..conn.host_len], conn.port as u16).fd
+    if fd < 0 { ret -1 }
+
+    let buf: &i8 = alloc_pages(4)
+
+    // Read server initial handshake
+    let plen = forge_mysql_recv_pkt(fd, buf, 16384)
+    if plen < 0 or buf[0] != 10 { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret -1 }
+
+    // Skip server version (null-terminated) + connection id (4 bytes)
+    let pos = 1i64
+    loop pos < plen { if buf[pos] == 0 { pos = pos + 1  break }  pos = pos + 1 }
+    pos = pos + 4
+
+    // Auth plugin data part 1 (8 bytes)
+    let seed = [20]i8
+    loop i in 0..8 { seed[i] = buf[pos + i] }
+    pos = pos + 8 + 1 + 2 + 1 + 2 + 2   // filler + caps_lo + charset + status + caps_hi
+
+    let auth_data_len = buf[pos] as i64 and 0xFF
+    pos = pos + 1 + 10   // auth_data_len + reserved
+
+    // Auth plugin data part 2: max(13, auth_data_len - 8) bytes
+    let part2 = auth_data_len - 8
+    if part2 < 13 { part2 = 13 }
+    let copy_n = part2 - 1
+    if copy_n > 12 { copy_n = 12 }
+    loop i in 0..copy_n { seed[8 + i] = buf[pos + i] }
+
+    // Compute mysql_native_password scramble
+    let auth_resp = [20]i8
+    let auth_resp_len = 0i64
+    if conn.pass_len > 0 {
+        let pbuf = [256]i8
+        let plen2 = conn.pass_len
+        loop i in 0..plen2 { pbuf[i] = conn.pass[i] }
+        let stage1 = [20]i8   sha1(pbuf, plen2, stage1)
+        let stage2 = [20]i8   sha1(stage1, 20, stage2)
+        let cat = [40]i8
+        loop i in 0..20 { cat[i] = seed[i] }
+        loop i in 0..20 { cat[20+i] = stage2[i] }
+        let stage3 = [20]i8   sha1(cat, 40, stage3)
+        loop i in 0..20 { auth_resp[i] = (stage1[i] as i64 ^ stage3[i] as i64) as i8 }
+        auth_resp_len = 20
+    }
+
+    // Send handshake response
+    let resp: &i8 = alloc_pages(1)
+    let rp = 0i64
+    // caps: CLIENT_LONG_PASSWORD(1)|CLIENT_LONG_FLAG(4)|CLIENT_CONNECT_WITH_DB(8)|CLIENT_PROTOCOL_41(0x200)|CLIENT_SECURE_CONNECTION(0x8000)
+    forge_mysql_write_i32le(resp, rp, 0x820D)   rp = rp + 4
+    forge_mysql_write_i32le(resp, rp, 16777216) rp = rp + 4   // max packet = 16MB
+    resp[rp] = 33   rp = rp + 1                               // charset utf8
+    loop i in 0..23 { resp[rp] = 0  rp = rp + 1 }             // reserved
+    loop i in 0..conn.user_len { resp[rp] = conn.user[i]  rp = rp + 1 }
+    resp[rp] = 0  rp = rp + 1
+    resp[rp] = auth_resp_len as i8  rp = rp + 1
+    loop i in 0..auth_resp_len { resp[rp] = auth_resp[i]  rp = rp + 1 }
+    loop i in 0..conn.dbname_len { resp[rp] = conn.dbname[i]  rp = rp + 1 }
+    resp[rp] = 0  rp = rp + 1
+    forge_mysql_send_pkt(fd, resp, rp, 1)
+
+    // Read auth result
+    let alen = forge_mysql_recv_pkt(fd, buf, 16384)
+    if alen < 0 or buf[0] == 0xFF { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret -1 }
+    ret fd
+}
+
+fn forge_mysql_query(conn: &ForgeDBConn, sql: []i8) -> &ForgeResult {
+    let result: &ForgeResult = alloc_pages(1)
+    result.count    = 0
+    result.affected = 0
+
+    let fd = forge_mysql_connect(conn)
+    if fd < 0 { ret result }
+
+    let qbuf: &i8 = alloc_pages(4)
+    qbuf[0] = 0x03
+    loop i in 0..sql.len { qbuf[1+i] = sql[i] }
+    forge_mysql_send_pkt(fd, qbuf, 1 + sql.len, 0)
+
+    let buf: &i8 = alloc_pages(16)
+    let plen2 = forge_mysql_recv_pkt(fd, buf, 65536)
+    if plen2 < 0 { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret result }
+
+    if buf[0] == 0xFF { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret result }
+
+    if buf[0] == 0x00 {
+        // OK packet — parse affected rows
+        let p: &i64 = alloc_pages(1)   p[0] = 1
+        result.affected = forge_mysql_lenenc(buf, p)
+        syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+        ret result
+    }
+
+    // Result set
+    let p: &i64 = alloc_pages(1)   p[0] = 0
+    let ncols = forge_mysql_lenenc(buf, p)
+    result.col_count = ncols
+
+    // Column definitions
+    loop ci in 0..ncols {
+        let cplen = forge_mysql_recv_pkt(fd, buf, 65536)
+        if cplen < 0 { break }
+        p[0] = 0
+        // Skip 4 lenenc strings: catalog, schema, table, org_table
+        loop skip in 0..4 {
+            let slen = forge_mysql_lenenc(buf, p)
+            p[0] = p[0] + slen
+        }
+        // 5th = column name
+        let nlen = forge_mysql_lenenc(buf, p)
+        let cn: &ForgeColName = (result.col_names as i64 + ci * 72) as &ForgeColName
+        let copy_n = nlen   if copy_n > 64 { copy_n = 64 }
+        loop j in 0..copy_n { cn.name[j] = buf[p[0] + j] }
+        cn.nlen = copy_n
+    }
+    forge_mysql_recv_pkt(fd, buf, 65536)   // consume EOF after columns
+
+    let rows: &i8 = alloc_pages(512)
+    result.rows = rows as &ForgeDbRow
+
+    loop {
+        let rplen = forge_mysql_recv_pkt(fd, buf, 65536)
+        if rplen < 0 { break }
+        if (buf[0] as i64 and 0xFF) == 0xFE or (buf[0] as i64 and 0xFF) == 0xFF { break }
+
+        let row_i = result.count
+        if row_i >= FORGE_DB_MAX_ROWS { break }
+        let row: &ForgeDbRow = (rows as i64 + row_i * FORGE_DB_ROW_STRIDE) as &ForgeDbRow
+        row.count = ncols
+        p[0] = 0
+        loop c in 0..ncols {
+            if p[0] >= rplen { break }
+            if (buf[p[0]] as i64 and 0xFF) == 0xFB {
+                p[0] = p[0] + 1
+            } else {
+                let dlen = forge_mysql_lenenc(buf, p)
+                let cell: &ForgeDbCell = (row.cols as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
+                let cl = dlen   if cl > FORGE_DB_COL_CAP { cl = FORGE_DB_COL_CAP }
+                loop j in 0..cl { cell.data[j] = buf[p[0] + j] }
+                cell.len = cl
+                p[0] = p[0] + dlen
+            }
+        }
+        result.count = row_i + 1
+    }
+    result.affected = result.count
+    syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+    ret result
+}
+
+// =============================================================================
+// Multi-connection dispatch
+// =============================================================================
+
+fn forge_db_query_on(idx: i64, sql: []i8) -> &ForgeResult {
+    if g_forge_db_conns == 0 or g_forge_db_conn_count == 0 {
+        ret forge_pg_query(g_forge_db_host, g_forge_db_port, g_forge_db_user, g_forge_db_pass, g_forge_db_name, sql)
+    }
+    let i = idx
+    if i >= g_forge_db_conn_count { i = 0 }
+    let conn = g_forge_db_conns[i] as &ForgeDBConn
+    if conn.driver == FORGE_DB_MYSQL {
+        ret forge_mysql_query(conn, sql)
+    }
+    ret forge_pg_query(conn.host[0..conn.host_len], conn.port, conn.user[0..conn.user_len], conn.pass[0..conn.pass_len], conn.dbname[0..conn.dbname_len], sql)
+}
+
+fn forge_db_exec_on(idx: i64, sql: []i8) -> bool {
+    let res = forge_db_query_on(idx, sql)
     ret res.affected >= 0
 }
 
@@ -3202,6 +3612,7 @@ const FORGE_SCOPE_MAX        = 64
 
 struct ForgeQuery {
     table:      []i8
+    conn_idx:   i64
     where_buf:  [FORGE_QUERY_WHERE_CAP]i8
     where_len:  i64
     order_buf:  [FORGE_QUERY_ORDER_CAP]i8
@@ -3329,19 +3740,27 @@ fn forge__where_connector(q: &ForgeQuery) {
 
 fn forge_q(table: []i8) -> &ForgeQuery {
     let q: &ForgeQuery = alloc_pages(2)
-    q.table         = table
-    q.where_len     = 0
-    q.order_len     = 0
-    q.sel_len       = 0
-    q.join_len      = 0
-    q.group_len     = 0
-    q.having_len    = 0
-    q.lim           = -1
-    q.off           = -1
-    q.distinct      = false
-    q.or_mode       = false
-    q.no_soft_delete = true   // opt-in via forge_q_where_not_deleted or generated scopes
-    q.only_deleted  = false
+    q.table          = table
+    q.conn_idx       = g_forge_db_current
+    q.where_len      = 0
+    q.order_len      = 0
+    q.sel_len        = 0
+    q.join_len       = 0
+    q.group_len      = 0
+    q.having_len     = 0
+    q.lim            = -1
+    q.off            = -1
+    q.distinct       = false
+    q.or_mode        = false
+    q.no_soft_delete = true
+    q.only_deleted   = false
+    ret q
+}
+
+// Pin a query to a specific named connection.
+fn forge_q_on(conn_name: []i8, table: []i8) -> &ForgeQuery {
+    let q = forge_q(table)
+    q.conn_idx = forge_db_conn_idx(conn_name)
     ret q
 }
 
@@ -3768,7 +4187,7 @@ fn forge_q_sql(q: &ForgeQuery, dst: &i8) -> i64 {
 fn forge_q_exec(q: &ForgeQuery) -> &ForgeResult {
     let sql_buf: &i8 = alloc_pages(2)
     let sql_len = forge_q_sql(q, sql_buf)
-    ret forge_db_query(sql_buf[0..sql_len])
+    ret forge_db_query_on(q.conn_idx, sql_buf[0..sql_len])
 }
 
 fn forge_q_all(q: &ForgeQuery) -> &ForgeResult {
@@ -3858,7 +4277,7 @@ fn forge_q_update_all(q: &ForgeQuery, set_clause: []i8) -> bool {
         loop i in 0..wh.len { buf[pos] = wh[i]  pos = pos + 1 }
         loop i in 0..q.where_len { buf[pos] = q.where_buf[i]  pos = pos + 1 }
     }
-    ret forge_db_exec(buf[0..pos])
+    ret forge_db_exec_on(q.conn_idx, buf[0..pos])
 }
 
 fn forge_q_delete_all(q: &ForgeQuery) -> bool {
@@ -3872,7 +4291,7 @@ fn forge_q_delete_all(q: &ForgeQuery) -> bool {
         loop i in 0..wh.len { buf[pos] = wh[i]  pos = pos + 1 }
         loop i in 0..q.where_len { buf[pos] = q.where_buf[i]  pos = pos + 1 }
     }
-    ret forge_db_exec(buf[0..pos])
+    ret forge_db_exec_on(q.conn_idx, buf[0..pos])
 }
 
 // ---------------------------------------------------------------------------
