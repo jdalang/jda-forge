@@ -175,7 +175,7 @@ Additional libraries are added with `lib` lines. See [libraries.md](libraries.md
 
 **`config/routes.jda`** is the routes DSL you edit — declare resources, namespaces, scopes, and custom routes here. `forge build` compiles it into `_build/routes.jda` (path helpers + `routes()` function) and auto-generates `_build/controllers.jda` by scanning your controllers. You never edit the `_build/` files.
 
-**`main.jda`** is the entry point. It calls `load_env`, creates the app, registers middleware, calls model validation init functions (e.g. `post_validations_init()`), calls `routes(app)`, runs migrations, and starts listening.
+**`main.jda`** is the entry point. It calls `load_env`, creates the app, registers middleware, calls model validation init functions (e.g. `post_model_init()`), calls `routes(app)`, runs migrations, and starts listening.
 
 **`.env`** holds defaults that are safe to commit — typically just `FORGE_ENV=development` and `APP_PORT=8080`. Per-environment files (`.env.development`, `.env.production`) hold secrets and are gitignored.
 
@@ -205,7 +205,7 @@ Here is where each kind of code lives and why.
 
 | Layer | File | Functions |
 |---|---|---|
-| Model | `app/models/post.jda` | `post_find`, `post_all`, `post_create`, `post_validations_init` |
+| Model | `app/models/post.jda` | `post_find`, `post_all`, `post_create`, `post_model_init` |
 | Controller | `app/controllers/posts_controller.jda` | `posts_index`, `posts_show`, `posts_create`, … |
 | View | `app/views/posts/index.html.jda` | `view_posts_index` |
 | Helper | `app/helpers/application_helper.jda` | `h`, `link_to`, `pluralize` |
@@ -378,7 +378,7 @@ This creates:
 ```
 db/migrate/001_create_posts.sql          # CREATE TABLE posts (...)
 app/models/post.jda                      # post_find, post_all, post_create, post_update,
-                                         # post_delete, post_validations_init
+                                         # post_delete, post_model_init
 app/controllers/posts_controller.jda     # 7 thin action functions
 app/views/posts/index.html.jda           # view_posts_index
 app/views/posts/show.html.jda            # view_posts_show
@@ -422,7 +422,7 @@ Run `forge server`. The full CRUD interface for posts is now live:
 ```jda
 // app/models/post.jda
 
-fn post_validations_init() {
+fn post_model_init() {
     forge_model("posts")
     forge_field       ("title, body, author", FORGE_V_PRESENCE)
     forge_field_length("title",               2, 255)
@@ -434,7 +434,7 @@ fn post_published() -> &ForgeResult {
 }
 ```
 
-Validations are declared once at startup (call `post_validations_init()` in `main.jda`) and fire automatically before every insert and update. That's the entire model file.
+Validations are declared once at startup (call `post_model_init()` in `main.jda`) and fire automatically before every insert and update. That's the entire model file.
 
 Every time you run `forge build`, Forge reads the migration and emits `_build/models.jda` automatically:
 

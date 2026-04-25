@@ -77,10 +77,10 @@ Walkthrough: [docs/blog-example.md](docs/blog-example.md)
 
 **ORM** — Rails-style query builder (`where_eq`, `order`, `limit`, `joins`, `group`, `having`, aggregates, scopes, batch processing). Tables with `deleted_at` get automatic soft-delete scoping — `post_all()` excludes deleted rows; `post_with_deleted()` and `post_only_deleted()` opt back in. Auto-generates typed CRUD per table including `post_reload`, `post_toggle`, `post_increment`, `post_decrement`, plus `forge_q_pick`, `forge_q_reorder`, `forge_q_reverse_order`, `forge_q_find_each`.
 
-**Model init** — associations, callbacks, and validations declared together in one `*_validations_init` function so the full shape of a model is visible in one place:
+**Model init** — associations, callbacks, and validations declared together in one `*_model_init` function so the full shape of a model is visible in one place:
 
 ```jda
-fn post_validations_init() {
+fn post_model_init() {
     forge_model("posts")
     forge_assoc_belongs_to      ("user",     "users",    "user_id")
     forge_assoc_has_many        ("comments", "comments", "post_id")
@@ -92,7 +92,7 @@ fn post_validations_init() {
 }
 ```
 
-**Associations** — `forge_assoc_belongs_to`, `forge_assoc_has_many`, `forge_assoc_has_one`, `forge_assoc_has_many_through` (HABTM), `forge_assoc_poly_belongs_to` / `forge_assoc_poly_has_many` (polymorphic), self-referential (parent/child by pointing the association at the same table). `forge generate model` emits typed accessor stubs automatically.
+**Associations** — `forge_assoc_belongs_to`, `forge_assoc_has_many`, `forge_assoc_has_one`, `forge_assoc_has_many_through` (HABTM), `forge_assoc_poly_belongs_to` / `forge_assoc_poly_has_many` (polymorphic), self-referential (parent/child). Typed accessor functions (`post_comments`, `post_user`, etc.) are auto-generated into `_build/models.jda` by `forge compile-models` — declare once in `*_model_init`, use everywhere.
 
 **Declarative validations** — fire automatically on every save with full lifecycle (`FORGE_CB_BEFORE_VALIDATION` / `FORGE_CB_AFTER_VALIDATION`). Supports create-only or update-only rules via `forge_field_on_create` / `forge_field_on_update`.
 

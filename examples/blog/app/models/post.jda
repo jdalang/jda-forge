@@ -1,19 +1,16 @@
 // app/models/post.jda
-// CRUD functions (post_q, post_all, post_find, post_create, …) are
-// auto-generated into _build/models.jda from db/migrate/*.sql
+// CRUD functions and association accessors are auto-generated into _build/models.jda
 
-// --- Validations (registered once at startup) ---
-
-fn post_validations_init() {
+fn post_model_init() {
     forge_model("posts")
+
     forge_assoc_has_many("comments", "comments", "post_id")
+
+    // forge_callback(FORGE_CB_BEFORE_SAVE, fn_addr(post_before_save))
+
     forge_field       ("title, body, author", FORGE_V_PRESENCE)
     forge_field_length("title",               2, 255)
     forge_field_min   ("body",                10)
-}
-
-fn post_comments(post_id: []i8) -> &ForgeResult {
-    ret forge_assoc_query("posts", "comments", post_id)
 }
 
 // --- Custom scopes ---

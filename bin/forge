@@ -505,6 +505,62 @@ compile_models() {
         } >> "$tmp"
     done
 
+    # Phase 2: parse app/models/*.jda and emit typed association accessors
+    if [ -d "app/models" ]; then
+        printf '// --- Association accessors (from app/models/*_model_init declarations) ---\n\n' >> "$tmp"
+        for mf in app/models/*.jda; do
+            [ -f "$mf" ] || continue
+            local msnek; msnek=$(basename "$mf" .jda)
+            local cur_table=""
+            while IFS= read -r mline || [[ -n "$mline" ]]; do
+                # forge_model("table") sets the current table context
+                if [[ "$mline" =~ forge_model\(\"([^\"]+)\"\) ]]; then
+                    cur_table="${BASH_REMATCH[1]}"
+                    continue
+                fi
+                [ -z "$cur_table" ] && continue
+
+                # forge_assoc_belongs_to("name", "target", "fk")
+                if [[ "$mline" =~ forge_assoc_belongs_to\(\"([^\"]+)\" ]]; then
+                    local an="${BASH_REMATCH[1]}"
+                    printf 'fn %s_%s(fk_val: []i8) -> &ForgeResult { ret forge_assoc_query("%s", "%s", fk_val) }\n' \
+                        "$msnek" "$an" "$cur_table" "$an" >> "$tmp"
+                fi
+                # forge_assoc_has_many("name", ...)
+                if [[ "$mline" =~ forge_assoc_has_many\(\"([^\"]+)\" ]] && [[ ! "$mline" =~ forge_assoc_has_many_through ]]; then
+                    local an="${BASH_REMATCH[1]}"
+                    printf 'fn %s_%s(owner_id: []i8) -> &ForgeResult { ret forge_assoc_query("%s", "%s", owner_id) }\n' \
+                        "$msnek" "$an" "$cur_table" "$an" >> "$tmp"
+                fi
+                # forge_assoc_has_one("name", ...)
+                if [[ "$mline" =~ forge_assoc_has_one\(\"([^\"]+)\" ]]; then
+                    local an="${BASH_REMATCH[1]}"
+                    printf 'fn %s_%s(owner_id: []i8) -> &ForgeResult { ret forge_assoc_query("%s", "%s", owner_id) }\n' \
+                        "$msnek" "$an" "$cur_table" "$an" >> "$tmp"
+                fi
+                # forge_assoc_has_many_through("name", ...)
+                if [[ "$mline" =~ forge_assoc_has_many_through\(\"([^\"]+)\" ]]; then
+                    local an="${BASH_REMATCH[1]}"
+                    printf 'fn %s_%s(owner_id: []i8) -> &ForgeResult { ret forge_assoc_query("%s", "%s", owner_id) }\n' \
+                        "$msnek" "$an" "$cur_table" "$an" >> "$tmp"
+                fi
+                # forge_assoc_poly_has_many("name", ...)
+                if [[ "$mline" =~ forge_assoc_poly_has_many\(\"([^\"]+)\" ]]; then
+                    local an="${BASH_REMATCH[1]}"
+                    printf 'fn %s_%s(owner_id: []i8) -> &ForgeResult { ret forge_assoc_query("%s", "%s", owner_id) }\n' \
+                        "$msnek" "$an" "$cur_table" "$an" >> "$tmp"
+                fi
+                # forge_assoc_poly_belongs_to("name", ...) — two-arg accessor
+                if [[ "$mline" =~ forge_assoc_poly_belongs_to\(\"([^\"]+)\" ]]; then
+                    local an="${BASH_REMATCH[1]}"
+                    printf 'fn %s_%s(type_val: []i8, id_val: []i8) -> &ForgeResult { ret forge_assoc_poly_query("%s", "%s", type_val, id_val) }\n' \
+                        "$msnek" "$an" "$cur_table" "$an" >> "$tmp"
+                fi
+            done < "$mf"
+            printf '\n' >> "$tmp"
+        done
+    fi
+
     mv "$tmp" "$out"
     ok "compiled _build/models.jda"
 }
@@ -1206,21 +1262,20 @@ gen_model() {
         echo "// CRUD functions (${snake}_q, ${snake}_all, ${snake}_find, ${snake}_create, …)"
         echo "// are auto-generated into _build/models.jda from db/migrate/*.sql"
         echo ""
-        echo "fn ${snake}_validations_init() {"
+        echo "fn ${snake}_model_init() {"
         echo "    forge_model(\"${table}\")"
+        echo ""
 
         # associations — one belongs_to per references field
-        local has_refs=false
         for f in "${fields[@]:-}"; do
             [ -z "$f" ] && continue
             local fname="${f%%:*}"; local ftype="${f##*:}"
             [ "$ftype" != "references" ] && continue
             local ref_table; ref_table=$(plural "$fname")
             echo "    forge_assoc_belongs_to(\"${fname}\", \"${ref_table}\", \"${fname}_id\")"
-            has_refs=true
         done
-        $has_refs && echo ""
 
+        echo ""
         # callback placeholders
         echo "    // forge_callback(FORGE_CB_BEFORE_SAVE,  fn_addr(${snake}_before_save))"
         echo "    // forge_callback(FORGE_CB_AFTER_CREATE, fn_addr(${snake}_after_create))"
@@ -1247,22 +1302,9 @@ gen_model() {
         fi
 
         echo "}"
-
-        # typed accessor stubs for declared associations
-        local printed_header=false
-        for f in "${fields[@]:-}"; do
-            [ -z "$f" ] && continue
-            local fname="${f%%:*}"; local ftype="${f##*:}"
-            [ "$ftype" != "references" ] && continue
-            if ! $printed_header; then
-                echo ""
-                printed_header=true
-            fi
-            local ref_table; ref_table=$(plural "$fname")
-            echo "fn ${snake}_${fname}(fk_val: []i8) -> &ForgeResult {"
-            echo "    ret forge_assoc_query(\"${table}\", \"${fname}\", fk_val)"
-            echo "}"
-        done
+        echo ""
+        echo "// Association accessors below are auto-generated by forge compile-models."
+        echo "// Run 'forge compile-models' after editing forge_assoc_* declarations above."
     } > "$out"
     ok "created $out"
 }

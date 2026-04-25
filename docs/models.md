@@ -90,14 +90,14 @@ The generator creates a minimal file with declarative validations and a stub for
 ```jda
 // app/models/post.jda
 
-fn post_validations_init() {
+fn post_model_init() {
     forge_model("posts")
     forge_field       ("title, body, user_id", FORGE_V_PRESENCE)
     forge_field_length("title",                2, 255)
 }
 ```
 
-Call `post_validations_init()` once in `main.jda` before `routes(app)`. Validations then fire automatically before every insert and update — no explicit call needed in controllers.
+Call `post_model_init()` once in `main.jda` before `routes(app)`. Validations then fire automatically before every insert and update — no explicit call needed in controllers.
 
 Everything else (`post_q`, `post_all`, `post_find`, `post_create`, `post_update`, `post_delete`, …) is generated automatically into `_build/models.jda` by reading the migration. Add custom scopes and helper functions below the validations.
 
@@ -826,11 +826,11 @@ Forge supports two validation styles: **declarative** (Rails-style, fires automa
 
 ### Model init — the full picture
 
-The `*_validations_init` function is the single place where the complete shape of a model is declared. Associations, callbacks, and validation rules all live here — any developer reading the file immediately sees what the model relates to, what triggers fire, and what rules apply.
+The `*_model_init` function is the single place where the complete shape of a model is declared. Associations, callbacks, and validation rules all live here — any developer reading the file immediately sees what the model relates to, what triggers fire, and what rules apply.
 
 ```jda
 // app/models/post.jda
-fn post_validations_init() {
+fn post_model_init() {
     forge_model("posts")
 
     // Associations
@@ -862,7 +862,7 @@ Register rules once at startup. They fire automatically inside every `post_creat
 Call `forge_model(table)` once at the top of your init function to set the model context, then use the short `forge_field*` helpers — no need to repeat the table name on every line:
 
 ```jda
-post_validations_init()
+post_model_init()
 routes(app)
 ```
 
@@ -952,7 +952,7 @@ forge_field_param    ("f", rule, param)      // any rule with a string param
 `forge_field_on_create` and `forge_field_on_update` mark the most-recently-registered rule so it only fires in one context. Call them immediately after the rule registration:
 
 ```jda
-fn user_validations_init() {
+fn user_model_init() {
     forge_model("users")
     forge_field("email", FORGE_V_PRESENCE)
     forge_field("email", FORGE_V_EMAIL)
@@ -1124,12 +1124,12 @@ Declare associations at the model level so the complete relationship graph is vi
 
 ### Declaring associations (model-level)
 
-Inside `*_validations_init`, after `forge_model()`. Forge supports the full set of Rails-style associations including HABTM, polymorphic, and self-referential (parent/child).
+Inside `*_model_init`, after `forge_model()`. Forge supports the full set of Rails-style associations including HABTM, polymorphic, and self-referential (parent/child).
 
 #### belongs_to / has_many / has_one
 
 ```jda
-fn post_validations_init() {
+fn post_model_init() {
     forge_model("posts")
     forge_assoc_belongs_to("user",     "users",    "user_id")   // parent record
     forge_assoc_has_many  ("comments", "comments", "post_id")   // children
@@ -1142,13 +1142,13 @@ fn post_validations_init() {
 Many-to-many through a join table:
 
 ```jda
-fn post_validations_init() {
+fn post_model_init() {
     forge_model("posts")
     forge_assoc_has_many_through("tags", "tags", "post_tags", "post_id", "tag_id")
     //                           name  target  join_table  owner_fk  target_fk
 }
 
-fn tag_validations_init() {
+fn tag_model_init() {
     forge_model("tags")
     forge_assoc_has_many_through("posts", "posts", "post_tags", "tag_id", "post_id")
 }
@@ -1159,14 +1159,14 @@ fn tag_validations_init() {
 A `belongs_to :commentable, polymorphic: true` pattern — a single model can belong to any number of other model types via a type/id column pair:
 
 ```jda
-fn comment_validations_init() {
+fn comment_model_init() {
     forge_model("comments")
     // "commentable_type" stores "Post", "Video", etc.
     // "commentable_id"   stores the owner's id
     forge_assoc_poly_belongs_to("commentable", "commentable_type", "commentable_id")
 }
 
-fn post_validations_init() {
+fn post_model_init() {
     forge_model("posts")
     forge_assoc_poly_has_many("comments", "comments", "commentable_id", "commentable_type", "Post")
     //                         name       target       fk_id             fk_type             type_val
@@ -1178,7 +1178,7 @@ fn post_validations_init() {
 Hierarchical data uses the same `forge_assoc_belongs_to` / `forge_assoc_has_many` with the same table:
 
 ```jda
-fn category_validations_init() {
+fn category_model_init() {
     forge_model("categories")
     forge_assoc_belongs_to("parent",   "categories", "parent_id")
     forge_assoc_has_many  ("children", "categories", "parent_id")
@@ -1187,30 +1187,30 @@ fn category_validations_init() {
 
 ---
 
-### Typed accessor stubs
+### Auto-generated accessor functions
 
-`forge generate model` emits a typed accessor function for each declared association. For standard and through associations, use `forge_assoc_query`; for polymorphic belongs_to, use `forge_assoc_poly_query`:
+`forge compile-models` (runs automatically on `forge server` / `forge build`) reads every `forge_assoc_*` declaration in your `app/models/*.jda` files and emits typed accessor functions into `_build/models.jda`. You never write these by hand.
+
+Given the declarations above, `_build/models.jda` will contain:
 
 ```jda
-// Standard / through / poly has_many — one argument (owner id or FK value)
+// Standard / through / poly has_many — one argument
 fn post_user(fk_val: []i8)      -> &ForgeResult { ret forge_assoc_query("posts", "user",     fk_val) }
 fn post_comments(post_id: []i8) -> &ForgeResult { ret forge_assoc_query("posts", "comments", post_id) }
 fn post_tags(post_id: []i8)     -> &ForgeResult { ret forge_assoc_query("posts", "tags",     post_id) }
 
-// Polymorphic belongs_to — two arguments (type value + id value from the row)
+// Polymorphic belongs_to — two arguments (type value + id from the row)
 fn comment_commentable(type_val: []i8, id_val: []i8) -> &ForgeResult {
     ret forge_assoc_poly_query("comments", "commentable", type_val, id_val)
 }
 ```
 
-Call from controllers or other models:
+Call them from controllers or other models:
 
 ```jda
 let author   = post_user(post.user_id)
 let comments = post_comments(post.id)
 let tags     = post_tags(post.id)
-
-// polymorphic — pass both type and id columns from the row
 let owner    = comment_commentable(comment.commentable_type, comment.commentable_id)
 ```
 
@@ -1248,10 +1248,10 @@ Declarative validations always run before any before-callback. See [Lifecycle or
 
 ### Registering callbacks (model-level)
 
-Declare callbacks inside `*_validations_init` after `forge_model()` using `forge_callback`. This keeps the entire model definition — associations, callbacks, validations — visible in one function:
+Declare callbacks inside `*_model_init` after `forge_model()` using `forge_callback`. This keeps the entire model definition — associations, callbacks, validations — visible in one function:
 
 ```jda
-fn user_validations_init() {
+fn user_model_init() {
     forge_model("users")
 
     forge_callback(FORGE_CB_BEFORE_SAVE,   fn_addr(user_hash_password))
@@ -1349,7 +1349,7 @@ fn main() {
     load_env()
     let app = app_new_config(app_config())
     // middleware ...
-    post_validations_init()
+    post_model_init()
     posts_before_actions()          // register before actions
     forge_controllers_init()        // register action handlers
     routes(app)
@@ -1572,7 +1572,7 @@ The first registered connection (`"primary"`) is the default for all queries.
 Declare the connection inside the model's validations init with `forge_model_db`. Every generated helper for that table (`event_all`, `event_find`, `event_q`, `event_create`, etc.) will automatically route through that connection — no per-call changes needed.
 
 ```jda
-fn event_validations_init() {
+fn event_model_init() {
     forge_model("events")
     forge_model_db("analytics")          // all event_* queries use "analytics"
     forge_field("name, type", FORGE_V_PRESENCE)

@@ -14,8 +14,8 @@ fn main() {
 
     app_static(app, "/static", "./public")
 
-    post_validations_init()
-    comment_validations_init()
+    post_model_init()
+    comment_model_init()
     posts_before_actions()
 
     forge_controllers_init()

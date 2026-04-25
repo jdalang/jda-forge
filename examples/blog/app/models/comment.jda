@@ -1,16 +1,13 @@
 // app/models/comment.jda
-// CRUD functions (comment_q, comment_all, comment_find, comment_create, …) are
-// auto-generated into _build/models.jda from db/migrate/*.sql
+// CRUD functions and association accessors are auto-generated into _build/models.jda
 
-fn comment_validations_init() {
+fn comment_model_init() {
     forge_model("comments")
+
     forge_assoc_belongs_to("post", "posts", "post_id")
+
     forge_field    ("body, author", FORGE_V_PRESENCE)
     forge_field_min("body",         2)
-}
-
-fn comment_post(fk_val: []i8) -> &ForgeResult {
-    ret forge_assoc_query("comments", "post", fk_val)
 }
 
 // --- Custom scopes ---
