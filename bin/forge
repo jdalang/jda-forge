@@ -2049,6 +2049,8 @@ cmd_build() {
     [ ! -f "Makefile" ]  && err "No Makefile found."
 
     export FORGE_ENV="$env_name"
+    export FORGE_CLI_VERSION="$FORGE_VERSION"
+    export JDA_VERSION; JDA_VERSION=$(jda --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1); [ -z "$JDA_VERSION" ] && JDA_VERSION="unknown"
     info "Building (${env_name})"
     compile_routes
     compile_models
@@ -2075,6 +2077,8 @@ cmd_test() {
     [ ! -f "Makefile" ]  && err "No Makefile found."
 
     export FORGE_ENV="$env_name"
+    export FORGE_CLI_VERSION="$FORGE_VERSION"
+    export JDA_VERSION; JDA_VERSION=$(jda --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1); [ -z "$JDA_VERSION" ] && JDA_VERSION="unknown"
     info "Running tests (${env_name})"
     compile_routes
     compile_models
@@ -2106,6 +2110,8 @@ cmd_server() {
 
     export FORGE_ENV="$env_name"
     [ -n "$port" ] && export APP_PORT="$port"
+    export FORGE_CLI_VERSION="$FORGE_VERSION"
+    export JDA_VERSION; JDA_VERSION=$(jda --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1); [ -z "$JDA_VERSION" ] && JDA_VERSION="unknown"
 
     compile_routes
     compile_models

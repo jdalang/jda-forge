@@ -8952,7 +8952,11 @@ fn forge_etag_middleware(ctx: i64) {
 // =============================================================================
 
 fn forge_welcome_handler(ctx: i64) {
-    let env       = forge_env()
+    let env         = forge_env()
+    let forge_ver   = forge_env_get("FORGE_CLI_VERSION")
+    let jda_ver     = forge_env_get("JDA_VERSION")
+    if forge_ver.len == 0 { forge_ver = "—" }
+    if jda_ver.len  == 0  { jda_ver  = "—" }
     let env_class = "badge-other"
     if forge_slice_eq(env, "development") { env_class = "badge-dev"  }
     if forge_slice_eq(env, "production")  { env_class = "badge-prod" }
@@ -8974,6 +8978,7 @@ fn forge_welcome_handler(ctx: i64) {
     b.write(".badges{display:flex;gap:.5rem;justify-content:center;flex-wrap:wrap;margin-bottom:2rem}")
     b.write(".badge{padding:.25rem .9rem;border-radius:9999px;font-size:.8rem;font-weight:600}")
     b.write(".badge-ver{background:#ede9fe;color:#6d28d9}")
+    b.write(".badge-jda{background:#e0f2fe;color:#0369a1}")
     b.write(".badge-dev{background:#dcfce7;color:#15803d}")
     b.write(".badge-prod{background:#fee2e2;color:#dc2626}")
     b.write(".badge-test{background:#fef9c3;color:#a16207}")
@@ -9028,7 +9033,12 @@ fn forge_welcome_handler(ctx: i64) {
     b.write("<h1>JDA Forge</h1>")
     b.write("<p class=\"tagline\">Your application is up and running.</p>")
     b.write("<div class=\"badges\">")
-    b.write("<span class=\"badge badge-ver\">Forge v3.0.0</span>")
+    b.write("<span class=\"badge badge-ver\">Forge v")
+    b.write(forge_ver)
+    b.write("</span>")
+    b.write("<span class=\"badge badge-jda\">JDA ")
+    b.write(jda_ver)
+    b.write("</span>")
     b.write("<span class=\"badge ")
     b.write(env_class)
     b.write("\">")
