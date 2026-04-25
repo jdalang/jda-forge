@@ -291,18 +291,20 @@ compile_routes() {
 
     # Auto-generate _build/controllers.jda by scanning app/controllers/*.jda.
     #
-    # Controller name comes from the FILENAME (posts_controller.jda → posts),
-    # not from a function name prefix.  This means controller files can use
-    # bare action names (fn index, fn create …) without any controller prefix —
-    # compile_routes renames them to fn posts_index, fn posts_create … in the
-    # generated output so there are no name collisions across controllers.
-    # Functions that already carry the controller prefix are kept as-is.
+    # Controller name comes from the FILENAME (posts_controller.jda → posts).
+    # Every fn NAME(ctx: i64) { in the file is treated as a bare name and
+    # renamed to fn posts_NAME(ctx: i64) { in the generated output.  This
+    # covers actions (index, create …) AND helpers/filters (set_post, rescue …)
+    # so controller files never need a controller-name prefix anywhere.
     #
-    # _build/controllers.jda now contains:
-    #   1. processed controller implementations (renamed bare actions)
+    # fn_addr(bare_name) references inside the same file are also rewritten to
+    # fn_addr(ctrl_bare_name) so filter registrations work transparently.
+    #
+    # _build/controllers.jda contains:
+    #   1. processed controller implementations (all bare names prefixed)
     #   2. dispatch shims (forge_ctrl_run wrappers)
     #   3. forge_controllers_init()
-    # Raw app/controllers/*.jda files are NOT included separately in the build.
+    # Raw app/controllers/*.jda are NOT included separately in the build.
     local ctrl_out="_build/controllers.jda"
     local fimpl; fimpl=$(mktemp)
     local fshims; fshims=$(mktemp)
@@ -311,18 +313,27 @@ compile_routes() {
     for f in app/controllers/*.jda; do
         [ -f "$f" ] || continue
         local bname; bname=$(basename "$f" .jda)
-        # Derive controller name: posts_controller → posts
-        # Files that don't follow *_controller.jda (e.g. application_controller.jda)
-        # are still processed; application_controller.jda → ctrl=application.
         local ctrl="${bname%_controller}"
+
+        # Pass 1: collect all bare fn NAME(ctx: i64) names in this file.
+        local bare_fns=()
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ "$line" =~ ^fn[[:space:]]([a-z][a-z0-9_]*)\(ctx:[[:space:]]i64\)[[:space:]]\{ ]]; then
+                local fn_nm="${BASH_REMATCH[1]}"
+                if [[ "$fn_nm" != "${ctrl}_"* ]]; then
+                    bare_fns+=("$fn_nm")
+                fi
+            fi
+        done < "$f"
+
+        # Pass 2: emit processed file content.
         printf '// --- %s ---\n' "$bname" >> "$fimpl"
         while IFS= read -r line || [[ -n "$line" ]]; do
-            # Detect action-function declarations: fn NAME(ctx: i64) {
+            # Rename bare function declarations.
             if [[ "$line" =~ ^fn[[:space:]]([a-z][a-z0-9_]*)\(ctx:[[:space:]]i64\)[[:space:]]\{ ]]; then
                 local orig="${BASH_REMATCH[1]}"
                 local fname="$orig"
                 if [[ "$fname" != "${ctrl}_"* ]]; then
-                    # Bare action name — prefix with controller name
                     fname="${ctrl}_${fname}"
                     line="fn ${fname}(ctx: i64) {"
                 fi
@@ -332,6 +343,11 @@ compile_routes() {
                 printf '    forge_action_register("%s", "%s", fn_addr(forge__dispatch_%s_%s))\n' \
                     "$ctrl" "$action" "$ctrl" "$action" >> "$finit"
             fi
+            # Rewrite fn_addr(bare_name) → fn_addr(ctrl_bare_name) for all
+            # bare names collected in pass 1 so filter registrations resolve.
+            for bfn in "${bare_fns[@]}"; do
+                line="${line//fn_addr(${bfn})/fn_addr(${ctrl}_${bfn})}"
+            done
             printf '%s\n' "$line" >> "$fimpl"
         done < "$f"
         printf '\n' >> "$fimpl"

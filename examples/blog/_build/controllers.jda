@@ -37,8 +37,8 @@ fn comments_delete(ctx: i64) {
 
 // --- posts_controller ---
 // Controller: Posts
-// Bare action names (index, show, …) — compile-routes prefixes them with
-// "posts_" in the generated build, avoiding namespace collisions.
+// All fn NAME(ctx: i64) functions use bare names — compile-routes
+// prefixes them with "posts_" in the generated build.
 
 fn posts_rescue(ctx: i64) {
     forge_log_ctx_error(ctx, "unhandled error in posts controller")

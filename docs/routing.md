@@ -999,11 +999,16 @@ fn require_login(ctx: i64) {
     }
 }
 
+fn set_post(ctx: i64) {
+    let post = post_find(ctx_param(ctx, "id"))
+    if forge_result_empty(post) { ctx_not_found(ctx)  ret }
+    ctx_set(ctx, "post", post as i64)
+}
+
 fn posts_before_actions() {
     let ctrl = forge_ctrl_new()
-    // Load post for show/edit/update/delete; skip for index and new.
-    forge_ctrl_before(ctrl, fn_addr(posts_set_post),  "show, edit, update, delete")
-    // Require login for every action except index and show.
+    // Bare names — compile-routes rewrites fn_addr(set_post) to fn_addr(posts_set_post)
+    forge_ctrl_before(ctrl, fn_addr(set_post),      "show, edit, update, delete")
     forge_ctrl_before_except(ctrl, fn_addr(require_login), "index, show")
     forge_ctrl_register("posts", ctrl)
 }
@@ -1022,8 +1027,8 @@ fn log_action(ctx: i64) {
 
 fn posts_before_actions() {
     let ctrl = forge_ctrl_new()
-    forge_ctrl_before(ctrl, fn_addr(posts_set_post), "show, edit, update, delete")
-    forge_ctrl_after (ctrl, fn_addr(log_action),     "")
+    forge_ctrl_before(ctrl, fn_addr(set_post),   "show, edit, update, delete")
+    forge_ctrl_after (ctrl, fn_addr(log_action), "")
     forge_ctrl_register("posts", ctrl)
 }
 ```
@@ -1043,15 +1048,15 @@ fn posts_before_actions() {
 `forge_ctrl_rescue(ctrl, fn_ptr)` registers a fallback that runs when the action exits without sending a response — the JDA equivalent of Rails `rescue_from`. Use it for a consistent error page across a whole controller without repeating error-handling logic in every action.
 
 ```jda
-fn posts_rescue(ctx: i64) {
+fn rescue(ctx: i64) {
     forge_log_ctx_error(ctx, "unhandled error in posts controller")
     ctx_html(ctx, 500, "<h1>Something went wrong</h1>")
 }
 
 fn posts_before_actions() {
     let ctrl = forge_ctrl_new()
-    forge_ctrl_before (ctrl, fn_addr(posts_set_post), "show, edit, update, delete")
-    forge_ctrl_rescue (ctrl, fn_addr(posts_rescue))
+    forge_ctrl_before (ctrl, fn_addr(set_post), "show, edit, update, delete")
+    forge_ctrl_rescue (ctrl, fn_addr(rescue))
     forge_ctrl_register("posts", ctrl)
 }
 ```

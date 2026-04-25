@@ -222,16 +222,23 @@ fn create(ctx: i64) {
 }
 ```
 
-Helper functions that need to be called by name in `forge_ctrl_before` / `forge_ctrl_rescue` registrations keep the `posts_` prefix because they must be addressable by `fn_addr` after compilation:
+Filter helpers and rescue handlers are written the same way — bare names, prefixed automatically:
 
 ```jda
-fn posts_set_post(ctx: i64) { ... }   // before-filter helper — keep prefix
-fn posts_rescue(ctx: i64)   { ... }   // rescue handler — keep prefix
+fn set_post(ctx: i64) { ... }    // compile-routes → fn posts_set_post
+fn rescue(ctx: i64)   { ... }    // compile-routes → fn posts_rescue
+fn log_action(ctx: i64) { ... }  // compile-routes → fn posts_log_action
+```
+
+`fn_addr()` references inside the same file are rewritten too, so `posts_before_actions` can use bare names:
+
+```jda
+forge_ctrl_before(ctrl, fn_addr(set_post),   "show, edit, update, delete")
+forge_ctrl_after (ctrl, fn_addr(log_action), "")
+forge_ctrl_rescue(ctrl, fn_addr(rescue))
 ```
 
 Validations are declared once in `post_model_init` and fire automatically inside `post_create_from`. After a successful create, `FORGE_CB_AFTER_CREATE` fires `post_after_create` which calls `forge_instrument("post.created", id)`. The subscriber in `main.jda` sends the notification email asynchronously.
-
-Controllers use path helper constants (`posts_path`, `new_post_path`) rather than hard-coded strings.
 
 ---
 
@@ -413,7 +420,7 @@ Forge now increments/decrements `comments_count` automatically on every comment 
 `posts_controller.jda` snapshots the original title before the update and logs only when it actually changes:
 
 ```jda
-fn posts_set_post(ctx: i64) {
+fn set_post(ctx: i64) {
     let post = post_find(ctx_param(ctx, "id"))
     forge_dirty_load_result("posts", id, post, "title")  // snapshot
     ctx_set(ctx, "post", post as i64)
@@ -482,9 +489,9 @@ Browse the preview at `/_forge/mailers/new_post` in development.
 ```jda
 fn posts_before_actions() {
     let ctrl = forge_ctrl_new()
-    forge_ctrl_before (ctrl, fn_addr(posts_set_post),   "show, edit, update, delete")
-    forge_ctrl_after  (ctrl, fn_addr(posts_log_action), "")
-    forge_ctrl_rescue (ctrl, fn_addr(posts_rescue))
+    forge_ctrl_before (ctrl, fn_addr(set_post),   "show, edit, update, delete")
+    forge_ctrl_after  (ctrl, fn_addr(log_action), "")
+    forge_ctrl_rescue (ctrl, fn_addr(rescue))
     forge_ctrl_register("posts", ctrl)
 }
 ```

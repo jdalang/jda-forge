@@ -1,21 +1,17 @@
 // Controller: Posts
-// Bare action names (index, show, …) — compile-routes prefixes them with
-// "posts_" in the generated build, avoiding namespace collisions.
+// All fn NAME(ctx: i64) functions use bare names — compile-routes
+// prefixes them with "posts_" in the generated build.
 
-// Rescue handler — called when an action exits without sending a response.
-fn posts_rescue(ctx: i64) {
+fn rescue(ctx: i64) {
     forge_log_ctx_error(ctx, "unhandled error in posts controller")
     ctx_html(ctx, 500, "<h1>Something went wrong</h1>")
 }
 
-// After filter — logs every completed action.
-fn posts_log_action(ctx: i64) {
+fn log_action(ctx: i64) {
     forge_log_ctx_info(ctx, "posts action completed")
 }
 
-// Before filter — loads post by :id, stores on request context, snapshots
-// title for dirty tracking.
-fn posts_set_post(ctx: i64) {
+fn set_post(ctx: i64) {
     let id   = ctx_param(ctx, "id")
     let post = post_find(id)
     if forge_result_empty(post) { ctx_not_found(ctx)  ret }
@@ -75,10 +71,14 @@ fn delete(ctx: i64) {
     ctx_redirect(ctx, posts_path)
 }
 
+// posts_before_actions is called from main() — not a route action, no ctx: i64
+// signature, so compile-routes leaves it untouched.
+// fn_addr references use bare names; compile-routes rewrites them to the
+// prefixed form (fn_addr(set_post) → fn_addr(posts_set_post)).
 fn posts_before_actions() {
     let ctrl = forge_ctrl_new()
-    forge_ctrl_before (ctrl, fn_addr(posts_set_post),   "show, edit, update, delete")
-    forge_ctrl_after  (ctrl, fn_addr(posts_log_action), "")
-    forge_ctrl_rescue (ctrl, fn_addr(posts_rescue))
+    forge_ctrl_before (ctrl, fn_addr(set_post),   "show, edit, update, delete")
+    forge_ctrl_after  (ctrl, fn_addr(log_action), "")
+    forge_ctrl_rescue (ctrl, fn_addr(rescue))
     forge_ctrl_register("posts", ctrl)
 }
