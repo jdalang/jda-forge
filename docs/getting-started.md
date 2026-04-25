@@ -28,9 +28,9 @@ Three ideas come up constantly when working with Forge. Understanding them upfro
 
 ### Single-file compilation model
 
-Jda compiles one source file. Forge works around this by having your Makefile concatenate all your `.jda` files into `_build/app.jda` before invoking the compiler. The file order is deliberate: `config.jda` goes first (it defines constants and `load_env`), then models, then views, then routes, and finally `main.jda`. Libraries arrive via `--include` flags, which are processed before your app source.
+Jda compiles one source file. Forge works around this by having your Makefile concatenate all your `.jda` files into `_build/app.jda` before invoking the compiler. The file order is deliberate: `config/application.jda` goes first (it defines constants and `load_env`), then helpers, models, views, controllers, and finally `main.jda`. Libraries arrive via `--include` flags, which are processed before your app source.
 
-The upshot: **every function in your project is global**. There are no modules, no namespacing, no import statements. By convention, name your functions with a prefix that reflects where they live — `post_create`, `tmpl_layout`, `handle_posts_index`.
+The upshot: **every function in your project is global**. There are no modules, no namespacing, no import statements. By convention, name your functions with a prefix that reflects where they live — `post_create`, `view_posts_index`, `posts_index`.
 
 ### UFCS — Uniform Function Call Syntax
 
@@ -38,16 +38,15 @@ Jda supports method-style chaining on any value. `post_q().where_eq("published",
 
 ### No GC — explicit allocation, no hidden cost
 
-Jda has no garbage collector. Memory is allocated with `alloc_pages(n)`, which gives you `n * 4096` bytes of heap. Forge manages per-request arenas for you (the context allocator), so inside a handler you rarely call `alloc_pages` directly for small things. For building larger buffers — an HTML response assembled from many parts, for example — you allocate explicitly:
+Jda has no garbage collector. Memory is allocated with `alloc_pages(n)`, which gives you `n * 4096` bytes of heap. Forge manages per-request arenas for you (the context allocator), so inside a handler you rarely call `alloc_pages` directly. For building HTML responses from many parts, use `ForgeBuf`:
 
 ```jda
-let buf: &i8 = alloc_pages(8)   // 32 KiB
-let pos = 0i64
-// ... write into buf[pos], increment pos ...
-ctx_html(ctx, 200, buf[0..pos])
+let buf = forge_buf_new(8)   // 32 KiB buffer
+buf.write("<h1>").write(h(title)).write("</h1>")
+ctx_html(ctx, 200, buf.done())
 ```
 
-The benefit is predictable latency: no pauses, no stop-the-world events, no surprises under load.
+`forge_buf_write` returns `&ForgeBuf` so calls chain. `forge_buf_done` returns the accumulated `[]i8` slice. The benefit of no GC is predictable latency: no pauses, no stop-the-world events, no surprises under load.
 
 ---
 
@@ -132,17 +131,27 @@ myapp/
   Forgefile             # dependency manifest — lists forge and libraries
   Forgefile.lock        # exact resolved SHAs — commit this file
   Makefile              # build pipeline
-  config.jda            # load_env() and app_config()
   main.jda              # middleware registration, routes, server start
   .env                  # FORGE_ENV=development (shared defaults, commit it)
   .env.example          # template for per-environment secrets
   .gitignore
-  models/               # query functions, validations, callbacks
-  views/                # HTML helpers, layout, partials
-  routes/               # HTTP handlers
-  test/                 # request-level tests
+  app/
+    controllers/        # one file per resource: posts_controller.jda
+    models/             # one file per resource: post.jda
+    views/
+      layouts/          # application.html.jda
+      posts/            # index, show, new, edit views + partials
+      shared/           # _errors.html.jda and other cross-resource partials
+    helpers/            # application_helper.jda
+  config/
+    application.jda     # load_env() and app_config()
+    routes.jda          # path helpers + routes() function
+    environments/       # development.jda, test.jda, production.jda
   db/
-    migrations/         # numbered .sql files
+    migrate/            # numbered .sql files: 001_create_posts.sql
+    seeds.jda           # seed data
+  test/                 # request-level tests: test_posts.jda
+  public/               # static assets
   libs/                 # installed libraries (gitignored except forge.jda)
 ```
 
@@ -158,13 +167,15 @@ Additional libraries are added with `lib` lines. See [libraries.md](libraries.md
 
 **`Forgefile.lock`** records the exact git SHA for every dependency after `forge install` resolves them. Commit this file. It ensures every developer and every CI run installs identical code.
 
-**`Makefile`** is the internal build pipeline. You never run `make` directly — `forge server`, `forge build`, and `forge test` call into it for you. It uses GNU Make's `wildcard` to pick up new `.jda` files automatically — you do not need to edit it when you add a model or route file.
+**`Makefile`** is the internal build pipeline. You never run `make` directly — `forge server`, `forge build`, and `forge test` call into it for you. It uses GNU Make's `find` to pick up new `.jda` files automatically — you do not need to edit it when you add a model, controller, or view file.
 
-**`config.jda`** defines two functions that `main.jda` calls first:
+**`config/application.jda`** defines two functions that `main.jda` calls first:
 - `load_env()` — reads `.env` then the environment-specific file (`.env.development`, `.env.production`, etc.) based on `$FORGE_ENV`.
 - `app_config()` — reads environment variables into a `ForgeConfig` struct and sets the log level.
 
-**`main.jda`** is the entry point. It calls `load_env`, creates the app, registers middleware, registers routes, runs migrations, and starts listening.
+**`config/routes.jda`** declares path helper constants (`posts_path`, `new_post_path`) and functions (`post_path(id)`), and defines a `routes(app)` function that registers all routes using `forge_resources`.
+
+**`main.jda`** is the entry point. It calls `load_env`, creates the app, registers middleware, calls `routes(app)`, runs migrations, and starts listening.
 
 **`.env`** holds defaults that are safe to commit — typically just `FORGE_ENV=development` and `APP_PORT=8080`. Per-environment files (`.env.development`, `.env.production`) hold secrets and are gitignored.
 
@@ -176,17 +187,30 @@ Here is where each kind of code lives and why.
 
 | Directory / file | What goes here |
 |---|---|
-| `config.jda` | `load_env()`, `app_config()`, app-wide constants |
-| `models/` | One file per resource — query functions, validations, create/update/delete |
-| `views/` | `tmpl_layout()`, `tmpl_flash()`, per-resource row/card helpers |
-| `routes/` | One file per resource — handler functions, one `register_*_routes()` per file |
-| `test/` | One file per resource — `forge_test_get/post/delete`, `forge_assert_*` |
-| `db/migrations/` | Numbered SQL files: `001_create_posts.sql`, `002_create_comments.sql`, … |
+| `config/application.jda` | `load_env()`, `app_config()`, app-wide constants |
+| `config/routes.jda` | Path helpers + `routes(app)` — all route registrations in one place |
+| `app/models/` | One file per resource: `post.jda` — query functions, validations, create/update/delete |
+| `app/views/<resource>/` | One file per action: `index.html.jda`, `show.html.jda`, `new.html.jda`, `edit.html.jda` |
+| `app/views/layouts/` | `application.html.jda` — page layout and flash rendering |
+| `app/views/shared/` | Cross-resource partials: `_errors.html.jda` |
+| `app/controllers/` | One file per resource: `posts_controller.jda` — thin action functions |
+| `app/helpers/` | `application_helper.jda` — `h()`, `link_to()`, `pluralize()` |
+| `test/` | One file per resource: `test_posts.jda` — chainable request tests |
+| `db/migrate/` | Numbered SQL files: `001_create_posts.sql`, `002_create_comments.sql`, … |
 | `libs/` | Installed libraries (managed by `forge install`, mostly gitignored) |
 | `patches/` | Optional — overrides for library functions (see [overriding.md](overriding.md)) |
 | `main.jda` | Wires everything together — always the last file compiled |
 
-**Naming convention:** functions are prefixed by their layer and resource. A model function is `post_create`, a route handler is `handle_posts_create`, a view helper is `tmpl_post_row`. This keeps everything findable without modules.
+**Naming conventions** — Forge enforces Rails-style conventions and raises an error if they are violated:
+
+| Layer | File | Functions |
+|---|---|---|
+| Model | `app/models/post.jda` | `post_find`, `post_all`, `post_create`, `post_validate` |
+| Controller | `app/controllers/posts_controller.jda` | `posts_index`, `posts_show`, `posts_create`, … |
+| View | `app/views/posts/index.html.jda` | `view_posts_index` |
+| Helper | `app/helpers/application_helper.jda` | `h`, `link_to`, `pluralize` |
+
+Resource names must be PascalCase (`Post`, `BlogPost`) — `forge generate scaffold post` is an error.
 
 ---
 
@@ -229,7 +253,7 @@ forge server
 
 `forge server` concatenates all source files, compiles, and starts the app. The Makefile is the internal build pipeline — you never run `make` directly.
 
-Forge runs migrations automatically on startup (`forge_migration_run("db/migrations")`), so your tables are created on first launch.
+Forge runs migrations automatically on startup (`forge_migration_run("db/migrate")`), so your tables are created on first launch.
 
 Visit `http://localhost:8080` in a browser. You should get a 404 — that is correct; no routes are registered yet.
 
@@ -263,18 +287,25 @@ forge test            # concatenate test sources → compile → run test_runner
 The Makefile is the build engine behind these commands. You never invoke `make` directly. Here is what it does internally:
 
 ```makefile
-SRC = config.jda $(wildcard models/*.jda) $(wildcard views/*.jda) \
-      $(wildcard routes/*.jda) $(wildcard patches/*.jda) main.jda
+CONFIG      = config/application.jda
+HELPERS     = $(shell find app/helpers     -name "*.jda"      2>/dev/null | sort)
+MODELS      = $(shell find app/models      -name "*.jda"      2>/dev/null | sort)
+VIEWS       = $(shell find app/views       -name "*.html.jda" 2>/dev/null | sort)
+CONTROLLERS = $(shell find app/controllers -name "*.jda"      2>/dev/null | sort)
+ROUTES      = config/routes.jda
+MAIN        = main.jda
 
-build:
-    cat $(SRC) > _build/app.jda
-    jda build --include libs/forge.jda _build/app.jda -o app
+SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) $(MAIN)
 
-run: build
-    ./app
+$(OUT): $(SRC)
+    cat $(SRC) > $(OUT)
+
+build: $(OUT)
+    jda build --include libs/forge.jda $(OUT) -o app
 
 test:
-    cat config.jda models/*.jda views/*.jda routes/*.jda test/*.jda > _build/test.jda
+    cat $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) \
+        $(shell find test -name "*.jda" | sort) > _build/test.jda
     jda build --include libs/forge.jda _build/test.jda -o test_runner
     FORGE_ENV=test ./test_runner
 ```
@@ -285,12 +316,13 @@ The order of `$(SRC)` is not arbitrary:
 
 | Position | File(s) | Why |
 |---|---|---|
-| First | `config.jda` | Defines `load_env`, `app_config`, and constants everything else uses |
-| Second | `models/*.jda` | Defines types and query functions that views and routes call |
-| Third | `views/*.jda` | Defines template helpers that routes call |
-| Fourth | `routes/*.jda` | Defines handlers and `register_*_routes` functions |
-| Fifth | `patches/*.jda` | Overrides library functions — must come after everything else except main |
-| Last | `main.jda` | References `register_*_routes` and all middleware — must see all of the above |
+| First | `config/application.jda` | Defines `load_env`, `app_config`, and constants everything else uses |
+| Second | `app/helpers/*.jda` | Defines `h()`, `link_to()`, `pluralize()` that views and controllers call |
+| Third | `app/models/*.jda` | Defines types and query functions that controllers and views call |
+| Fourth | `app/views/**/*.html.jda` | Defines view functions that controllers call |
+| Fifth | `app/controllers/*.jda` | Defines action functions registered as route handlers |
+| Sixth | `config/routes.jda` | Path helpers + `routes(app)` — references controller function pointers |
+| Last | `main.jda` | Calls `routes(app)` and all middleware — must see all of the above |
 
 The `--include libs/forge.jda` flag makes Forge's definitions available to your entire app. Because `--include` files are processed before the app source, you can shadow any library function by defining it in your own code (see [overriding.md](overriding.md)).
 
@@ -320,33 +352,32 @@ forge generate scaffold Post title:string body:text author:string
 This creates:
 
 ```
-db/migrations/001_create_posts.sql   # CREATE TABLE posts (...)
-models/post.jda                      # post_find, post_all, post_create, post_update,
-                                     # post_delete, post_validate
-routes/posts.jda                     # 7 handlers + register_post_routes()
-test/test_posts.jda                  # request tests for each handler
+db/migrate/001_create_posts.sql          # CREATE TABLE posts (...)
+app/models/post.jda                      # post_find, post_all, post_create, post_update,
+                                         # post_delete, post_validate
+app/controllers/posts_controller.jda     # 7 thin action functions
+app/views/posts/index.html.jda           # view_posts_index
+app/views/posts/show.html.jda            # view_posts_show
+app/views/posts/new.html.jda             # view_posts_new
+app/views/posts/edit.html.jda            # view_posts_edit
+test/test_posts.jda                      # request tests for each handler
 ```
 
-### Wire it up in main.jda
+It also appends a `forge_resources` call to `config/routes.jda` automatically — no manual wiring needed.
 
-Open `main.jda` and add `register_post_routes(app)` after the middleware block:
+`config/routes.jda` after scaffolding:
 
 ```jda
-fn main() {
-    load_env()
-    let cfg = app_config()
-    let app = app_new_config(cfg)
+let posts_path: []i8    = "/posts"
+let new_post_path: []i8 = "/posts/new"
+fn post_path(id: []i8) -> []i8      { ret forge_path_id("posts", id) }
+fn edit_post_path(id: []i8) -> []i8 { ret forge_path_edit("posts", id) }
 
-    app_use(app, fn_addr(forge_logger))
-    app_use(app, fn_addr(forge_request_id))
-    app_use(app, fn_addr(forge_secure_headers))
-    app_use(app, fn_addr(forge_session_start))
-    app_use(app, fn_addr(forge_csrf))
-
-    register_post_routes(app)    // ← add this
-
-    forge_migration_run("db/migrations")
-    app_listen(app, 8080)
+fn routes(app: &ForgeApp) {
+    forge_resources(app, "posts",
+        fn_addr(posts_index), fn_addr(posts_new),    fn_addr(posts_create),
+        fn_addr(posts_show),  fn_addr(posts_edit),   fn_addr(posts_update),
+        fn_addr(posts_delete))
 }
 ```
 
@@ -365,7 +396,7 @@ Run `forge server`. The full CRUD interface for posts is now live:
 ### What the generated model looks like
 
 ```jda
-// models/post.jda
+// app/models/post.jda
 
 fn post_q() -> &ForgeQuery { ret forge_q("posts") }
 
@@ -418,26 +449,25 @@ let res = post_q()
 
 Sometimes you want a route that does not fit the CRUD scaffold — an API endpoint, a search page, a webhook receiver. Here is how to build one from scratch.
 
-### Step 1 — create the route file
+### Step 1 — create the controller
 
 ```jda
-// routes/hello.jda
+// app/controllers/hello_controller.jda
 
-fn handle_hello(ctx: i64) {
+fn hello_index(ctx: i64) {
     let name = ctx_query(ctx, "name")
     if name.len == 0 { name = "World" }
-    ctx_html(ctx, 200, "<h1>Hello, " + forge_h(name) + "</h1>")
-}
-
-fn register_hello_routes(app: i64) {
-    app_get(app, "/hello", fn_addr(handle_hello))
+    ctx_html(ctx, 200, "<h1>Hello, " + h(name) + "</h1>")
 }
 ```
 
-### Step 2 — register it in main.jda
+### Step 2 — add it to config/routes.jda
 
 ```jda
-register_hello_routes(app)
+fn routes(app: &ForgeApp) {
+    app_get(app, "/hello", fn_addr(hello_index))
+    // ... other routes
+}
 ```
 
 Visit `http://localhost:8080/hello?name=Alice` — you get `Hello, Alice`.
@@ -470,53 +500,41 @@ All of these return `[]i8` (a byte slice). An empty slice (`.len == 0`) means th
 ### A JSON API endpoint
 
 ```jda
-// routes/api.jda
+// app/controllers/api_controller.jda
 
-fn handle_api_posts(ctx: i64) {
+fn api_posts_index(ctx: i64) {
     let posts = post_all()
-    let buf: &i8 = alloc_pages(4)
-    let pos = 0i64
+    let buf = forge_buf_new(4)
 
-    let open = "["
-    loop i in 0..open.len { buf[pos] = open[i]  pos = pos + 1 }
-
+    buf.write("[")
     loop r in 0..posts.count {
-        if r > 0 {
-            buf[pos] = ','
-            pos = pos + 1
-        }
+        if r > 0 { buf.write(",") }
         let id     = forge_result_col(posts, r, "id")
         let title  = forge_result_col(posts, r, "title")
         let author = forge_result_col(posts, r, "author")
-        let entry = "{\"id\":" + id + ",\"title\":\"" + forge_json_escape(title)
-                  + "\",\"author\":\"" + forge_json_escape(author) + "\"}"
-        loop i in 0..entry.len { buf[pos] = entry[i]  pos = pos + 1}
+        buf.write("{\"id\":").write(id)
+           .write(",\"title\":\"").write(forge_json_escape(title))
+           .write("\",\"author\":\"").write(forge_json_escape(author)).write("\"}")
     }
+    buf.write("]")
 
-    let close = "]"
-    loop i in 0..close.len { buf[pos] = close[i]  pos = pos + 1 }
-
-    ctx_json(ctx, 200, buf[0..pos])
-}
-
-fn register_api_routes(app: i64) {
-    app_get(app, "/api/posts", fn_addr(handle_api_posts))
+    ctx_json(ctx, 200, buf.done())
 }
 ```
 
 ### Handling route parameters
 
 ```jda
-fn handle_posts_show(ctx: i64) {
+// app/controllers/posts_controller.jda
+
+fn posts_show(ctx: i64) {
     let id   = ctx_param(ctx, "id")
     let post = post_find(id)
     if post.count == 0 {
         ctx_not_found(ctx)
         ret
     }
-    let title = forge_result_col(post, 0, "title")
-    let body  = forge_result_col(post, 0, "body")
-    // ... build and send response
+    ctx_render(ctx, view_posts_show(post))
 }
 ```
 
@@ -542,40 +560,28 @@ Forge's test runner drives requests through the real router without opening a ne
 // test/test_posts.jda
 
 fn test_posts_index() {
-    let res = forge_test_get("/posts")
-    forge_assert_status  (res, 200)
-    forge_assert_body_has(res, "Blog Posts")
+    forge_get(posts_path).ok(200).has("Blog Posts")
 }
 
 fn test_post_create_valid() {
     let body = "title=Hello+World&body=This+is+a+test+post+body&author=Alice"
-    let res  = forge_test_post("/posts", body)
-    forge_assert_redirect(res)
+    forge_post(posts_path, body).redirect()
 }
 
 fn test_post_create_missing_title() {
-    let body = "title=&body=Some+body+text&author=Alice"
-    let res  = forge_test_post("/posts", body)
-    forge_assert_redirect(res)   // redirects back to form with flash error
+    forge_post(posts_path, "title=&body=Some+body+text&author=Alice").redirect()
 }
 
 fn test_post_show_not_found() {
-    let res = forge_test_get("/posts/99999")
-    forge_assert_status(res, 404)
+    forge_get(post_path("99999")).ok(404)
 }
 
-fn main() {
-    forge_dotenv_load(".env.test")
-    forge_test_init()
-
-    forge_test("GET /posts",               fn_addr(test_posts_index))
-    forge_test("POST /posts valid",        fn_addr(test_post_create_valid))
-    forge_test("POST /posts missing title",fn_addr(test_post_create_missing_title))
-    forge_test("GET /posts/99999",         fn_addr(test_post_show_not_found))
-
-    forge_test_run()
+fn test_post_delete() {
+    forge_delete(post_path("1")).redirect()
 }
 ```
+
+Tests are plain functions whose names start with `test_`. The runner discovers them automatically — no registration needed. Path helpers (`posts_path`, `post_path("1")`) are defined in `config/routes.jda` and in scope for all test files.
 
 ### Running the tests
 
@@ -587,18 +593,33 @@ forge test
 In test mode (`FORGE_ENV=test`):
 - The app loads `.env.test`
 - SMTP is disabled
-- `forge_test_get/post/delete` send requests through the router in-process
+- `forge_get/post/put/delete` send requests through the router in-process
 - Responses are captured in memory — no sockets, no ports
 
 ### Test assertions
 
-| Assertion | Checks |
+Assertions chain off the response via UFCS:
+
+| Method | What it asserts |
 |---|---|
-| `forge_assert_status(res, 200)` | Response has the given HTTP status code |
-| `forge_assert_redirect(res)` | Response is a 3xx redirect |
-| `forge_assert_body_has(res, "text")` | Response body contains the substring |
-| `forge_assert_body_eq(res, "text")` | Response body exactly equals the string |
-| `forge_assert_header(res, "name", "val")` | Response has a header with the given value |
+| `.ok(code)` | Status matches `code` exactly |
+| `.redirect()` | Any 3xx status |
+| `.has(s)` | Body contains substring `s` |
+| `.not_has(s)` | Body does not contain substring `s` |
+
+All assertion methods return the response so you can chain multiple checks:
+
+```jda
+forge_get(posts_path).ok(200).has("Blog Posts").not_has("error")
+```
+
+When you need to inspect the response directly:
+
+```jda
+let res    = forge_get(posts_path)
+let body   = res.body    // []i8
+let status = res.status  // i32
+```
 
 ### Setting up .env.test
 
@@ -657,10 +678,10 @@ Once your project is running and you have a feel for the request cycle, these gu
 
 ### Common next tasks
 
-**Add a second resource** — run `forge generate scaffold Comment post_id:integer body:text author:string`, add the migration FK, and call `register_comment_routes(app)` in `main.jda`.
+**Add a second resource** — run `forge generate scaffold Comment post_id:integer body:text author:string`. The scaffold appends `forge_resources` for comments to `config/routes.jda` automatically.
 
 **Add a library** — edit `Forgefile` to add a `lib` line, run `forge install`, and the Makefile picks it up automatically.
 
-**Deploy** — run `forge build -e production`, copy the `app` binary and `db/migrations/` to the server, set environment variables, and run `./app`. The binary has no runtime dependencies.
+**Deploy** — run `forge build -e production`, copy the `app` binary and `db/migrate/` to the server, set environment variables, and run `./app`. The binary has no runtime dependencies.
 
 **Override a library function** — create a `patches/` directory, write your replacement function, and add `$(wildcard patches/*.jda)` to `SRC` in the Makefile. See [overriding.md](overriding.md) for the full procedure.
