@@ -405,9 +405,25 @@ fn forge_scope_put   (s: &ForgeScope, p: []i8, h: i64) { app_put   (s.app, forge
 fn forge_scope_delete(s: &ForgeScope, p: []i8, h: i64) { app_delete(s.app, forge__scope_join(s.prefix, p), h) }
 fn forge_scope_patch (s: &ForgeScope, p: []i8, h: i64) { app_patch (s.app, forge__scope_join(s.prefix, p), h) }
 
+fn forge__singularize(res: []i8) -> []i8 {
+    if res.len > 1 {
+        if res[res.len - 1] == 's' { ret res[0..res.len - 1] }
+    }
+    ret res
+}
+
+fn forge__resources_nested_scope(app: &ForgeApp, base: []i8, res: []i8) -> &ForgeScope {
+    let sing = forge__singularize(res)
+    let buf = forge_buf_new(1)
+    buf.write(base).write("/:").write(sing).write("_id")
+    ret forge_scope(app, buf.done())
+}
+
+// Register 7 RESTful routes. Returns a &ForgeScope prefixed at /{res}/:{sing}_id
+// for registering nested routes via scope.post / scope.delete / forge_scope_resources.
 fn forge_resources(app: &ForgeApp, res: []i8,
                    index_h: i64, new_h: i64,  create_h: i64,
-                   show_h:  i64, edit_h: i64,  update_h: i64, delete_h: i64) {
+                   show_h:  i64, edit_h: i64,  update_h: i64, delete_h: i64) -> &ForgeScope {
     let base = forge__scope_join("/", res)
     app_get   (app, base,                                   index_h)
     app_get   (app, forge__scope_join(base, "/new"),        new_h)
@@ -416,6 +432,56 @@ fn forge_resources(app: &ForgeApp, res: []i8,
     app_get   (app, forge__scope_join(base, "/:id/edit"),   edit_h)
     app_put   (app, forge__scope_join(base, "/:id"),        update_h)
     app_delete(app, forge__scope_join(base, "/:id"),        delete_h)
+    ret forge__resources_nested_scope(app, base, res)
+}
+
+// Register 7 RESTful routes on a scope (nested resources). Returns nested scope.
+// Pass 0 for any handler to skip that route.
+fn forge_scope_resources(s: &ForgeScope, res: []i8,
+                         index_h: i64, new_h: i64,  create_h: i64,
+                         show_h:  i64, edit_h: i64,  update_h: i64, delete_h: i64) -> &ForgeScope {
+    let base = forge__scope_join(s.prefix, forge__scope_join("/", res))
+    if index_h  != 0 { app_get   (s.app, base,                                  index_h)  }
+    if new_h    != 0 { app_get   (s.app, forge__scope_join(base, "/new"),        new_h)    }
+    if create_h != 0 { app_post  (s.app, base,                                   create_h) }
+    if show_h   != 0 { app_get   (s.app, forge__scope_join(base, "/:id"),        show_h)   }
+    if edit_h   != 0 { app_get   (s.app, forge__scope_join(base, "/:id/edit"),   edit_h)   }
+    if update_h != 0 { app_put   (s.app, forge__scope_join(base, "/:id"),        update_h) }
+    if delete_h != 0 { app_delete(s.app, forge__scope_join(base, "/:id"),        delete_h) }
+    ret forge__resources_nested_scope(s.app, base, res)
+}
+
+// Singular resource — 6 routes, no index, no :id in paths.
+// GET /res/new, POST /res, GET /res, GET /res/edit, PUT /res, DELETE /res
+fn forge_resource(app: &ForgeApp, res: []i8,
+                  new_h: i64, create_h: i64,
+                  show_h: i64, edit_h: i64, update_h: i64, delete_h: i64) {
+    let base = forge__scope_join("/", res)
+    app_get   (app, forge__scope_join(base, "/new"),  new_h)
+    app_post  (app, base,                              create_h)
+    app_get   (app, base,                              show_h)
+    app_get   (app, forge__scope_join(base, "/edit"),  edit_h)
+    app_put   (app, base,                              update_h)
+    app_delete(app, base,                              delete_h)
+}
+
+// Singular resource on a scope (e.g., nested profile under a user scope).
+fn forge_scope_resource(s: &ForgeScope, res: []i8,
+                        new_h: i64, create_h: i64,
+                        show_h: i64, edit_h: i64, update_h: i64, delete_h: i64) {
+    let base = forge__scope_join(s.prefix, forge__scope_join("/", res))
+    app_get   (s.app, forge__scope_join(base, "/new"),  new_h)
+    app_post  (s.app, base,                              create_h)
+    app_get   (s.app, base,                              show_h)
+    app_get   (s.app, forge__scope_join(base, "/edit"),  edit_h)
+    app_put   (s.app, base,                              update_h)
+    app_delete(s.app, base,                              delete_h)
+}
+
+// Namespace — path-prefix scope with Rails :namespace semantics.
+// forge_namespace(app, "admin") → scope at /admin
+fn forge_namespace(app: &ForgeApp, ns: []i8) -> &ForgeScope {
+    ret forge_scope(app, forge__scope_join("/", ns))
 }
 
 fn app_ws(app: &ForgeApp, pattern: []i8, handler: i64) {
@@ -4151,6 +4217,34 @@ fn forge_path_edit(resource: []i8, id: []i8) -> []i8 {
     let suf = "/edit"
     loop i in 0..suf.len { buf[pos] = suf[i]  pos = pos + 1 }
     ret buf[0..pos]
+}
+
+// Nested resource path helpers — build /parent/parent_id/child[/id][/edit|/new]
+fn forge_nested_path(parent: []i8, parent_id: []i8, child: []i8) -> []i8 {
+    let buf = forge_buf_new(1)
+    buf.write("/").write(parent).write("/").write(parent_id).write("/").write(child)
+    ret buf.done()
+}
+
+fn forge_nested_path_id(parent: []i8, parent_id: []i8, child: []i8, id: []i8) -> []i8 {
+    let buf = forge_buf_new(1)
+    buf.write("/").write(parent).write("/").write(parent_id)
+       .write("/").write(child).write("/").write(id)
+    ret buf.done()
+}
+
+fn forge_nested_path_new(parent: []i8, parent_id: []i8, child: []i8) -> []i8 {
+    let buf = forge_buf_new(1)
+    buf.write("/").write(parent).write("/").write(parent_id)
+       .write("/").write(child).write("/new")
+    ret buf.done()
+}
+
+fn forge_nested_path_edit(parent: []i8, parent_id: []i8, child: []i8, id: []i8) -> []i8 {
+    let buf = forge_buf_new(1)
+    buf.write("/").write(parent).write("/").write(parent_id)
+       .write("/").write(child).write("/").write(id).write("/edit")
+    ret buf.done()
 }
 
 fn forge_truncate(s: []i8, max: i64) -> []i8 {

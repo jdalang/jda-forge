@@ -125,32 +125,119 @@ fn handle_files(ctx: i64) {
 
 A wildcard matches across `/` boundaries and must appear at the end of the pattern.
 
-### 2.5 Grouping routes in a separate file
+### 2.5 RESTful resources — `forge_resources`
 
-The scaffold convention is to define a `register_*_routes` function per resource and call it from `main.jda`:
+`forge_resources` registers all 7 RESTful routes in one call and returns a `&ForgeScope` prefixed at `/{res}/:{singular}_id` for nesting child resources.
 
 ```jda
-// routes/posts.jda
-fn register_post_routes(app: i64) {
-    app_get   (app, "/posts",          fn_addr(handle_posts_index))
-    app_get   (app, "/posts/new",      fn_addr(handle_posts_new))
-    app_post  (app, "/posts",          fn_addr(handle_posts_create))
-    app_get   (app, "/posts/:id",      fn_addr(handle_posts_show))
-    app_get   (app, "/posts/:id/edit", fn_addr(handle_posts_edit))
-    app_post  (app, "/posts/:id",      fn_addr(handle_posts_update))
-    app_delete(app, "/posts/:id",      fn_addr(handle_posts_delete))
+// config/routes.jda
+
+fn routes(app: &ForgeApp) {
+    app_root(app, fn_addr(posts_index))
+
+    let posts = forge_resources(app, "posts",
+        fn_addr(posts_index), fn_addr(posts_new),    fn_addr(posts_create),
+        fn_addr(posts_show),  fn_addr(posts_edit),   fn_addr(posts_update),
+        fn_addr(posts_delete))
+
+    // Nested comments — uses the scope returned by forge_resources
+    posts.post("/comments",       fn_addr(comments_create))
+    posts.delete("/comments/:id", fn_addr(comments_delete))
 }
 ```
 
+Routes registered by `forge_resources(app, "posts", ...)`:
+
+| Method | Path | Arg position |
+|---|---|---|
+| GET | `/posts` | `index_h` |
+| GET | `/posts/new` | `new_h` |
+| POST | `/posts` | `create_h` |
+| GET | `/posts/:id` | `show_h` |
+| GET | `/posts/:id/edit` | `edit_h` |
+| PUT | `/posts/:id` | `update_h` |
+| DELETE | `/posts/:id` | `delete_h` |
+
+The returned scope prefix is `/posts/:post_id`. Any `scope.get/post/put/delete` call on it prepends that prefix automatically.
+
+### 2.6 Singular resource — `forge_resource`
+
+For resources with no index and no `:id` in paths (profile, settings, cart):
+
 ```jda
-// main.jda
-fn main() {
-    let app = app_new()
-    app_use(app, fn_addr(forge_logger))
-    register_post_routes(app)
-    app_listen(app, 8080)
+forge_resource(app, "profile",
+    fn_addr(profile_new),    fn_addr(profile_create),
+    fn_addr(profile_show),   fn_addr(profile_edit),
+    fn_addr(profile_update), fn_addr(profile_delete))
+```
+
+Routes registered:
+
+| Method | Path |
+|---|---|
+| GET | `/profile/new` |
+| POST | `/profile` |
+| GET | `/profile` |
+| GET | `/profile/edit` |
+| PUT | `/profile` |
+| DELETE | `/profile` |
+
+### 2.7 Namespace — `forge_namespace`
+
+```jda
+fn routes(app: &ForgeApp) {
+    let admin = forge_namespace(app, "admin")
+    admin.get("/dashboard",  fn_addr(admin_dashboard))
+    admin.get("/users",      fn_addr(admin_users_index))
+    admin.get("/users/:id",  fn_addr(admin_users_show))
+    admin.post("/users",     fn_addr(admin_users_create))
+    admin.delete("/users/:id", fn_addr(admin_users_delete))
 }
 ```
+
+Registered paths: `/admin/dashboard`, `/admin/users`, `/admin/users/:id`, etc.
+
+`forge_namespace` is equivalent to `forge_scope(app, "/ns")` — it exists as an alias for Rails-style terminology.
+
+### 2.8 Nested resources — `forge_scope_resources`
+
+For full CRUD on a nested resource:
+
+```jda
+let posts = forge_resources(app, "posts", ...)
+forge_scope_resources(posts, "comments",
+    fn_addr(comments_index), fn_addr(comments_new),    fn_addr(comments_create),
+    fn_addr(comments_show),  fn_addr(comments_edit),   fn_addr(comments_update),
+    fn_addr(comments_delete))
+```
+
+Pass `0` for any handler to skip that route:
+
+```jda
+forge_scope_resources(posts, "comments",
+    0, 0, fn_addr(comments_create),
+    0, 0, 0, fn_addr(comments_delete))
+```
+
+### 2.9 Concerns
+
+A concern is a plain function that takes a `&ForgeScope` and registers shared routes on it. Apply it to multiple parent scopes:
+
+```jda
+fn concern_commentable(s: &ForgeScope) {
+    s.post("/comments",       fn_addr(comments_create))
+    s.delete("/comments/:id", fn_addr(comments_delete))
+}
+
+fn routes(app: &ForgeApp) {
+    let posts    = forge_resources(app, "posts",    ...)
+    let articles = forge_resources(app, "articles", ...)
+    concern_commentable(posts)
+    concern_commentable(articles)
+}
+```
+
+This is idiomatic Jda — a concern is nothing more than a function.
 
 ### 2.6 Route matching rules
 
@@ -322,16 +409,18 @@ ctx_json(ctx, 200, payload)
 ### 4.7 A complete CRUD example
 
 ```jda
-fn handle_posts_index(ctx: i64) {
-    let posts = post_published()
-    ctx_html(ctx, 200, render_posts_index(posts))
+```jda
+// app/controllers/posts_controller.jda
+
+fn posts_index(ctx: i64) {
+    ctx_render(ctx, view_posts_index(ctx, post_published()))
 }
 
-fn handle_posts_new(ctx: i64) {
-    ctx_html(ctx, 200, render_posts_new())
+fn posts_new(ctx: i64) {
+    ctx_render(ctx, view_posts_new(ctx))
 }
 
-fn handle_posts_create(ctx: i64) {
+fn posts_create(ctx: i64) {
     let title  = ctx_form(ctx, "title")
     let body   = ctx_form(ctx, "body")
     let author = ctx_form(ctx, "author")
@@ -339,71 +428,64 @@ fn handle_posts_create(ctx: i64) {
     let errs = post_validate(title, body, author)
     if forge_errors_any(errs) {
         ctx_flash_set(ctx, "alert", forge_errors_json(errs))
-        ctx_redirect(ctx, "/posts/new")
+        ctx_redirect(ctx, new_post_path)
         ret
     }
 
     if !post_create(title, body, author) {
         ctx_flash_set(ctx, "alert", "Could not save post.")
-        ctx_redirect(ctx, "/posts/new")
+        ctx_redirect(ctx, new_post_path)
         ret
     }
 
     ctx_flash_set(ctx, "notice", "Post created.")
-    ctx_redirect(ctx, "/posts")
+    ctx_redirect(ctx, posts_path)
 }
 
-fn handle_posts_show(ctx: i64) {
-    let id  = ctx_param(ctx, "id")
-    let row = post_find(id)
-    if row == 0 {
-        ctx_not_found(ctx)
-        ret
-    }
-    ctx_html(ctx, 200, render_posts_show(row))
+fn posts_show(ctx: i64) {
+    let id   = ctx_param(ctx, "id")
+    let post = post_find(id)
+    if post.count == 0 { ctx_not_found(ctx)  ret }
+    ctx_render(ctx, view_posts_show(ctx, post))
 }
 
-fn handle_posts_edit(ctx: i64) {
-    let id  = ctx_param(ctx, "id")
-    let row = post_find(id)
-    if row == 0 {
-        ctx_not_found(ctx)
-        ret
-    }
-    ctx_html(ctx, 200, render_posts_edit(row))
+fn posts_edit(ctx: i64) {
+    let id   = ctx_param(ctx, "id")
+    let post = post_find(id)
+    if post.count == 0 { ctx_not_found(ctx)  ret }
+    ctx_render(ctx, view_posts_edit(ctx, post))
 }
 
-fn handle_posts_update(ctx: i64) {
+fn posts_update(ctx: i64) {
     let id    = ctx_param(ctx, "id")
     let title = ctx_form(ctx, "title")
     let body  = ctx_form(ctx, "body")
 
-    let errs = post_validate_update(title, body)
+    let errs = post_validate(title, body, "placeholder")
     if forge_errors_any(errs) {
         ctx_flash_set(ctx, "alert", forge_errors_json(errs))
-        ctx_redirect(ctx, "/posts/" + id + "/edit")
+        ctx_redirect(ctx, edit_post_path(id))
         ret
     }
 
     if !post_update(id, title, body) {
         ctx_flash_set(ctx, "alert", "Could not update post.")
-        ctx_redirect(ctx, "/posts/" + id + "/edit")
+        ctx_redirect(ctx, edit_post_path(id))
         ret
     }
 
     ctx_flash_set(ctx, "notice", "Post updated.")
-    ctx_redirect(ctx, "/posts/" + id)
+    ctx_redirect(ctx, post_path(id))
 }
 
-fn handle_posts_delete(ctx: i64) {
-    let id = ctx_param(ctx, "id")
-    post_delete(id)
+fn posts_delete(ctx: i64) {
+    post_delete(ctx_param(ctx, "id"))
     ctx_flash_set(ctx, "notice", "Post deleted.")
-    ctx_redirect(ctx, "/posts")
+    ctx_redirect(ctx, posts_path)
 }
 ```
 
-Pattern: validate input → flash + redirect on failure → flash + redirect on success. Destructive actions (update, delete) read the param, act, and redirect unconditionally.
+Pattern: validate → flash + redirect on failure → flash + redirect on success. Controllers use path helper constants and functions, never hard-coded strings.
 
 ---
 
@@ -765,71 +847,73 @@ Forge sets `Content-Type` based on the file extension and serves `Last-Modified`
 
 ## 12. Generating routes with scaffold
 
-The scaffold generator creates a full set of CRUD handlers for a resource in a single command:
+The scaffold generator creates a complete vertical slice — migration, model, controller, views, and tests — from a single command:
 
 ```bash
 forge generate scaffold Post title:string body:string author:string
 ```
 
-This creates `routes/posts.jda` containing:
+This creates:
 
-| Handler | Method | Path |
-|---|---|---|
-| `handle_posts_index` | GET | `/posts` |
-| `handle_posts_new` | GET | `/posts/new` |
-| `handle_posts_create` | POST | `/posts` |
-| `handle_posts_show` | GET | `/posts/:id` |
-| `handle_posts_edit` | GET | `/posts/:id/edit` |
-| `handle_posts_update` | POST | `/posts/:id` |
-| `handle_posts_delete` | DELETE | `/posts/:id` |
-
-It also generates a `register_post_routes(app: i64)` function. Call it from `main.jda`:
-
-```jda
-fn main() {
-    let app = app_new()
-
-    app_use(app, fn_addr(forge_logger))
-    app_use(app, fn_addr(forge_session_start))
-    app_use(app, fn_addr(forge_csrf))
-
-    register_post_routes(app)
-
-    app_listen(app, 8080)
-}
+```
+db/migrate/001_create_posts.sql
+app/models/post.jda
+app/controllers/posts_controller.jda
+app/views/posts/index.html.jda
+app/views/posts/show.html.jda
+app/views/posts/new.html.jda
+app/views/posts/edit.html.jda
+test/test_posts.jda
 ```
 
-The generated handlers are stubs. Fill them in with your model calls, validation, and templates. The `handle_posts_create` stub follows the validate-flash-redirect pattern described in the [CRUD example](#47-a-complete-crud-example) above.
+It also appends a `forge_resources` call to `config/routes.jda` automatically. No manual wiring in `main.jda`.
+
+Generated controller actions for a `Post` resource:
+
+| Action | Method | Path |
+|---|---|---|
+| `posts_index` | GET | `/posts` |
+| `posts_new` | GET | `/posts/new` |
+| `posts_create` | POST | `/posts` |
+| `posts_show` | GET | `/posts/:id` |
+| `posts_edit` | GET | `/posts/:id/edit` |
+| `posts_update` | PUT | `/posts/:id` |
+| `posts_delete` | DELETE | `/posts/:id` |
 
 ### Path helpers
 
-Every scaffold-generated routes file includes path helpers for the resource. For a `Post` resource:
+Scaffold generates path helpers in `config/routes.jda` for the resource:
 
 ```jda
-// Constants — no call needed for paths without an id
+// Zero-arg paths — constants, no call needed
 let posts_path: []i8    = "/posts"
 let new_post_path: []i8 = "/posts/new"
 
-// Functions — id is required
+// Id-taking paths — functions
 fn post_path(id: []i8) -> []i8      { ret forge_path_id("posts", id) }
 fn edit_post_path(id: []i8) -> []i8 { ret forge_path_edit("posts", id) }
 ```
 
-Use them anywhere you would otherwise hard-code a string path — handlers, templates, and tests:
+Use them in controllers, views, and tests — never hard-code path strings:
 
 ```jda
-// In a handler
+// In a controller
 ctx_redirect(ctx, posts_path)
 ctx_redirect(ctx, post_path(id))
-ctx_redirect(ctx, edit_post_path(id))
 
 // In a test
-forge_test_get   (post_path("1"))
-forge_test_delete(post_path("1"))
-forge_test_post  (posts_path, body)
+forge_get(posts_path).ok(200)
+forge_delete(post_path("1")).redirect()
 ```
 
-The underlying `forge_path*` functions are available for any resource name if you need paths outside of generated code:
+For nested resources, define a one-line helper using `forge_nested_path*`:
+
+```jda
+fn post_comments_path(post_id: []i8) -> []i8      { ret forge_nested_path("posts", post_id, "comments") }
+fn post_comment_path(post_id: []i8, id: []i8) -> []i8 { ret forge_nested_path_id("posts", post_id, "comments", id) }
+```
+
+All `forge_path*` and `forge_nested_path*` functions:
 
 | Function | Result |
 |---|---|
@@ -837,116 +921,92 @@ The underlying `forge_path*` functions are available for any resource name if yo
 | `forge_path_new("posts")` | `/posts/new` |
 | `forge_path_id("posts", id)` | `/posts/<id>` |
 | `forge_path_edit("posts", id)` | `/posts/<id>/edit` |
+| `forge_nested_path(par, pid, child)` | `/par/pid/child` |
+| `forge_nested_path_new(par, pid, child)` | `/par/pid/child/new` |
+| `forge_nested_path_id(par, pid, child, id)` | `/par/pid/child/id` |
+| `forge_nested_path_edit(par, pid, child, id)` | `/par/pid/child/id/edit` |
 
-### Naming conventions
+### Naming conventions — enforced by scaffold
 
-Scaffold follows these conventions consistently:
+Scaffold enforces these conventions and raises an error if they are violated:
 
-- Route file: `routes/<resource_plural>.jda`
-- Handler prefix: `handle_<resource_plural>_<action>`
-- Registration function: `register_<resource_singular>_routes(app: i64)`
-- Path helpers: `<plural>_path` (constant), `new_<singular>_path` (constant), `<singular>_path(id)` (function), `edit_<singular>_path(id)` (function)
+| Layer | File | Function prefix |
+|---|---|---|
+| Controller | `app/controllers/posts_controller.jda` | `posts_` |
+| Model | `app/models/post.jda` | `post_` |
+| View | `app/views/posts/index.html.jda` | `view_posts_` |
 
-For a resource named `Comment` the generated file is `routes/comments.jda` with handlers `handle_comments_index`, `handle_comments_show`, path constants `comments_path`, `new_comment_path`, and path functions `comment_path(id)`, `edit_comment_path(id)`.
+Resource names must be PascalCase: `forge generate scaffold Post` ✓ — `forge generate scaffold post` is an error.
 
 ---
 
-## 13. Scopes — namespaces and nested resources
+## 13. Scopes — raw prefix groups
 
-`forge_scope` wraps an app with a path prefix. Every route registered on the scope gets that prefix prepended. This replaces manually writing the full path on every `app_get` call and is the standard way to build admin namespaces and nested resource routes.
-
-### Admin namespace
+`forge_scope` wraps an app with a path prefix. Use it when `forge_resources` / `forge_namespace` are not the right fit — arbitrary prefix, non-standard method mix, or adding extra routes alongside a resource.
 
 ```jda
-fn register_admin_routes(app: &ForgeApp) {
-    let admin = forge_scope(app, "/admin")
-    admin.get("/dashboard",  fn_addr(handle_admin_dashboard))
-    admin.get("/users",      fn_addr(handle_admin_users_index))
-    admin.get("/users/:id",  fn_addr(handle_admin_users_show))
-    admin.post("/users",     fn_addr(handle_admin_users_create))
-    admin.delete("/users/:id", fn_addr(handle_admin_users_delete))
-    admin.get("/posts",      fn_addr(handle_admin_posts_index))
-}
-```
-
-The registered paths are `/admin/dashboard`, `/admin/users`, etc. No prefix duplication in source.
-
-### Nested resources
-
-```jda
-fn register_post_comment_routes(app: &ForgeApp) {
-    let posts = forge_scope(app, "/posts/:post_id")
-    posts.get("/comments",      fn_addr(handle_comments_index))
-    posts.post("/comments",     fn_addr(handle_comments_create))
-    posts.delete("/comments/:id", fn_addr(handle_comments_delete))
-}
+let api = forge_scope(app, "/api/v2")
+api.get("/status",        fn_addr(api_status))
+api.get("/users/:id",     fn_addr(api_user_show))
+api.post("/users",        fn_addr(api_user_create))
 ```
 
 ### Deeply nested scopes with `forge_scope_nested`
 
-For multi-level nesting, build scopes from scopes:
+Build scopes from existing scopes for multi-level nesting:
 
 ```jda
-fn register_routes(app: &ForgeApp) {
-    let users   = forge_scope(app, "/users/:user_id")
-    let posts   = forge_scope_nested(users,  "/posts/:post_id")
-    let comments = forge_scope_nested(posts, "/comments/:comment_id")
+fn routes(app: &ForgeApp) {
+    let users    = forge_scope(app, "/users/:user_id")
+    let posts    = forge_scope_nested(users,  "/posts/:post_id")
+    let comments = forge_scope_nested(posts,  "/comments/:comment_id")
 
-    users.get("/posts",     fn_addr(handle_user_posts_index))
-    users.post("/posts",    fn_addr(handle_user_posts_create))
+    users.get("/posts",        fn_addr(user_posts_index))
+    users.post("/posts",       fn_addr(user_posts_create))
 
-    posts.get("/comments",  fn_addr(handle_post_comments_index))
-    posts.post("/comments", fn_addr(handle_post_comments_create))
+    posts.get("/comments",     fn_addr(post_comments_index))
+    posts.post("/comments",    fn_addr(post_comments_create))
 
-    comments.post("/likes", fn_addr(handle_comment_likes_create))
-    comments.delete("/likes/:id", fn_addr(handle_comment_likes_delete))
+    comments.post("/likes",        fn_addr(comment_likes_create))
+    comments.delete("/likes/:id",  fn_addr(comment_likes_delete))
 }
 ```
 
-This registers routes like `GET /users/:user_id/posts`, `POST /users/:user_id/posts/:post_id/comments/`, `POST /users/:user_id/posts/:post_id/comments/:comment_id/likes`, etc.
+Registered paths: `GET /users/:user_id/posts`, `POST /users/:user_id/posts/:post_id/comments`, `DELETE /users/:user_id/posts/:post_id/comments/:comment_id/likes/:id`, etc.
 
-### Path helpers for scoped routes
-
-Scoped path helpers are plain functions — write them at the top of the routes file alongside the handlers:
+### Path helpers for namespaced and nested routes
 
 ```jda
-// routes/admin/users.jda
-let admin_users_path: []i8 = "/admin/users"
-fn admin_user_path(id: []i8) -> []i8 { ret forge_path_id("admin/users", id) }
+// Namespaced — flat constants and forge_path_id
+let admin_posts_path: []i8 = "/admin/posts"
+fn admin_post_path(id: []i8) -> []i8 { ret forge_path_id("admin/posts", id) }
 
-// routes/post_comments.jda
+// Nested — one-liners using forge_nested_path*
 fn post_comments_path(post_id: []i8) -> []i8 {
-    let buf: &i8 = alloc_pages(1)
-    let pos = 0i64
-    let p = "/posts/"
-    let s = "/comments"
-    loop i in 0..p.len       { buf[pos] = p[i]       pos = pos + 1 }
-    loop i in 0..post_id.len { buf[pos] = post_id[i] pos = pos + 1 }
-    loop i in 0..s.len       { buf[pos] = s[i]       pos = pos + 1 }
-    ret buf[0..pos]
+    ret forge_nested_path("posts", post_id, "comments")
 }
 fn post_comment_path(post_id: []i8, id: []i8) -> []i8 {
-    let buf: &i8 = alloc_pages(1)
-    let pos = 0i64
-    let p  = "/posts/"
-    let m  = "/comments/"
-    loop i in 0..p.len       { buf[pos] = p[i]       pos = pos + 1 }
-    loop i in 0..post_id.len { buf[pos] = post_id[i] pos = pos + 1 }
-    loop i in 0..m.len       { buf[pos] = m[i]       pos = pos + 1 }
-    loop i in 0..id.len      { buf[pos] = id[i]      pos = pos + 1 }
-    ret buf[0..pos]
+    ret forge_nested_path_id("posts", post_id, "comments", id)
+}
+fn new_post_comment_path(post_id: []i8) -> []i8 {
+    ret forge_nested_path_new("posts", post_id, "comments")
+}
+fn edit_post_comment_path(post_id: []i8, id: []i8) -> []i8 {
+    ret forge_nested_path_edit("posts", post_id, "comments", id)
 }
 ```
 
-### How many route files?
+### Scope method reference
 
-One file per resource is a convention, not a rule. Good groupings:
-
-- **One file per resource** — `routes/posts.jda`, `routes/comments.jda` (default scaffold output)
-- **One file per namespace** — `routes/admin.jda` contains all admin routes and their handlers
-- **One file per feature area** — `routes/billing.jda` groups subscriptions, invoices, payments
-
-There is no technical constraint. The Makefile concatenates all `routes/*.jda` files before compilation. Subdirectories work too — add `$(wildcard routes/**/*.jda)` to the `SRC` variable.
+| Function | What it does |
+|---|---|
+| `forge_scope(app, "/prefix")` | Scope at arbitrary prefix |
+| `forge_scope_nested(scope, "/suffix")` | Child scope — concatenates prefix + suffix |
+| `forge_namespace(app, "admin")` | Scope at `/admin` (Rails namespace alias) |
+| `forge_resources(app, "posts", ...)` | 7 routes + returns `&ForgeScope` at `/posts/:post_id` |
+| `forge_scope_resources(scope, "comments", ...)` | 7 nested routes + returns deeper `&ForgeScope` |
+| `forge_resource(app, "profile", ...)` | 6 singular routes (no index, no :id) |
+| `forge_scope_resource(scope, "profile", ...)` | Singular resource within a scope |
 
 ---
 
@@ -963,12 +1023,12 @@ ctx_redirect(ctx, post_path(post.id()))
 
 `forge_result_id` is the underlying function; `.id()` is the UFCS shorthand. Works on any `&ForgeResult` — the column looked up is always `"id"`.
 
-For tests, `post_path(post.id())` reads naturally alongside the rest of the test DSL:
+For tests, `post_path(post.id())` reads naturally with the chainable DSL:
 
 ```jda
 fn test_post_show() {
     test_setup()
     let post = post_find("1")
-    forge_get(post_path(post.id())).ok(200)
+    forge_get(post_path(post.id())).ok(200).has("Hello World")
 }
 ```
