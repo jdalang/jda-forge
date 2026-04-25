@@ -1,0 +1,40 @@
+// =============================================================================
+// views/templates.jda — ERB template strings
+// =============================================================================
+
+fn tmpl_layout_wrap(title: []i8, body: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(4)
+    let pos = 0i64
+    let p1 = "<!DOCTYPE html><html><head><meta charset=utf-8><title>"
+    let p2 = "</title><link rel=stylesheet href=/static/app.css></head><body>"
+    let p3 = "</body></html>"
+    loop i in 0..p1.len   { buf[pos] = p1[i]    pos = pos + 1 }
+    loop i in 0..title.len { buf[pos] = title[i]  pos = pos + 1 }
+    loop i in 0..p2.len   { buf[pos] = p2[i]    pos = pos + 1 }
+    loop i in 0..body.len { buf[pos] = body[i]   pos = pos + 1 }
+    loop i in 0..p3.len   { buf[pos] = p3[i]    pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn tmpl_flash(ctx: i64) -> []i8 {
+    let notice = ctx_flash_get(ctx, "notice")
+    let alert  = ctx_flash_get(ctx, "alert")
+    if notice.len == 0 and alert.len == 0 { ret "" }
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    if notice.len > 0 {
+        let p1 = "<div class=notice>"
+        let p2 = "</div>"
+        loop i in 0..p1.len     { buf[pos] = p1[i]      pos = pos + 1 }
+        loop i in 0..notice.len { buf[pos] = notice[i]  pos = pos + 1 }
+        loop i in 0..p2.len     { buf[pos] = p2[i]      pos = pos + 1 }
+    }
+    if alert.len > 0 {
+        let p1 = "<div class=alert>"
+        let p2 = "</div>"
+        loop i in 0..p1.len    { buf[pos] = p1[i]     pos = pos + 1 }
+        loop i in 0..alert.len { buf[pos] = alert[i]  pos = pos + 1 }
+        loop i in 0..p2.len    { buf[pos] = p2[i]     pos = pos + 1 }
+    }
+    ret buf[0..pos]
+}

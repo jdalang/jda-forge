@@ -1,0 +1,53 @@
+// =============================================================================
+// main.jda — entry point
+// Wire up middleware, routes, and start the server.
+// =============================================================================
+//
+// Build:
+//   make          (uses Makefile to cat all files → _build/app.jda)
+//
+// File layout:
+//   config.jda             constants, forge config
+//   middleware/auth.jda    require_login, require_admin
+//   views/templates.jda    layout, flash HTML helpers
+//   routes/auth.jda        GET/POST /login, POST /logout
+//   routes/users.jda       CRUD /users/*
+//   main.jda               app wiring (this file)
+// =============================================================================
+
+fn handle_root(ctx: i64) {
+    let flash = tmpl_flash(ctx)
+    let body  = "<h1>Welcome to JDA Forge</h1><nav><a href=/users>Users</a></nav>"
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    loop i in 0..flash.len { buf[pos] = flash[i]  pos = pos + 1 }
+    loop i in 0..body.len  { buf[pos] = body[i]   pos = pos + 1 }
+    ctx_html(ctx, 200, tmpl_layout_wrap("Home", buf[0..pos]))
+}
+
+fn main() {
+    // Configure
+    forge_set_jwt_secret(APP_SECRET)
+    forge_jobs_start(8)             // 8 background job workers
+
+    let app = app_new_config(app_config())
+
+    // Global middleware (applied to every request)
+    app_use(app, fn_addr(forge_logger))
+    app_use(app, fn_addr(forge_request_id))
+    app_use(app, fn_addr(forge_secure_headers))
+    app_use(app, fn_addr(forge_cors))
+    app_use(app, fn_addr(forge_session_start))   // sessions required for flash + CSRF
+    app_use(app, fn_addr(forge_csrf))            // CSRF protection on POST/PUT/DELETE
+    app_use(app, fn_addr(load_current_user))     // attach user_id to ctx
+
+    // Static files
+    app_static(app, "/static", "./public")
+
+    // Routes — each file registers its own group
+    app_get(app, "/", fn_addr(handle_root))
+    register_auth_routes(app)
+    register_user_routes(app)
+
+    app_listen(app, APP_PORT)
+}

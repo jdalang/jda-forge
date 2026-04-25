@@ -1,0 +1,16 @@
+// =============================================================================
+// config.jda — application-wide constants and initialisation
+// =============================================================================
+
+const APP_PORT    = 8080
+const APP_ENV     = "development"   // "production" | "test"
+const APP_SECRET  = "change-me-in-production"
+
+fn app_config() -> ForgeConfig {
+    ret ForgeConfig {
+        host:     "0.0.0.0",
+        port:     APP_PORT,
+        workers:  256,
+        max_body: 4194304,   // 4 MB
+    }
+}

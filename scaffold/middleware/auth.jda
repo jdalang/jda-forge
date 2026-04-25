@@ -1,0 +1,25 @@
+// =============================================================================
+// middleware/auth.jda — application authentication middleware
+// =============================================================================
+
+fn require_login(ctx: i64) {
+    let user_id = ctx_session_get(ctx, "user_id")
+    if user_id.len == 0 {
+        ctx_flash_set(ctx, "alert", "Please log in.")
+        ctx_redirect(ctx, "/login")
+    }
+}
+
+fn require_admin(ctx: i64) {
+    let role = ctx_session_get(ctx, "role")
+    if not forge_slice_eq(role, "admin") {
+        ctx_forbidden(ctx)
+    }
+}
+
+fn load_current_user(ctx: i64) {
+    let user_id = ctx_session_get(ctx, "user_id")
+    if user_id.len > 0 {
+        ctx_set(ctx, "current_user_id", user_id as i64)
+    }
+}

@@ -1,0 +1,50 @@
+// =============================================================================
+// routes/auth.jda — login / logout / register handlers
+// =============================================================================
+
+fn handle_login_form(ctx: i64) {
+    let flash = tmpl_flash(ctx)
+    let body: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let form = "<h1>Log In</h1><form method=POST action=/login>"
+               "<input name=email placeholder=Email><br>"
+               "<input name=password type=password placeholder=Password><br>"
+               "<input type=hidden name=_csrf value=\""
+    let tok = forge_csrf_token(ctx)
+    let end_form = "\"><button>Log in</button></form>"
+    loop i in 0..flash.len    { body[pos] = flash[i]    pos = pos + 1 }
+    loop i in 0..form.len     { body[pos] = form[i]     pos = pos + 1 }
+    loop i in 0..tok.len      { body[pos] = tok[i]      pos = pos + 1 }
+    loop i in 0..end_form.len { body[pos] = end_form[i] pos = pos + 1 }
+    ctx_html(ctx, 200, tmpl_layout_wrap("Log In", body[0..pos]))
+}
+
+fn handle_login_post(ctx: i64) {
+    let email = ctx_form(ctx, "email")
+    let pass  = ctx_form(ctx, "password")
+
+    // TODO: look up user in DB, verify bcrypt hash
+    // Demo: static credentials
+    if forge_slice_eq(email, "admin@example.com") and
+       forge_slice_eq(pass,  "secret") {
+        ctx_session_set(ctx, "user_id", "1")
+        ctx_session_set(ctx, "role",    "admin")
+        ctx_flash_set(ctx, "notice", "Welcome back!")
+        ctx_redirect(ctx, "/")
+        ret
+    }
+    ctx_flash_set(ctx, "alert", "Invalid email or password.")
+    ctx_redirect(ctx, "/login")
+}
+
+fn handle_logout(ctx: i64) {
+    ctx_session_clear(ctx)
+    ctx_flash_set(ctx, "notice", "You have been logged out.")
+    ctx_redirect(ctx, "/login")
+}
+
+fn register_auth_routes(app: &ForgeApp) {
+    app_get (app, "/login",  fn_addr(handle_login_form))
+    app_post(app, "/login",  fn_addr(handle_login_post))
+    app_post(app, "/logout", fn_addr(handle_logout))
+}

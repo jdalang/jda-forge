@@ -1,0 +1,71 @@
+// =============================================================================
+// routes/users.jda — user resource (index / show / new / create / edit / update / delete)
+// =============================================================================
+
+fn handle_users_index(ctx: i64) {
+    // TODO: rows = forge_db_query("SELECT id, email FROM users ORDER BY id")
+    let flash = tmpl_flash(ctx)
+    let body = "<h1>Users</h1><a href=/users/new>New User</a><ul><li>Alice</li><li>Bob</li></ul>"
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    loop i in 0..flash.len { buf[pos] = flash[i]  pos = pos + 1 }
+    loop i in 0..body.len  { buf[pos] = body[i]   pos = pos + 1 }
+    ctx_html(ctx, 200, tmpl_layout_wrap("Users", buf[0..pos]))
+}
+
+fn handle_users_show(ctx: i64) {
+    let id = ctx_param(ctx, "id")
+    let buf = [256]i8
+    let pos = 0i64
+    let p1 = "<h1>User "
+    let p2 = "</h1><a href=/users>Back</a>"
+    loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
+    loop i in 0..id.len  { buf[pos] = id[i]  pos = pos + 1 }
+    loop i in 0..p2.len { buf[pos] = p2[i]  pos = pos + 1 }
+    ctx_html(ctx, 200, tmpl_layout_wrap("User", buf[0..pos]))
+}
+
+fn handle_users_new(ctx: i64) {
+    let tok = forge_csrf_token(ctx)
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "<h1>New User</h1><form method=POST action=/users>"
+             "<input name=email placeholder=Email><br>"
+             "<input name=password type=password placeholder=Password><br>"
+             "<input type=hidden name=_csrf value=\""
+    let p2 = "\"><button>Create</button></form>"
+    loop i in 0..p1.len  { buf[pos] = p1[i]   pos = pos + 1 }
+    loop i in 0..tok.len { buf[pos] = tok[i]  pos = pos + 1 }
+    loop i in 0..p2.len  { buf[pos] = p2[i]   pos = pos + 1 }
+    ctx_html(ctx, 200, tmpl_layout_wrap("New User", buf[0..pos]))
+}
+
+fn handle_users_create(ctx: i64) {
+    let email = ctx_form(ctx, "email")
+    if email.len == 0 {
+        ctx_flash_set(ctx, "alert", "Email is required.")
+        ctx_redirect(ctx, "/users/new")
+        ret
+    }
+    // TODO: forge_db_exec("INSERT INTO users (email) VALUES ($1)", email)
+    ctx_flash_set(ctx, "notice", "User created.")
+    ctx_redirect(ctx, "/users")
+}
+
+fn handle_users_delete(ctx: i64) {
+    let id = ctx_param(ctx, "id")
+    // TODO: forge_db_exec("DELETE FROM users WHERE id = $1", id)
+    ctx_flash_set(ctx, "notice", "User deleted.")
+    ctx_redirect(ctx, "/users")
+}
+
+fn register_user_routes(app: &ForgeApp) {
+    let users = app_group(app, "/users")
+    group_use(&users, fn_addr(require_login))
+
+    group_get   (&users, "",      fn_addr(handle_users_index))
+    group_get   (&users, "/new",  fn_addr(handle_users_new))
+    group_post  (&users, "",      fn_addr(handle_users_create))
+    group_get   (&users, "/:id",  fn_addr(handle_users_show))
+    group_delete(&users, "/:id",  fn_addr(handle_users_delete))
+}

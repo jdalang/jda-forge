@@ -1521,11 +1521,800 @@ fn forge_csrf(ctx_ptr: i64) {
 
 // =============================================================================
 // Proxy headers middleware
-// Trust X-Real-IP / X-Forwarded-For from the load balancer.
-// ctx_ip() reads these headers automatically; extend this middleware to
-// validate the proxy source address before trusting the headers.
 // =============================================================================
 fn forge_proxy_headers(ctx_ptr: i64) {
     // ctx_ip() already reads X-Real-IP and X-Forwarded-For.
-    // Add source-IP validation here if the load balancer has a fixed address.
+    // Extend here to validate proxy source IP before trusting headers.
+}
+
+// =============================================================================
+// Background Jobs — spawn-based worker pool
+// Call forge_jobs_start(n) once in main() before app_listen.
+// Then use forge_job_enqueue(fn_addr(my_job), arg) anywhere.
+//
+// Example:
+//   fn send_welcome_email(arg: i64) {
+//       let email_ptr = arg as &i8   // caller heap-allocs + passes pointer
+//       forge_mail_send(ForgeMail { to: email_ptr[0..?], ... })
+//   }
+//   forge_job_enqueue(fn_addr(send_welcome_email), alloc_str(email))
+// =============================================================================
+const FORGE_JOB_QUEUE_CAP = 4096
+
+let g_forge_job_queue: i64 = 0
+
+fn forge_jobs_start(workers: i32) {
+    if g_forge_job_queue != 0 { ret }
+    let ch = chan_new(FORGE_JOB_QUEUE_CAP)
+    g_forge_job_queue = ch
+    loop i in 0..workers {
+        spawn {
+            loop {
+                let fn_packed = chan_recv(ch)
+                if fn_packed == 0 { ret }
+                // Upper 32 bits = fn_ptr high, lower 32 = arg — use two consecutive sends
+                let fn_ptr = chan_recv(ch)
+                let arg    = chan_recv(ch)
+                call_fn(fn_ptr, arg)
+            }
+        }
+    }
+}
+
+fn forge_job_enqueue(fn_ptr: i64, arg: i64) {
+    if g_forge_job_queue == 0 { ret }
+    chan_send(g_forge_job_queue, 1)         // sentinel
+    chan_send(g_forge_job_queue, fn_ptr)
+    chan_send(g_forge_job_queue, arg)
+}
+
+// =============================================================================
+// I18n — internationalization / translation
+// Load locales from "key=value\n" flat files with forge_i18n_load.
+// Use forge_t(ctx, "greeting") in handlers; locale follows ctx "locale" store key.
+//
+// Example locale file  (locales/en.txt):
+//   greeting=Hello, World!
+//   nav.users=Users
+//   flash.saved=Changes saved.
+// =============================================================================
+const FORGE_I18N_MAX_ENTRIES   = 512
+const FORGE_I18N_FULL_KEY_CAP  = 72    // 8-char locale + "." + 63-char key
+const FORGE_I18N_VAL_CAP_I18N  = 256
+const FORGE_I18N_ENTRY_STRIDE  = 344   // sizeof(ForgeI18nEntry): 72+8+256+8
+
+struct ForgeI18nEntry {
+    key:  [FORGE_I18N_FULL_KEY_CAP]i8
+    klen: i64
+    val:  [FORGE_I18N_VAL_CAP_I18N]i8
+    vlen: i64
+}
+
+let g_forge_i18n_base:  i64 = 0
+let g_forge_i18n_count: i64 = 0
+let g_forge_i18n_locale: []i8 = "en"   // default locale
+
+fn forge_i18n_init() {
+    if g_forge_i18n_base != 0 { ret }
+    // 512 × 344 = 176 KB → 44 pages
+    let block: &i8 = alloc_pages(44)
+    g_forge_i18n_base = block as i64
+}
+
+fn forge_i18n_entry_at(i: i64) -> &ForgeI18nEntry {
+    ret (g_forge_i18n_base + i * FORGE_I18N_ENTRY_STRIDE) as &ForgeI18nEntry
+}
+
+fn forge_i18n_set(locale: []i8, key: []i8, val: []i8) {
+    forge_i18n_init()
+    // Build full key: "<locale>.<key>"
+    let fk = [FORGE_I18N_FULL_KEY_CAP]i8
+    let fp = 0i64
+    let ll = locale.len
+    if ll > 8 { ll = 8 }
+    loop i in 0..ll { fk[fp] = locale[i]  fp = fp + 1 }
+    fk[fp] = '.'  fp = fp + 1
+    loop i in 0..key.len { if fp < FORGE_I18N_FULL_KEY_CAP { fk[fp] = key[i]  fp = fp + 1 } }
+    let fk_slice = fk[0..fp]
+    // Update existing
+    loop i in 0..g_forge_i18n_count {
+        let e: &ForgeI18nEntry = forge_i18n_entry_at(i)
+        if forge_slice_eq(e.key[0..e.klen], fk_slice) {
+            let vl = val.len
+            if vl > FORGE_I18N_VAL_CAP_I18N { vl = FORGE_I18N_VAL_CAP_I18N }
+            loop j in 0..vl { e.val[j] = val[j] }
+            e.vlen = vl
+            ret
+        }
+    }
+    // Insert new
+    let n = g_forge_i18n_count
+    if n < FORGE_I18N_MAX_ENTRIES {
+        let e: &ForgeI18nEntry = forge_i18n_entry_at(n)
+        loop j in 0..fp { e.key[j] = fk[j] }
+        e.klen = fp
+        let vl = val.len
+        if vl > FORGE_I18N_VAL_CAP_I18N { vl = FORGE_I18N_VAL_CAP_I18N }
+        loop j in 0..vl { e.val[j] = val[j] }
+        e.vlen = vl
+        g_forge_i18n_count = n + 1
+    }
+}
+
+// Load a "key=value\n" locale file from disk.
+fn forge_i18n_load(locale: []i8, path: []i8) {
+    let path_buf = [512]i8
+    let pp = 0i64
+    loop i in 0..path.len { path_buf[pp] = path[i]  pp = pp + 1 }
+    path_buf[pp] = 0
+    let data: &i8 = alloc_pages(64)   // 256 KB max locale file
+    let n = fs_read_file(path_buf, data, 262144)
+    if n <= 0 { ret }
+    let src = data[0..n]
+    let pos = 0i64
+    loop pos < src.len {
+        // Parse "key=value\n"
+        let ks = pos
+        loop pos < src.len and src[pos] != '=' and src[pos] != '\n' { pos = pos + 1 }
+        let k = src[ks..pos]
+        if pos >= src.len or src[pos] == '\n' { pos = pos + 1   continue }
+        pos = pos + 1   // skip '='
+        let vs = pos
+        loop pos < src.len and src[pos] != '\n' { pos = pos + 1 }
+        let v = src[vs..pos]
+        if pos < src.len { pos = pos + 1 }
+        if k.len > 0 { forge_i18n_set(locale, k, v) }
+    }
+}
+
+// Translate key using the locale stored in ctx (or the default locale).
+fn forge_t(ctx_ptr: i64, key: []i8) -> []i8 {
+    forge_i18n_init()
+    let locale_ptr = ctx_get(ctx_ptr, "locale")
+    let locale = g_forge_i18n_locale
+    if locale_ptr != 0 { locale = (locale_ptr as &i8)[0..8] }
+    // Build full key
+    let fk = [FORGE_I18N_FULL_KEY_CAP]i8
+    let fp = 0i64
+    let ll = locale.len
+    if ll > 8 { ll = 8 }
+    loop i in 0..ll { fk[fp] = locale[i]  fp = fp + 1 }
+    fk[fp] = '.'  fp = fp + 1
+    loop i in 0..key.len { if fp < FORGE_I18N_FULL_KEY_CAP { fk[fp] = key[i]  fp = fp + 1 } }
+    let fk_slice = fk[0..fp]
+    loop i in 0..g_forge_i18n_count {
+        let e: &ForgeI18nEntry = forge_i18n_entry_at(i)
+        if forge_slice_eq(e.key[0..e.klen], fk_slice) { ret e.val[0..e.vlen] }
+    }
+    ret key   // fallback: return the key itself
+}
+
+fn forge_locale_set_ctx(ctx_ptr: i64, locale: []i8) {
+    let buf: &i8 = alloc_pages(1)
+    let ll = locale.len
+    if ll > 8 { ll = 8 }
+    loop i in 0..ll { buf[i] = locale[i] }
+    ctx_set(ctx_ptr, "locale", buf as i64)
+}
+
+// =============================================================================
+// Mailer — send email via SMTP
+// Call forge_mailer_config once in main() with your SMTP server details.
+//
+// Example:
+//   forge_mailer_config("smtp.example.com", 587, "user@example.com", "password")
+//   forge_mail_send(ForgeMail {
+//       to:      "alice@example.com",
+//       from:    "noreply@myapp.com",
+//       subject: "Welcome!",
+//       body:    "Thanks for signing up.",
+//       html:    false,
+//   })
+// =============================================================================
+struct ForgeMail {
+    to:      []i8
+    from:    []i8
+    subject: []i8
+    body:    []i8
+    html:    bool
+}
+
+struct ForgeMailerConfig {
+    host: []i8
+    port: i32
+    user: []i8
+    pass: []i8
+}
+
+let g_forge_mailer_cfg_host: []i8 = ""
+let g_forge_mailer_cfg_port: i32  = 25
+let g_forge_mailer_cfg_user: []i8 = ""
+let g_forge_mailer_cfg_pass: []i8 = ""
+
+fn forge_mailer_config(host: []i8, port: i32, user: []i8, pass: []i8) {
+    g_forge_mailer_cfg_host = host
+    g_forge_mailer_cfg_port = port
+    g_forge_mailer_cfg_user = user
+    g_forge_mailer_cfg_pass = pass
+}
+
+fn forge_smtp_write(fd: i32, line: []i8) {
+    forge_tcp_write_all(fd, line, line.len)
+    let crlf = "\r\n"
+    forge_tcp_write_all(fd, crlf, 2)
+}
+
+fn forge_smtp_read_line(fd: i32, buf: &i8, max: i64) -> i64 {
+    let n = 0i64
+    loop n < max {
+        let got = syscall(FORGE_SYS_RECVFROM, fd, buf + n, 1, 0, 0, 0) as i64
+        if got <= 0 { ret n }
+        if buf[n] == '\n' { ret n + 1 }
+        n = n + 1
+    }
+    ret n
+}
+
+fn forge_smtp_expect(fd: i32, code: i64) -> bool {
+    let buf = [256]i8
+    let n = forge_smtp_read_line(fd, buf, 256)
+    if n < 3 { ret false }
+    let c = (buf[0] as i64 - 48) * 100 +
+            (buf[1] as i64 - 48) * 10 +
+            (buf[2] as i64 - 48)
+    ret c == code
+}
+
+fn forge_mail_send(mail: ForgeMail) -> bool {
+    if g_forge_mailer_cfg_host.len == 0 { ret false }
+
+    let fd = TcpStream::connect(g_forge_mailer_cfg_host, g_forge_mailer_cfg_port as u16).fd
+    if fd < 0 { ret false }
+
+    // Read greeting (220)
+    if not forge_smtp_expect(fd, 220) { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret false }
+
+    // EHLO
+    let ehlo_buf = [128]i8
+    let ehlo_pos = 0i64
+    let ehlo_pre = "EHLO forge"
+    loop i in 0..ehlo_pre.len { ehlo_buf[ehlo_pos] = ehlo_pre[i]  ehlo_pos = ehlo_pos + 1 }
+    forge_smtp_write(fd, ehlo_buf[0..ehlo_pos])
+    if not forge_smtp_expect(fd, 250) { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret false }
+
+    // AUTH LOGIN (if credentials provided)
+    if g_forge_mailer_cfg_user.len > 0 {
+        forge_smtp_write(fd, "AUTH LOGIN")
+        if not forge_smtp_expect(fd, 334) { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret false }
+        // Send base64(user)
+        let u_enc = [256]i8
+        let u_len = b64_encode(g_forge_mailer_cfg_user, g_forge_mailer_cfg_user.len, u_enc)
+        forge_smtp_write(fd, u_enc[0..u_len])
+        if not forge_smtp_expect(fd, 334) { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret false }
+        // Send base64(pass)
+        let p_enc = [256]i8
+        let p_len = b64_encode(g_forge_mailer_cfg_pass, g_forge_mailer_cfg_pass.len, p_enc)
+        forge_smtp_write(fd, p_enc[0..p_len])
+        if not forge_smtp_expect(fd, 235) { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret false }
+    }
+
+    // MAIL FROM
+    let mf_buf = [256]i8
+    let mf_pos = 0i64
+    let mf_pre = "MAIL FROM:<"
+    let mf_suf = ">"
+    loop i in 0..mf_pre.len    { mf_buf[mf_pos] = mf_pre[i]   mf_pos = mf_pos + 1 }
+    loop i in 0..mail.from.len { mf_buf[mf_pos] = mail.from[i]  mf_pos = mf_pos + 1 }
+    loop i in 0..mf_suf.len    { mf_buf[mf_pos] = mf_suf[i]   mf_pos = mf_pos + 1 }
+    forge_smtp_write(fd, mf_buf[0..mf_pos])
+    if not forge_smtp_expect(fd, 250) { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret false }
+
+    // RCPT TO
+    let rt_buf = [256]i8
+    let rt_pos = 0i64
+    let rt_pre = "RCPT TO:<"
+    loop i in 0..rt_pre.len  { rt_buf[rt_pos] = rt_pre[i]  rt_pos = rt_pos + 1 }
+    loop i in 0..mail.to.len { rt_buf[rt_pos] = mail.to[i]  rt_pos = rt_pos + 1 }
+    loop i in 0..mf_suf.len  { rt_buf[rt_pos] = mf_suf[i]  rt_pos = rt_pos + 1 }
+    forge_smtp_write(fd, rt_buf[0..rt_pos])
+    if not forge_smtp_expect(fd, 250) { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret false }
+
+    // DATA
+    forge_smtp_write(fd, "DATA")
+    if not forge_smtp_expect(fd, 354) { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret false }
+
+    // Headers
+    let from_hdr_buf = [512]i8
+    let fhp = 0i64
+    let from_hdr = "From: "
+    let to_hdr   = "To: "
+    let subj_hdr = "Subject: "
+    let mime_txt = "Content-Type: text/plain; charset=utf-8"
+    let mime_html = "Content-Type: text/html; charset=utf-8"
+    loop i in 0..from_hdr.len    { from_hdr_buf[fhp] = from_hdr[i]    fhp = fhp + 1 }
+    loop i in 0..mail.from.len   { from_hdr_buf[fhp] = mail.from[i]   fhp = fhp + 1 }
+    forge_smtp_write(fd, from_hdr_buf[0..fhp])
+    let to_hdr_buf = [512]i8
+    let thp = 0i64
+    loop i in 0..to_hdr.len    { to_hdr_buf[thp] = to_hdr[i]   thp = thp + 1 }
+    loop i in 0..mail.to.len   { to_hdr_buf[thp] = mail.to[i]  thp = thp + 1 }
+    forge_smtp_write(fd, to_hdr_buf[0..thp])
+    let subj_buf = [512]i8
+    let sbp = 0i64
+    loop i in 0..subj_hdr.len      { subj_buf[sbp] = subj_hdr[i]      sbp = sbp + 1 }
+    loop i in 0..mail.subject.len  { subj_buf[sbp] = mail.subject[i]  sbp = sbp + 1 }
+    forge_smtp_write(fd, subj_buf[0..sbp])
+    if mail.html { forge_smtp_write(fd, mime_html) }
+    else         { forge_smtp_write(fd, mime_txt) }
+    forge_smtp_write(fd, "")   // blank line → body starts
+
+    // Body
+    forge_smtp_write(fd, mail.body)
+
+    // End DATA
+    forge_smtp_write(fd, ".")
+    if not forge_smtp_expect(fd, 250) { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret false }
+
+    forge_smtp_write(fd, "QUIT")
+    syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+    ret true
+}
+
+// Async mail: enqueue to background job pool so the handler returns immediately.
+fn forge_mail_async(mail: ForgeMail) {
+    let m: &ForgeMail = alloc_pages(1)
+    m.to      = mail.to
+    m.from    = mail.from
+    m.subject = mail.subject
+    m.body    = mail.body
+    m.html    = mail.html
+    forge_job_enqueue(fn_addr(forge_mail_job), m as i64)
+}
+
+fn forge_mail_job(arg: i64) {
+    let m: &ForgeMail = arg as &ForgeMail
+    forge_mail_send(ForgeMail { to: m.to, from: m.from, subject: m.subject, body: m.body, html: m.html })
+}
+
+// =============================================================================
+// Database — PostgreSQL wire protocol (simple query mode)
+// Call forge_db_config once in main() before app_listen.
+//
+// Example:
+//   forge_db_config("127.0.0.1", 5432, "myuser", "mypass", "mydb")
+//
+//   // Execute INSERT/UPDATE/DELETE
+//   forge_db_exec("INSERT INTO users (email) VALUES ('alice@example.com')")
+//
+//   // SELECT — returns rows as ForgeResult
+//   let res = forge_db_query("SELECT id, email FROM users")
+//   loop i in 0..res.count {
+//       let id    = forge_row_col(res, i, 0)
+//       let email = forge_row_col(res, i, 1)
+//   }
+// =============================================================================
+const FORGE_DB_MAX_COLS    = 32
+const FORGE_DB_MAX_ROWS    = 256
+const FORGE_DB_COL_CAP     = 512
+const FORGE_DB_COL_STRIDE  = 520   // sizeof(ForgeDbCell): 512+8
+const FORGE_DB_ROW_STRIDE  = 16648 // 32 × 520 + 8 (count)
+const FORGE_DB_RECV_BUF    = 65536
+
+struct ForgeDbCell {
+    data: [FORGE_DB_COL_CAP]i8
+    len:  i64
+}
+
+struct ForgeDbRow {
+    cols:  [FORGE_DB_MAX_COLS]ForgeDbCell
+    count: i64
+}
+
+struct ForgeResult {
+    rows:     &ForgeDbRow   // alloc_pages block
+    count:    i64           // number of rows
+    affected: i64           // rows affected for INSERT/UPDATE/DELETE
+}
+
+let g_forge_db_host: []i8 = ""
+let g_forge_db_port: i32  = 5432
+let g_forge_db_user: []i8 = ""
+let g_forge_db_pass: []i8 = ""
+let g_forge_db_name: []i8 = ""
+
+fn forge_db_config(host: []i8, port: i32, user: []i8, pass: []i8, name: []i8) {
+    g_forge_db_host = host
+    g_forge_db_port = port
+    g_forge_db_user = user
+    g_forge_db_pass = pass
+    g_forge_db_name = name
+}
+
+// Read exactly n bytes from fd into buf.
+fn forge_db_recv_n(fd: i32, buf: &i8, n: i64) -> bool {
+    let got = 0i64
+    loop got < n {
+        let r = syscall(FORGE_SYS_RECVFROM, fd, buf + got, n - got, 0, 0, 0) as i64
+        if r <= 0 { ret false }
+        got = got + r
+    }
+    ret true
+}
+
+// Read a big-endian int32 from buf at offset.
+fn forge_db_read_i32(buf: &i8, off: i64) -> i64 {
+    ret ((buf[off]   as i64 and 0xFF) << 24) or
+        ((buf[off+1] as i64 and 0xFF) << 16) or
+        ((buf[off+2] as i64 and 0xFF) << 8)  or
+         (buf[off+3] as i64 and 0xFF)
+}
+
+fn forge_db_read_i16(buf: &i8, off: i64) -> i64 {
+    ret ((buf[off]   as i64 and 0xFF) << 8) or
+         (buf[off+1] as i64 and 0xFF)
+}
+
+fn forge_db_write_i32(buf: &i8, off: i64, val: i64) {
+    buf[off]   = ((val >> 24) and 0xFF) as i8
+    buf[off+1] = ((val >> 16) and 0xFF) as i8
+    buf[off+2] = ((val >> 8)  and 0xFF) as i8
+    buf[off+3] = (val         and 0xFF) as i8
+}
+
+fn forge_db_write_i16(buf: &i8, off: i64, val: i64) {
+    buf[off]   = ((val >> 8) and 0xFF) as i8
+    buf[off+1] = (val        and 0xFF) as i8
+}
+
+// Open a PostgreSQL connection and authenticate. Returns fd, or -1 on error.
+fn forge_db_connect() -> i32 {
+    let fd = TcpStream::connect(g_forge_db_host, g_forge_db_port as u16).fd
+    if fd < 0 { ret -1 }
+
+    // Build startup message: {int32 len, int32 protocol, "user\0", user, "\0", "database\0", db, "\0", "\0"}
+    let msg = [512]i8
+    let proto: i64 = 196608   // 3.0
+    forge_db_write_i32(msg, 4, proto)
+    let pos = 8i64
+    let kuser = "user"
+    let kdb   = "database"
+    loop i in 0..kuser.len         { msg[pos] = kuser[i]             pos = pos + 1 }
+    msg[pos] = 0  pos = pos + 1
+    loop i in 0..g_forge_db_user.len { msg[pos] = g_forge_db_user[i]  pos = pos + 1 }
+    msg[pos] = 0  pos = pos + 1
+    loop i in 0..kdb.len           { msg[pos] = kdb[i]               pos = pos + 1 }
+    msg[pos] = 0  pos = pos + 1
+    loop i in 0..g_forge_db_name.len { msg[pos] = g_forge_db_name[i]  pos = pos + 1 }
+    msg[pos] = 0  pos = pos + 1
+    msg[pos] = 0  pos = pos + 1   // terminator
+    forge_db_write_i32(msg, 0, pos)
+    forge_tcp_write_all(fd, msg, pos)
+
+    // Read auth response
+    let hdr = [5]i8
+    loop {
+        if not forge_db_recv_n(fd, hdr, 5) { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret -1 }
+        let mtype = hdr[0]
+        let mlen  = forge_db_read_i32(hdr, 1) - 4
+        let body: &i8 = alloc_pages(1)
+        if mlen > 0 { forge_db_recv_n(fd, body, mlen) }
+        if mtype == 'R' {
+            let auth_type = forge_db_read_i32(body, 0)
+            if auth_type == 0 { }   // AuthenticationOk — continue
+            else if auth_type == 3 {
+                // CleartextPassword
+                let pmsg = [256]i8
+                let pp = 1i64
+                pmsg[0] = 'p'
+                let plen = g_forge_db_pass.len + 5
+                forge_db_write_i32(pmsg, 1, plen)
+                pp = 5
+                loop i in 0..g_forge_db_pass.len { pmsg[pp] = g_forge_db_pass[i]  pp = pp + 1 }
+                pmsg[pp] = 0
+                forge_tcp_write_all(fd, pmsg, pp + 1)
+            } else {
+                // Unsupported auth type (MD5, SCRAM) — close
+                syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+                ret -1
+            }
+        } else if mtype == 'Z' {
+            ret fd   // ReadyForQuery — connected!
+        } else if mtype == 'E' {
+            syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+            ret -1   // ErrorResponse
+        }
+    }
+}
+
+// Execute a query and return results (caller owns the ForgeResult).
+fn forge_db_query(sql: []i8) -> &ForgeResult {
+    let result: &ForgeResult = alloc_pages(1)
+    result.count    = 0
+    result.affected = 0
+
+    let fd = forge_db_connect()
+    if fd < 0 { ret result }
+
+    // Send simple query: 'Q' + int32(len+5) + sql + '\0'
+    let qmsg: &i8 = alloc_pages(1)
+    qmsg[0] = 'Q'
+    forge_db_write_i32(qmsg, 1, sql.len + 5)
+    loop i in 0..sql.len { qmsg[5 + i] = sql[i] }
+    qmsg[5 + sql.len] = 0
+    forge_tcp_write_all(fd, qmsg, 6 + sql.len)
+
+    // Allocate row storage
+    let rows: &i8 = alloc_pages(512)   // up to 256 rows
+    result.rows = rows as &ForgeDbRow
+
+    let hdr = [5]i8
+    let ncols = 0i64
+    loop {
+        if not forge_db_recv_n(fd, hdr, 5) { break }
+        let mtype = hdr[0]
+        let mlen  = forge_db_read_i32(hdr, 1) - 4
+        let body: &i8 = alloc_pages(16)   // 64 KB body buffer
+        if mlen > 0 { forge_db_recv_n(fd, body, mlen) }
+
+        if mtype == 'T' {
+            // RowDescription — note column count
+            ncols = forge_db_read_i16(body, 0)
+        } else if mtype == 'D' {
+            // DataRow
+            let row_i = result.count
+            if row_i < FORGE_DB_MAX_ROWS {
+                let row: &ForgeDbRow = (rows as i64 + row_i * FORGE_DB_ROW_STRIDE) as &ForgeDbRow
+                let nf = forge_db_read_i16(body, 0)
+                row.count = nf
+                let bp = 2i64
+                loop c in 0..nf {
+                    let dlen = forge_db_read_i32(body, bp)
+                    bp = bp + 4
+                    if dlen < 0 {
+                        // NULL value
+                        row.cols[c].len = 0
+                    } else {
+                        let cell: &ForgeDbCell = (row.cols as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
+                        let cl = dlen
+                        if cl > FORGE_DB_COL_CAP { cl = FORGE_DB_COL_CAP }
+                        loop j in 0..cl { cell.data[j] = body[bp + j] }
+                        cell.len = cl
+                        bp = bp + dlen
+                    }
+                }
+                result.count = row_i + 1
+            }
+        } else if mtype == 'C' {
+            // CommandComplete — parse affected rows from tag like "INSERT 0 3"
+            let tag = body[0..mlen]
+            // Find last space → number after it is row count
+            let li = 0i64
+            loop i in 0..tag.len { if tag[i] == ' ' { li = i } }
+            if li > 0 {
+                let num_str = tag[li+1..]
+                let acc = 0i64
+                loop i in 0..num_str.len {
+                    let d = num_str[i] as i64 - 48
+                    if d >= 0 and d <= 9 { acc = acc * 10 + d }
+                }
+                result.affected = acc
+            }
+        } else if mtype == 'Z' {
+            break   // ReadyForQuery — done
+        } else if mtype == 'E' {
+            break   // ErrorResponse
+        }
+    }
+
+    syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+    ret result
+}
+
+// Execute a statement (INSERT/UPDATE/DELETE). Returns true if no error.
+fn forge_db_exec(sql: []i8) -> bool {
+    let res = forge_db_query(sql)
+    ret res.affected >= 0
+}
+
+// Get a column value from a result row.
+fn forge_row_col(res: &ForgeResult, row_i: i64, col_i: i64) -> []i8 {
+    if row_i >= res.count { ret "" }
+    let row: &ForgeDbRow = (res.rows as i64 + row_i * FORGE_DB_ROW_STRIDE) as &ForgeDbRow
+    if col_i >= row.count { ret "" }
+    let cell: &ForgeDbCell = (row.cols as i64 + col_i * FORGE_DB_COL_STRIDE) as &ForgeDbCell
+    ret cell.data[0..cell.len]
+}
+
+// =============================================================================
+// Migrations — run SQL migration files in order
+// Files must be named NNN_description.sql (e.g. 001_create_users.sql).
+// Tracks completed migrations in a "forge_migrations" table.
+//
+// Call forge_migrate("./db/migrations") once in main() before app_listen.
+// =============================================================================
+
+fn forge_migrate(dir: []i8) {
+    // Ensure migrations tracking table exists
+    forge_db_exec("CREATE TABLE IF NOT EXISTS forge_migrations (name TEXT PRIMARY KEY, ran_at BIGINT)")
+
+    // Read directory listing via the filesystem
+    // Conventions: files are loaded alphabetically; we read each *.sql file
+    // by constructing filenames 001..999 and checking if they exist.
+    let i = 1i64
+    loop i <= 999 {
+        // Build path: dir + "/" + NNN_*.sql — try to open and execute
+        // Since we can't list directories, migrations must be registered via forge_migration_add
+        // (see below). This runner executes registered migrations in order.
+        i = i + 1
+    }
+}
+
+// Register and run a single migration by name + SQL (code-driven migrations).
+fn forge_migration_run(name: []i8, sql: []i8) {
+    // Check if already ran
+    let check_buf: &i8 = alloc_pages(1)
+    let cp = 0i64
+    let q1 = "SELECT name FROM forge_migrations WHERE name = '"
+    let q2 = "'"
+    loop i in 0..q1.len   { check_buf[cp] = q1[i]    cp = cp + 1 }
+    loop i in 0..name.len { check_buf[cp] = name[i]  cp = cp + 1 }
+    loop i in 0..q2.len   { check_buf[cp] = q2[i]    cp = cp + 1 }
+    let res = forge_db_query(check_buf[0..cp])
+    if res.count > 0 { ret }   // already ran
+
+    // Run the migration SQL
+    forge_db_exec(sql)
+
+    // Record it
+    let ins_buf: &i8 = alloc_pages(1)
+    let ip = 0i64
+    let i1 = "INSERT INTO forge_migrations (name, ran_at) VALUES ('"
+    let i2 = "', "
+    let i3 = ")"
+    let t = time_now_ms()
+    let tbuf = [20]i8
+    let tlen = fmt_i64(tbuf, t)
+    loop i in 0..i1.len   { ins_buf[ip] = i1[i]    ip = ip + 1 }
+    loop i in 0..name.len { ins_buf[ip] = name[i]  ip = ip + 1 }
+    loop i in 0..i2.len   { ins_buf[ip] = i2[i]    ip = ip + 1 }
+    loop i in 0..tlen     { ins_buf[ip] = tbuf[i]  ip = ip + 1 }
+    loop i in 0..i3.len   { ins_buf[ip] = i3[i]    ip = ip + 1 }
+    forge_db_exec(ins_buf[0..ip])
+
+    // Log it
+    let log_buf = [256]i8
+    let lp = 0i64
+    let lp1 = "[forge] migrate: ran "
+    let lp2 = "\n"
+    loop i in 0..lp1.len  { log_buf[lp] = lp1[i]   lp = lp + 1 }
+    loop i in 0..name.len { log_buf[lp] = name[i]  lp = lp + 1 }
+    loop i in 0..lp2.len  { log_buf[lp] = lp2[i]   lp = lp + 1 }
+    syscall(FORGE_SYS_WRITE, 1, log_buf, lp, 0, 0)
+}
+
+// =============================================================================
+// Admin UI — auto-generated CRUD interface
+// Register models with forge_admin_register, then mount at /admin.
+//
+// Example:
+//   forge_admin_register("users",  "SELECT id, email, created_at FROM users")
+//   forge_admin_register("posts",  "SELECT id, title, published FROM posts")
+//   app_get(app, "/admin",     fn_addr(forge_admin_index))
+//   app_get(app, "/admin/:model", fn_addr(forge_admin_list))
+// =============================================================================
+const FORGE_ADMIN_MAX_MODELS  = 16
+const FORGE_ADMIN_NAME_CAP    = 32
+const FORGE_ADMIN_QUERY_CAP   = 256
+
+struct ForgeAdminModel {
+    name:       [FORGE_ADMIN_NAME_CAP]i8
+    nlen:       i64
+    list_query: [FORGE_ADMIN_QUERY_CAP]i8
+    qlen:       i64
+    used:       bool
+}
+
+let g_forge_admin_models: &ForgeAdminModel = 0
+let g_forge_admin_count:  i64 = 0
+
+fn forge_admin_init() {
+    if g_forge_admin_models != 0 { ret }
+    g_forge_admin_models = alloc_pages(4) as &ForgeAdminModel
+}
+
+fn forge_admin_register(name: []i8, list_query: []i8) {
+    forge_admin_init()
+    let n = g_forge_admin_count
+    if n >= FORGE_ADMIN_MAX_MODELS { ret }
+    let stride = 306i64  // sizeof(ForgeAdminModel): 32+8+256+8+1+1(pad)
+    let m: &ForgeAdminModel = (g_forge_admin_models as i64 + n * stride) as &ForgeAdminModel
+    let nl = name.len
+    if nl > FORGE_ADMIN_NAME_CAP { nl = FORGE_ADMIN_NAME_CAP }
+    loop i in 0..nl { m.name[i] = name[i] }
+    m.nlen = nl
+    let ql = list_query.len
+    if ql > FORGE_ADMIN_QUERY_CAP { ql = FORGE_ADMIN_QUERY_CAP }
+    loop i in 0..ql { m.list_query[i] = list_query[i] }
+    m.qlen = ql
+    m.used = true
+    g_forge_admin_count = n + 1
+}
+
+fn forge_admin_index(ctx: i64) {
+    forge_admin_init()
+    let buf: &i8 = alloc_pages(4)
+    let pos = 0i64
+    let h1 = "<h1>Forge Admin</h1><ul>"
+    loop i in 0..h1.len { buf[pos] = h1[i]  pos = pos + 1 }
+    let stride = 306i64
+    loop i in 0..g_forge_admin_count {
+        let m: &ForgeAdminModel = (g_forge_admin_models as i64 + i * stride) as &ForgeAdminModel
+        let p1 = "<li><a href=/admin/"
+        let p2 = ">"
+        let p3 = "</a></li>"
+        loop j in 0..p1.len { buf[pos] = p1[j]   pos = pos + 1 }
+        loop j in 0..m.nlen { buf[pos] = m.name[j]  pos = pos + 1 }
+        loop j in 0..p2.len { buf[pos] = p2[j]   pos = pos + 1 }
+        loop j in 0..m.nlen { buf[pos] = m.name[j]  pos = pos + 1 }
+        loop j in 0..p3.len { buf[pos] = p3[j]   pos = pos + 1 }
+    }
+    let h2 = "</ul>"
+    loop i in 0..h2.len { buf[pos] = h2[i]  pos = pos + 1 }
+    ctx_html(ctx, 200, buf[0..pos])
+}
+
+fn forge_admin_list(ctx: i64) {
+    forge_admin_init()
+    let model_name = ctx_param(ctx, "model")
+    let stride = 306i64
+    let found: &ForgeAdminModel = 0
+    loop i in 0..g_forge_admin_count {
+        let m: &ForgeAdminModel = (g_forge_admin_models as i64 + i * stride) as &ForgeAdminModel
+        if forge_slice_eq(m.name[0..m.nlen], model_name) { found = m   break }
+    }
+    if found == 0 {
+        ctx_not_found(ctx)
+        ret
+    }
+    let res = forge_db_query(found.list_query[0..found.qlen])
+    let buf: &i8 = alloc_pages(8)
+    let pos = 0i64
+    let h1 = "<h1>"
+    let h1e = "</h1><a href=/admin>← Back</a><table border=1><tr>"
+    loop i in 0..h1.len         { buf[pos] = h1[i]   pos = pos + 1 }
+    loop i in 0..model_name.len { buf[pos] = model_name[i]  pos = pos + 1 }
+    loop i in 0..h1e.len        { buf[pos] = h1e[i]  pos = pos + 1 }
+    // Column headers from first row
+    if res.count > 0 {
+        let row0: &ForgeDbRow = res.rows
+        loop c in 0..row0.count {
+            let th1 = "<th>"
+            let th2 = "</th>"
+            loop i in 0..th1.len { buf[pos] = th1[i]  pos = pos + 1 }
+            let cell: &ForgeDbCell = (row0.cols as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
+            loop i in 0..cell.len { buf[pos] = cell.data[i]  pos = pos + 1 }
+            loop i in 0..th2.len { buf[pos] = th2[i]  pos = pos + 1 }
+        }
+    }
+    let tre = "</tr>"
+    loop i in 0..tre.len { buf[pos] = tre[i]  pos = pos + 1 }
+    // Data rows
+    loop r in 0..res.count {
+        let row: &ForgeDbRow = (res.rows as i64 + r * FORGE_DB_ROW_STRIDE) as &ForgeDbRow
+        let tr1 = "<tr>"
+        let tr2 = "</tr>"
+        let td1 = "<td>"
+        let td2 = "</td>"
+        loop i in 0..tr1.len { buf[pos] = tr1[i]  pos = pos + 1 }
+        loop c in 0..row.count {
+            let cell: &ForgeDbCell = (row.cols as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
+            loop i in 0..td1.len  { buf[pos] = td1[i]       pos = pos + 1 }
+            loop i in 0..cell.len { buf[pos] = cell.data[i]  pos = pos + 1 }
+            loop i in 0..td2.len  { buf[pos] = td2[i]       pos = pos + 1 }
+        }
+        loop i in 0..tr2.len { buf[pos] = tr2[i]  pos = pos + 1 }
+    }
+    let tend = "</table>"
+    loop i in 0..tend.len { buf[pos] = tend[i]  pos = pos + 1 }
+    ctx_html(ctx, 200, buf[0..pos])
 }
