@@ -1,0 +1,48 @@
+// =============================================================================
+// JDA Forge — Hello World
+// =============================================================================
+// Build: jda build --include ../forge.jda hello.jda
+// Run:   ./hello
+//
+// Test:
+//   curl http://localhost:8080/
+//   curl http://localhost:8080/health
+//   curl http://localhost:8080/greet?name=Alice
+// =============================================================================
+
+fn handle_root(ctx: i64) {
+    ctx_html(ctx, 200, "<h1>Hello from JDA Forge!</h1><p>Zero GC. Zero libc. Pure speed.</p>")
+}
+
+fn handle_health(ctx: i64) {
+    ctx_json(ctx, 200, "{\"status\":\"ok\"}")
+}
+
+fn handle_greet(ctx: i64) {
+    let name = ctx_query(ctx, "name")
+    let buf = [256]i8
+    let pos = 0i64
+    let p1 = "Hello, "
+    let p2 = "!"
+    loop i in 0..p1.len { buf[pos] = p1[i]   pos = pos + 1 }
+    if name.len > 0 {
+        loop i in 0..name.len { buf[pos] = name[i]   pos = pos + 1 }
+    } else {
+        let world = "World"
+        loop i in 0..world.len { buf[pos] = world[i]   pos = pos + 1 }
+    }
+    loop i in 0..p2.len { buf[pos] = p2[i]   pos = pos + 1 }
+    ctx_text(ctx, 200, buf[0..pos])
+}
+
+fn main() {
+    let app = app_new()
+
+    app_use(app, fn_addr(forge_logger))
+
+    app_get(app, "/",       fn_addr(handle_root))
+    app_get(app, "/health", fn_addr(handle_health))
+    app_get(app, "/greet",  fn_addr(handle_greet))
+
+    app_listen(app, 8080)
+}

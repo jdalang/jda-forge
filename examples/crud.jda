@@ -1,0 +1,115 @@
+// =============================================================================
+// JDA Forge — CRUD REST API Example
+// =============================================================================
+// Build: jda build --include ../forge.jda crud.jda
+// Run:   ./crud
+//
+// Endpoints:
+//   GET  /users          list users
+//   GET  /users/:id      get user by id
+//   POST /users          create user (body: {"name":"Alice"})
+//   PUT  /users/:id      update user
+//   DELETE /users/:id    delete user
+// =============================================================================
+
+fn handle_list_users(ctx: i64) {
+    ctx_json(ctx, 200, "[{\"id\":1,\"name\":\"Alice\"},{\"id\":2,\"name\":\"Bob\"}]")
+}
+
+fn handle_get_user(ctx: i64) {
+    let id = ctx_param(ctx, "id")
+    if id.len == 0 {
+        ctx_bad_request(ctx, "missing id")
+        ret
+    }
+    // Build {"id":"<id>","name":"User <id>"}
+    let buf = [256]i8
+    let pos = 0i64
+    let p1 = "{\"id\":\""
+    let p2 = "\",\"name\":\"User "
+    let p3 = "\"}"
+    loop i in 0..p1.len { buf[pos] = p1[i]   pos = pos + 1 }
+    loop i in 0..id.len  { buf[pos] = id[i]   pos = pos + 1 }
+    loop i in 0..p2.len { buf[pos] = p2[i]   pos = pos + 1 }
+    loop i in 0..id.len  { buf[pos] = id[i]   pos = pos + 1 }
+    loop i in 0..p3.len { buf[pos] = p3[i]   pos = pos + 1 }
+    ctx_json(ctx, 200, buf[0..pos])
+}
+
+fn handle_create_user(ctx: i64) {
+    let body = ctx_body(ctx)
+    if body.len == 0 {
+        ctx_bad_request(ctx, "{\"error\":\"request body required\"}")
+        ret
+    }
+    // Parse incoming JSON and echo the name field back
+    match ctx_body_json(ctx) {
+        ok(val) => {
+            match val.get("name") {
+                ok(name_val) => {
+                    match name_val.as_str() {
+                        ok(name) => {
+                            // Build {"id":3,"name":"<name>","created":true}
+                            let buf = [256]i8
+                            let pos = 0i64
+                            let p1 = "{\"id\":3,\"name\":\""
+                            let p2 = "\",\"created\":true}"
+                            loop i in 0..p1.len  { buf[pos] = p1[i]   pos = pos + 1 }
+                            loop i in 0..name.len { buf[pos] = name[i]  pos = pos + 1 }
+                            loop i in 0..p2.len  { buf[pos] = p2[i]   pos = pos + 1 }
+                            ctx_json(ctx, 201, buf[0..pos])
+                        }
+                        err(_) => {
+                            ctx_bad_request(ctx, "{\"error\":\"name must be a string\"}")
+                        }
+                    }
+                }
+                err(_) => {
+                    ctx_bad_request(ctx, "{\"error\":\"name field required\"}")
+                }
+            }
+        }
+        err(_) => {
+            ctx_bad_request(ctx, "{\"error\":\"invalid JSON body\"}")
+        }
+    }
+}
+
+fn handle_update_user(ctx: i64) {
+    let id = ctx_param(ctx, "id")
+    let buf = [256]i8
+    let pos = 0i64
+    let p1 = "{\"id\":\""
+    let p2 = "\",\"updated\":true}"
+    loop i in 0..p1.len { buf[pos] = p1[i]   pos = pos + 1 }
+    loop i in 0..id.len  { buf[pos] = id[i]   pos = pos + 1 }
+    loop i in 0..p2.len { buf[pos] = p2[i]   pos = pos + 1 }
+    ctx_json(ctx, 200, buf[0..pos])
+}
+
+fn handle_delete_user(ctx: i64) {
+    ctx_no_content(ctx)
+}
+
+// Custom auth middleware — blocks requests without an Authorization header
+fn auth_middleware(ctx: i64) {
+    let token = ctx_header(ctx, "Authorization")
+    if token.len == 0 {
+        ctx_json(ctx, 401, "{\"error\":\"Authorization header required\"}")
+    }
+}
+
+fn main() {
+    let app = app_new()
+
+    app_use(app, fn_addr(forge_logger))
+    app_use(app, fn_addr(forge_cors))
+
+    app_get   (app, "/users",     fn_addr(handle_list_users))
+    app_get   (app, "/users/:id", fn_addr(handle_get_user))
+    app_post  (app, "/users",     fn_addr(handle_create_user))
+    app_put   (app, "/users/:id", fn_addr(handle_update_user))
+    app_delete(app, "/users/:id", fn_addr(handle_delete_user))
+
+    app_listen(app, 8080)
+}
