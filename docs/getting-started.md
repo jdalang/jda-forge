@@ -516,28 +516,35 @@ All of these return `[]i8` (a byte slice). An empty slice (`.len == 0`) means th
 
 ### A JSON API endpoint
 
+Render all columns of a result set in one call:
+
 ```jda
-// app/controllers/api_controller.jda
-
 fn api_posts_index(ctx: i64) {
-    let posts = post_all()
-    let buf = forge_buf_new(4)
+    ctx_json_result(ctx, post_all())
+}
 
-    buf.write("[")
-    loop r in 0..posts.count {
-        if r > 0 { buf.write(",") }
-        let id     = forge_result_col(posts, r, "id")
-        let title  = forge_result_col(posts, r, "title")
-        let author = forge_result_col(posts, r, "author")
-        buf.write("{\"id\":").write(id)
-           .write(",\"title\":\"").write(forge_json_escape(title))
-           .write("\",\"author\":\"").write(forge_json_escape(author)).write("\"}")
-    }
-    buf.write("]")
-
-    ctx_json(ctx, 200, buf.done())
+fn api_post_show(ctx: i64) {
+    ctx_json_row(ctx, post_find(ctx_param(ctx, "id")))
 }
 ```
+
+`ctx_json_result` serializes every column of every row automatically. `ctx_json_row` serializes the first row as a JSON object.
+
+**Selective columns — `ForgeJson` builder:**
+
+```jda
+fn api_post_show(ctx: i64) {
+    let post = post_find(ctx_param(ctx, "id"))
+    if post.count == 0 { ctx_not_found(ctx)  ret }
+    let j = forge_json_new()
+    j.field("id",    forge_result_col(post, 0, "id"))
+     .field("title", forge_result_col(post, 0, "title"))
+     .field_raw("published", forge_result_col(post, 0, "published"))
+    ctx_json(ctx, 200, j.done())
+}
+```
+
+Use `.field(key, val)` for string values (auto-escaped) and `.field_raw(key, val)` for numbers, booleans, or nested JSON.
 
 ### Handling route parameters
 

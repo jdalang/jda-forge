@@ -3980,6 +3980,76 @@ fn forge_result_to_json(res: &ForgeResult) -> []i8 {
     ret buf[0..pos]
 }
 
+// Render a full ForgeResult as a JSON array — all columns, all rows
+fn ctx_json_result(ctx: i64, res: &ForgeResult) {
+    ctx_json(ctx, 200, forge_result_to_json(res))
+}
+
+// Render the first row of a ForgeResult as a JSON object
+fn ctx_json_row(ctx: i64, res: &ForgeResult) {
+    ctx_json(ctx, 200, forge_row_to_json(res, 0))
+}
+
+// ---------------------------------------------------------------------------
+// ForgeJson — selective JSON object builder
+//
+//   let post = post_find(id)
+//   let j = forge_json_new()
+//   j.field("id",    forge_result_col(post, 0, "id"))
+//    .field("title", forge_result_col(post, 0, "title"))
+//   ctx_json(ctx, 200, j.done())
+// ---------------------------------------------------------------------------
+
+struct ForgeJson {
+    buf:   &i8
+    pos:   i64
+    empty: bool
+}
+
+fn forge_json_new() -> &ForgeJson {
+    let j: &ForgeJson = alloc_pages(1)
+    j.buf   = alloc_pages(8)
+    j.pos   = 0
+    j.empty = true
+    j.buf[j.pos] = '{'  j.pos = j.pos + 1
+    ret j
+}
+
+fn forge_json_field(j: &ForgeJson, key: []i8, val: []i8) -> &ForgeJson {
+    if !j.empty { j.buf[j.pos] = ','  j.pos = j.pos + 1 }
+    j.empty = false
+    j.buf[j.pos] = '"'  j.pos = j.pos + 1
+    loop i in 0..key.len { j.buf[j.pos] = key[i]  j.pos = j.pos + 1 }
+    j.buf[j.pos] = '"'  j.pos = j.pos + 1
+    j.buf[j.pos] = ':'  j.pos = j.pos + 1
+    j.buf[j.pos] = '"'  j.pos = j.pos + 1
+    loop i in 0..val.len {
+        let ch = val[i]
+        if ch == '"'  { j.buf[j.pos] = '\\'  j.pos = j.pos + 1 }
+        if ch == '\\' { j.buf[j.pos] = '\\'  j.pos = j.pos + 1 }
+        j.buf[j.pos] = ch  j.pos = j.pos + 1
+    }
+    j.buf[j.pos] = '"'  j.pos = j.pos + 1
+    ret j
+}
+
+// field_raw — value is inserted as-is (use for numbers, booleans, nested objects)
+fn forge_json_field_raw(j: &ForgeJson, key: []i8, raw: []i8) -> &ForgeJson {
+    if !j.empty { j.buf[j.pos] = ','  j.pos = j.pos + 1 }
+    j.empty = false
+    j.buf[j.pos] = '"'  j.pos = j.pos + 1
+    loop i in 0..key.len { j.buf[j.pos] = key[i]  j.pos = j.pos + 1 }
+    j.buf[j.pos] = '"'  j.pos = j.pos + 1
+    j.buf[j.pos] = ':'  j.pos = j.pos + 1
+    loop i in 0..raw.len { j.buf[j.pos] = raw[i]  j.pos = j.pos + 1 }
+    ret j
+}
+
+fn forge_json_done(j: &ForgeJson) -> []i8 {
+    j.buf[j.pos] = '}'  j.pos = j.pos + 1
+    ret j.buf[0..j.pos]
+}
+
 // =============================================================================
 // Section H — Controller Layer
 // =============================================================================
