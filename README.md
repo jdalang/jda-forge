@@ -73,9 +73,9 @@ Walkthrough: [docs/blog-example.md](docs/blog-example.md)
 
 **Routing** — resources DSL, namespaces, middleware, path helpers, before/after filters.
 
-**ORM** — Rails-style query builder (`where_eq`, `order`, `limit`, `joins`, `group`, `having`, aggregates, scopes, batch processing). Auto-generates typed CRUD functions from migration files.
+**ORM** — Rails-style query builder (`where_eq`, `order`, `limit`, `joins`, `group`, `having`, aggregates, scopes, batch processing). Tables with `deleted_at` get automatic soft-delete scoping — `post_all()` excludes deleted rows; `post_with_deleted()` and `post_only_deleted()` opt back in. Auto-generates typed CRUD per table including `post_reload`, `post_toggle`, `post_increment`, `post_decrement`, plus `forge_q_pick`, `forge_q_reorder`, `forge_q_reverse_order`, `forge_q_find_each`.
 
-**Declarative validations** — declare once at startup, fire automatically on every save:
+**Declarative validations** — declare once at startup, fire automatically on every save with full lifecycle (`FORGE_CB_BEFORE_VALIDATION` / `FORGE_CB_AFTER_VALIDATION`). Supports create-only or update-only rules via `forge_field_on_create` / `forge_field_on_update`:
 
 ```jda
 fn post_validations_init() {
@@ -88,19 +88,21 @@ fn post_validations_init() {
 
 **Strong parameters** — `ctx_permit(ctx, "title, body, author")` whitelists and extracts form fields.
 
-**Callbacks** — `FORGE_CB_BEFORE_SAVE`, `AFTER_SAVE`, `BEFORE_CREATE`, `AFTER_CREATE`, `BEFORE_UPDATE`, `AFTER_UPDATE`, `BEFORE_DELETE`, `AFTER_DELETE`, `AFTER_COMMIT`, `AFTER_ROLLBACK`.
+**Callbacks** — `FORGE_CB_BEFORE_VALIDATION`, `AFTER_VALIDATION`, `BEFORE_SAVE`, `AFTER_SAVE`, `BEFORE_CREATE`, `AFTER_CREATE`, `BEFORE_UPDATE`, `AFTER_UPDATE`, `BEFORE_DELETE`, `AFTER_DELETE`, `AFTER_COMMIT`, `AFTER_ROLLBACK`.
 
 **Transactions** — `forge_begin/commit/rollback()` or `forge_transaction(fn_ptr)`.
 
-**Controllers** — thin action functions, `ctx_render`, `ctx_redirect`, flash, strong params, format-aware `ctx_respond_to`.
+**Controllers** — thin action functions, `ctx_render`, `ctx_redirect`, `ctx_redirect_back`, flash (`ctx_flash_now`, `ctx_flash_keep`), strong params, format-aware `ctx_respond_to`. HTTP caching via `ctx_etag`, `ctx_last_modified`, `ctx_stale`.
+
+**Before actions** — `forge_ctrl_before(ctrl, fn_ptr, "show, edit")` and `forge_ctrl_before_except(ctrl, fn_ptr, "index, new")` for Rails-style controller filters.
 
 **JSON API** — `ctx_json_ok`, `ctx_json_created`, `ctx_json_errors` (422 with validation body), `forge_result_to_json`, `ForgeJson` builder for selective fields.
 
 **Sessions & CSRF** — cookie sessions, automatic CSRF token generation and validation.
 
-**Security** — bcrypt password hashing (`forge_secure_password_set/verify`), SQL-injection-safe escaping, HTML escaping, secure headers middleware, JWT auth helpers.
+**Security** — bcrypt password hashing (`forge_secure_password_set/verify`), SQL-injection-safe escaping, HTML escaping, secure headers middleware, JWT auth helpers, `forge_token_generate` (cryptographically random tokens), `forge_token_eq_timing` (constant-time comparison), per-key rate limiting (`forge_rate_limit_key`).
 
-**Background jobs** — worker pool, `forge_job_enqueue(fn_addr(job_fn), arg)`.
+**Background jobs** — worker pool, `forge_job_enqueue(fn_addr(job_fn), arg)`, `forge_job_enqueue_retry(fn_ptr, arg, max_retries)` for automatic retry on failure.
 
 **Mailer** — SMTP, HTML/text bodies, async delivery.
 
@@ -108,9 +110,11 @@ fn post_validations_init() {
 
 **Migrations** — numbered SQL files, auto-run at startup, tracked in database.
 
-**Testing** — in-process request tests, no sockets, chainable assertions.
+**Testing** — in-process request tests, no sockets, chainable assertions. `forge_test_fixture` inserts test records, `forge_test_rollback` / `forge_test_setup` wrap each test in a transaction, `forge_test_res_json` asserts JSON response keys.
 
-**Caching, file uploads, i18n, serializers** — all built in.
+**View helpers** — `forge_time_ago`, `forge_distance_of_time`, `forge_number_to_currency`, `forge_number_with_delimiter`, `forge_word_wrap` for formatting in templates.
+
+**Caching** — `forge_cache_fetch(key, ttl, fn_ptr)` for memoized caching. File uploads, i18n, serializers all built in.
 
 ---
 

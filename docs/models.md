@@ -103,22 +103,28 @@ Everything else (`post_q`, `post_all`, `post_find`, `post_create`, `post_update`
 
 ### Auto-generated CRUD (`_build/models.jda`)
 
-`forge build` (and `forge server`) runs `forge compile-models` which reads every `CREATE TABLE` in `db/migrate/` and emits one block per table:
+`forge build` (and `forge server`) runs `forge compile-models` which reads every `CREATE TABLE` in `db/migrate/` and emits one block per table. When the table has a `deleted_at` column, finders are wrapped in `forge_q_where_not_deleted` so they automatically exclude soft-deleted rows:
 
 ```jda
-// === posts ===
-fn post_q()                              -> &ForgeQuery  { ret forge_q("posts") }
-fn post_all()                            -> &ForgeResult { ret forge_q("posts").order_desc("created_at").exec() }
-fn post_find(id: []i8)                   -> &ForgeResult { ret forge_find("posts", id) }
-fn post_find_by(col: []i8, val: []i8)   -> &ForgeResult { ret forge_find_by("posts", col, val) }
-fn post_where(col: []i8, val: []i8)     -> &ForgeQuery  { ret forge_q("posts").where_eq(col, val) }
-fn post_count()                          -> i64          { ret forge_q("posts").count() }
-fn post_exists(id: []i8)                -> bool         { ret forge_q("posts").where_eq("id", id).exists() }
-fn post_delete(id: []i8)                -> bool         { ret forge_soft_delete("posts", id) }
-fn post_destroy(id: []i8)               -> bool         { ret forge_hard_delete("posts", id) }
-fn post_touch(id: []i8)                 -> bool         { ret forge_touch("posts", id) }
+// === posts === (table has deleted_at — soft-delete scoped)
+fn post_q()                 -> &ForgeQuery  { ret forge_q_where_not_deleted(forge_q("posts")) }
+fn post_all()               -> &ForgeResult { ret forge_q_where_not_deleted(forge_q("posts")).order_desc("created_at").exec() }
+fn post_find(id: []i8)      -> &ForgeResult { ret forge_q_where_not_deleted(forge_q("posts")).where_eq("id", id).first() }
+fn post_find_by(col: []i8, val: []i8)   -> &ForgeResult { ret forge_q_where_not_deleted(forge_q("posts")).where_eq(col, val).first() }
+fn post_where(col: []i8, val: []i8)     -> &ForgeQuery  { ret forge_q_where_not_deleted(forge_q("posts")).where_eq(col, val) }
+fn post_count()             -> i64  { ret forge_q_where_not_deleted(forge_q("posts")).count() }
+fn post_exists(id: []i8)    -> bool { ret forge_q_where_not_deleted(forge_q("posts")).where_eq("id", id).exists() }
+fn post_with_deleted()      -> &ForgeQuery { ret forge_q_with_deleted(forge_q("posts")) }
+fn post_only_deleted()      -> &ForgeQuery { ret forge_q_only_deleted(forge_q("posts")) }
+fn post_delete(id: []i8)    -> bool { ret forge_soft_delete("posts", id) }
+fn post_destroy(id: []i8)   -> bool { ret forge_hard_delete("posts", id) }
+fn post_touch(id: []i8)     -> bool { ret forge_touch("posts", id) }
 fn post_update_column(id: []i8, col: []i8, val: []i8) -> bool { ret forge_update_column("posts", id, col, val) }
 fn post_find_or_create_by(col: []i8, val: []i8) -> &ForgeResult { ret forge_find_or_create_by("posts", col, val) }
+fn post_reload(id: []i8)    -> &ForgeResult { ret forge_reload("posts", id) }
+fn post_toggle(id: []i8, col: []i8) -> bool { ret forge_toggle("posts", id, col) }
+fn post_increment(id: []i8, col: []i8, by: i64) -> bool { ret forge_increment("posts", id, col, by) }
+fn post_decrement(id: []i8, col: []i8, by: i64) -> bool { ret forge_decrement("posts", id, col, by) }
 fn post_create(title: []i8, body: []i8, user_id: []i8) -> bool {
     ret forge_attrs_new()
         .set("title",   title)
@@ -137,7 +143,7 @@ fn post_create_from(attrs: &ForgeAttrs) -> bool { ret forge_attrs_insert(attrs, 
 fn post_update_from(id: []i8, attrs: &ForgeAttrs) -> bool { ret forge_attrs_update(attrs, "posts", id) }
 ```
 
-Column order in `post_create` / `post_update` matches the migration. `BOOLEAN` columns with defaults (e.g. `published`) are excluded from the generated params since the database default handles them — toggle them with `post_update_column` or `.update_all`.
+Column order in `post_create` / `post_update` matches the migration. `BOOLEAN` columns with defaults (e.g. `published`) are excluded from the generated params — toggle them with `post_toggle` or `post_update_column`.
 
 ---
 
@@ -244,6 +250,40 @@ Returns the first row matching `col = val`, or inserts a minimal record if none 
 let res = post_find_or_create_by("slug", "hello-world")
 ```
 
+### post_with_deleted / post_only_deleted
+
+Return a `&ForgeQuery` that includes soft-deleted rows (`with_deleted`) or queries only deleted rows (`only_deleted`). Only generated for tables with a `deleted_at` column.
+
+```jda
+let all_including_deleted = post_with_deleted().exec()
+let trash = post_only_deleted().order_desc("deleted_at").exec()
+```
+
+### post_reload
+
+Re-fetches the record from the database. Bypasses soft-delete scoping so it works on deleted rows too.
+
+```jda
+let fresh = post_reload("42")
+```
+
+### post_toggle
+
+Flips a boolean column in place: `SET col = NOT col`.
+
+```jda
+post_toggle("42", "published")    // flips the published flag
+```
+
+### post_increment / post_decrement
+
+Atomically increments or decrements a numeric column by `by`. Bypasses validations and callbacks.
+
+```jda
+post_increment("42", "view_count", 1)
+post_decrement("42", "stock",      3)
+```
+
 ### post_create_from / post_update_from
 
 Insert or update from a `&ForgeAttrs` built by `ctx_permit`. Declarative validations fire automatically.
@@ -290,7 +330,7 @@ All query builder methods return `&ForgeQuery` unless noted otherwise, making th
 let q = forge_q("posts")
 ```
 
-Creates a new query targeting the given table. All subsequent methods operate on this query. `forge_q` automatically appends `WHERE deleted_at IS NULL` unless you are using `forge_purge` or have explicitly opted out.
+Creates a new query targeting the given table. All subsequent methods operate on this query. `forge_q` does **not** add any soft-delete filter by default — use `forge_q_where_not_deleted(q)` to add `WHERE deleted_at IS NULL`, or use the generated per-table helpers (`post_q()`, `post_all()`, etc.) which apply the filter automatically when the table has a `deleted_at` column.
 
 ---
 
@@ -610,6 +650,34 @@ Returns a `&ForgeResult` containing only the values of a single column.
 let ids = forge_q("posts").where_eq("user_id", uid).pluck("id")
 ```
 
+#### .pick(col)
+
+Returns the value of a single column from the first matching row as `[]i8`. Equivalent to `.select(col).first()` then reading the cell.
+
+```jda
+let title = post_q().where_eq("slug", "hello-world").pick("title")
+```
+
+---
+
+### Ordering (extended)
+
+#### .reorder(col, dir)
+
+Clears the current `ORDER BY` and replaces it with a new one. Useful when overriding a default order set by a scope.
+
+```jda
+let res = post_q().reorder("title", "ASC").exec()
+```
+
+#### .reverse_order()
+
+Flips `ASC` to `DESC` or vice-versa in the current order clause. If no order is set, defaults to `id DESC`.
+
+```jda
+let oldest_first = post_q().reverse_order().exec()
+```
+
 ---
 
 ### Aggregates
@@ -717,7 +785,9 @@ let res = forge_q("posts")
 
 ## Batch Processing
 
-`forge_find_in_batches` iterates over large result sets without loading all rows into memory at once. It calls a callback function with each batch as a `&ForgeResult`.
+### forge_find_in_batches
+
+Iterates over large result sets in batches without loading all rows into memory. Calls a callback function with each batch as a `&ForgeResult`.
 
 ```jda
 fn process_batch(res: &ForgeResult) {
@@ -730,7 +800,23 @@ fn process_batch(res: &ForgeResult) {
 forge_find_in_batches("users", 500, fn_addr(process_batch))
 ```
 
-The second argument is the batch size. `forge_find_in_batches` issues multiple queries internally, ordering by `id ASC` and using keyset pagination.
+The second argument is the batch size. `forge_find_in_batches` issues multiple queries internally, ordering by `id ASC` and using offset pagination.
+
+### forge_q_find_each
+
+Iterates one row at a time using an existing query. The callback receives a single-row `&ForgeResult` cast to `i64`.
+
+```jda
+fn process_row(row: i64) {
+    let res: &ForgeResult = row as &ForgeResult
+    let email = forge_result_col(res, 0, "email")
+    // process single row...
+}
+
+post_q().where_not_null("email").find_each(fn_addr(process_row))
+```
+
+Use `find_each` when you want full query builder control (filters, ordering) or when you need to process rows one at a time rather than in batches.
 
 ---
 
@@ -844,6 +930,30 @@ forge_field_confirm  ("password", "password_confirmation")
 forge_field_param    ("f", rule, param)      // any rule with a string param
 ```
 
+#### Context-specific validations (create-only / update-only)
+
+`forge_field_on_create` and `forge_field_on_update` mark the most-recently-registered rule so it only fires in one context. Call them immediately after the rule registration:
+
+```jda
+fn user_validations_init() {
+    forge_model("users")
+    forge_field("email", FORGE_V_PRESENCE)
+    forge_field("email", FORGE_V_EMAIL)
+
+    // password required only on create; optional on profile updates
+    forge_field("password", FORGE_V_PRESENCE)
+    forge_field_on_create("password")
+
+    forge_field_min("password", 8)
+    forge_field_on_create("password")
+}
+```
+
+| Function | Effect |
+|---|---|
+| `forge_field_on_create(field)` | Rule fires only when `g_forge_save_context == "create"` |
+| `forge_field_on_update(field)` | Rule fires only when `g_forge_save_context == "update"` |
+
 #### Low-level helpers (pass table explicitly)
 
 ```jda
@@ -858,12 +968,14 @@ forge_validates_min_len(table, field, min)
 
 When `forge_attrs_insert` or `forge_attrs_update` is called, the order is:
 
-1. Declarative validations — abort and set `forge_last_errors()` if any fail
-2. `FORGE_CB_BEFORE_SAVE` callbacks
-3. `FORGE_CB_BEFORE_CREATE` / `FORGE_CB_BEFORE_UPDATE` callbacks
-4. SQL INSERT / UPDATE
-5. On success: `FORGE_CB_AFTER_CREATE` / `FORGE_CB_AFTER_UPDATE` → `FORGE_CB_AFTER_SAVE` → `FORGE_CB_AFTER_COMMIT`
-6. On DB failure: `FORGE_CB_AFTER_ROLLBACK`
+1. `FORGE_CB_BEFORE_VALIDATION` callbacks
+2. Declarative validations — abort and set `forge_last_errors()` if any fail
+3. `FORGE_CB_AFTER_VALIDATION` callbacks
+4. `FORGE_CB_BEFORE_SAVE` callbacks
+5. `FORGE_CB_BEFORE_CREATE` / `FORGE_CB_BEFORE_UPDATE` callbacks
+6. SQL INSERT / UPDATE
+7. On success: `FORGE_CB_AFTER_CREATE` / `FORGE_CB_AFTER_UPDATE` → `FORGE_CB_AFTER_SAVE` → `FORGE_CB_AFTER_COMMIT`
+8. On DB failure: `FORGE_CB_AFTER_ROLLBACK`
 
 For `forge_soft_delete`: `FORGE_CB_BEFORE_DELETE` → SQL → `FORGE_CB_AFTER_DELETE` + `FORGE_CB_AFTER_COMMIT` on success, or `FORGE_CB_AFTER_ROLLBACK` on failure.
 
@@ -1068,6 +1180,8 @@ fn hash_password_before_save(row_ptr: i64) -> bool {
 
 | Constant | Fires |
 |---|---|
+| `FORGE_CB_BEFORE_VALIDATION` | Before declarative validations run |
+| `FORGE_CB_AFTER_VALIDATION` | After declarative validations run (even if validation failed) |
 | `FORGE_CB_BEFORE_SAVE` | Before any INSERT or UPDATE |
 | `FORGE_CB_AFTER_SAVE` | After any INSERT or UPDATE |
 | `FORGE_CB_BEFORE_CREATE` | Before INSERT only |
@@ -1156,16 +1270,29 @@ If a filter sends a response (e.g. `ctx_not_found`), the action and remaining fi
 |---|---|
 | `forge_ctrl_new() -> &ForgeController` | Create a new controller filter set. |
 | `forge_ctrl_before(ctrl, fn_ptr, only)` | Register a before filter. `only` is a comma-separated action list or `""` for all actions. |
+| `forge_ctrl_before_except(ctrl, fn_ptr, except)` | Register a before filter that runs for **all** actions except those listed. |
 | `forge_ctrl_after(ctrl, fn_ptr, only)` | Register an after filter. |
 | `forge_ctrl_register(name, ctrl)` | Bind the controller to a resource name (e.g. `"posts"`). |
 | `ctx_set(ctx, key, val)` | Store an `i64` value on the request context. |
 | `ctx_get(ctx, key) -> i64` | Retrieve a stored value; cast to the original type with `as`. |
 
-### only — matching rules
+### only / except — matching rules
 
+`forge_ctrl_before` uses an `only` list:
 - `""` — fires for every action
 - `"show"` — exact match
 - `"show, edit, update, delete"` — comma-separated, spaces optional
+
+`forge_ctrl_before_except` uses an `except` list and fires for every action **not** in the list:
+
+```jda
+fn posts_before_actions() {
+    let ctrl = forge_ctrl_new()
+    // Set post for everything except index and new
+    forge_ctrl_before_except(ctrl, fn_addr(posts_set_post), "index, new, create")
+    forge_ctrl_register("posts", ctrl)
+}
+```
 
 ---
 
@@ -1177,11 +1304,10 @@ All generated tables include a `deleted_at TIMESTAMP` column. The soft delete he
 
 ```jda
 let ok = forge_soft_delete("posts", id)
+let ok = post_delete(id)    // generated wrapper
 ```
 
-Sets `deleted_at = NOW()`. The row is excluded from all queries built with `forge_q` automatically.
-
-The generated `post_delete` wrapper calls `forge_soft_delete` internally.
+Sets `deleted_at = NOW()`. Generated finders (`post_q`, `post_all`, `post_find`, etc.) exclude soft-deleted rows automatically when the table has a `deleted_at` column.
 
 ### Restoring a soft-deleted row
 
@@ -1195,9 +1321,10 @@ Sets `deleted_at = NULL`, making the row visible again.
 
 ```jda
 let ok = forge_hard_delete("posts", id)     // fires BEFORE/AFTER_DELETE + AFTER_COMMIT
+let ok = post_destroy(id)                   // generated wrapper
 ```
 
-Generated wrapper: `post_destroy(id)` — calls `forge_hard_delete` and fires the full callback lifecycle.
+Fires the full `BEFORE_DELETE` → SQL → `AFTER_DELETE` → `AFTER_COMMIT` callback lifecycle.
 
 ### Hard-deleting a row (no callbacks)
 
@@ -1209,15 +1336,26 @@ Permanently removes the row without firing any callbacks. Like Rails `Model.dele
 
 ### Querying deleted rows
 
-`forge_q` always appends `WHERE deleted_at IS NULL`. To include soft-deleted rows, use `.where_raw` to override:
+Use the helpers that are generated automatically for tables with `deleted_at`, or call the low-level functions directly:
 
 ```jda
-// Include deleted rows
-let res = forge_q("posts").where_raw("1=1").exec()
+// Generated per-table helpers (preferred)
+let with_trash   = post_with_deleted().exec()           // all rows including deleted
+let trash_only   = post_only_deleted().order_desc("deleted_at").exec()
 
-// Only deleted rows
-let res = forge_q("posts").where_not_null("deleted_at").where_raw("deleted_at IS NOT NULL").exec()
+// Low-level, for ad-hoc queries
+let q = forge_q_with_deleted(forge_q("posts"))          // include deleted
+let q = forge_q_only_deleted(forge_q("posts"))          // only deleted
+let q = forge_q_where_not_deleted(forge_q("posts"))     // explicit IS NULL filter
+let q = forge_q_unscope(forge_q("posts"))               // drop filter + ORDER BY
 ```
+
+| Function | SQL effect |
+|---|---|
+| `forge_q_where_not_deleted(q)` | Adds `WHERE deleted_at IS NULL` |
+| `forge_q_with_deleted(q)` | Removes the soft-delete filter |
+| `forge_q_only_deleted(q)` | Adds `WHERE deleted_at IS NOT NULL` |
+| `forge_q_unscope(q)` | Removes soft-delete filter and ORDER BY |
 
 ---
 
@@ -1248,6 +1386,36 @@ Returns the first matching row, or creates a minimal record if none exists.
 ```jda
 let res = forge_find_or_create_by("users", "email", "alice@example.com")
 let res = user_find_or_create_by("email", "alice@example.com")    // generated wrapper
+```
+
+### forge_reload
+
+Re-fetches a record from the database by id. Bypasses soft-delete scoping — works even on deleted rows.
+
+```jda
+let fresh = forge_reload("posts", id)
+let fresh = post_reload(id)    // generated wrapper
+```
+
+### forge_toggle
+
+Flips a boolean column with `SET col = NOT col`. Bypasses validations and callbacks.
+
+```jda
+forge_toggle("posts", id, "published")
+post_toggle(id, "published")    // generated wrapper
+```
+
+### forge_increment / forge_decrement
+
+Atomically adds or subtracts `by` from a numeric column. Bypasses validations and callbacks.
+
+```jda
+forge_increment("posts", id, "view_count", 1)
+forge_decrement("products", id, "stock", qty)
+
+post_increment(id, "view_count", 1)    // generated wrapper
+post_decrement(id, "stock",      qty)  // generated wrapper
 ```
 
 ### forge_attrs_upsert

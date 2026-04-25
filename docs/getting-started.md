@@ -441,18 +441,29 @@ Every time you run `forge build`, Forge reads the migration and emits `_build/mo
 ```jda
 // _build/models.jda  — auto-generated, do not edit
 
-fn post_q()                            -> &ForgeQuery  { ret forge_q("posts") }
-fn post_all()                          -> &ForgeResult { ret forge_q("posts").order_desc("created_at").exec() }
-fn post_find(id: []i8)                 -> &ForgeResult { ret forge_find("posts", id) }
-fn post_find_by(col: []i8, val: []i8) -> &ForgeResult { ret forge_find_by("posts", col, val) }
-fn post_where(col: []i8, val: []i8)   -> &ForgeQuery  { ret forge_q("posts").where_eq(col, val) }
-fn post_count()                        -> i64          { ret forge_q("posts").count() }
-fn post_exists(id: []i8)              -> bool         { ret forge_q("posts").where_eq("id", id).exists() }
-fn post_delete(id: []i8)              -> bool         { ret forge_soft_delete("posts", id) }
-fn post_destroy(id: []i8)             -> bool         { ret forge_hard_delete("posts", id) }
-fn post_touch(id: []i8)               -> bool         { ret forge_touch("posts", id) }
-fn post_update_column(id: []i8, col: []i8, val: []i8) -> bool { ret forge_update_column("posts", id, col, val) }
-fn post_find_or_create_by(col: []i8, val: []i8) -> &ForgeResult { ret forge_find_or_create_by("posts", col, val) }
+// Soft-delete scoped finders (posts has a deleted_at column)
+fn post_q()           -> &ForgeQuery  { ret forge_q_where_not_deleted(forge_q("posts")) }
+fn post_all()         -> &ForgeResult { ret forge_q_where_not_deleted(forge_q("posts")).order_desc("created_at").exec() }
+fn post_find(id)      -> &ForgeResult { ret forge_q_where_not_deleted(forge_q("posts")).where_eq("id", id).first() }
+fn post_find_by(col, val) -> &ForgeResult { ret forge_q_where_not_deleted(forge_q("posts")).where_eq(col, val).first() }
+fn post_where(col, val)   -> &ForgeQuery  { ret forge_q_where_not_deleted(forge_q("posts")).where_eq(col, val) }
+fn post_count()       -> i64  { ret forge_q_where_not_deleted(forge_q("posts")).count() }
+fn post_exists(id)    -> bool { ret forge_q_where_not_deleted(forge_q("posts")).where_eq("id", id).exists() }
+fn post_with_deleted()  -> &ForgeQuery { ret forge_q_with_deleted(forge_q("posts")) }
+fn post_only_deleted()  -> &ForgeQuery { ret forge_q_only_deleted(forge_q("posts")) }
+
+// Mutations
+fn post_delete(id)              -> bool { ret forge_soft_delete("posts", id) }
+fn post_destroy(id)             -> bool { ret forge_hard_delete("posts", id) }
+fn post_touch(id)               -> bool { ret forge_touch("posts", id) }
+fn post_update_column(id, col, val) -> bool { ret forge_update_column("posts", id, col, val) }
+fn post_find_or_create_by(col, val) -> &ForgeResult { ret forge_find_or_create_by("posts", col, val) }
+fn post_reload(id)              -> &ForgeResult { ret forge_reload("posts", id) }
+fn post_toggle(id, col)         -> bool { ret forge_toggle("posts", id, col) }
+fn post_increment(id, col, by)  -> bool { ret forge_increment("posts", id, col, by) }
+fn post_decrement(id, col, by)  -> bool { ret forge_decrement("posts", id, col, by) }
+
+// Typed create/update
 fn post_create(title: []i8, body: []i8, author: []i8) -> bool {
     ret forge_attrs_new()
         .set("title",  title)
@@ -473,14 +484,17 @@ fn post_update_from(id: []i8, attrs: &ForgeAttrs) -> bool { ret forge_attrs_upda
 
 You never write or touch this file.
 
-`forge_q("posts")` automatically excludes soft-deleted rows (`WHERE deleted_at IS NULL`). Chain any query method off `post_q()`:
+`post_q()` and the other generated finders automatically exclude soft-deleted rows. To include them, use the generated escape hatches:
 
 ```jda
-let res = post_q()
-    .where_ilike("title", "%jda%")
-    .order_desc("created_at")
-    .page(2, 20)
-    .exec()
+// All non-deleted posts (default)
+let res = post_q().where_ilike("title", "%jda%").order_desc("created_at").page(2, 20).exec()
+
+// Include deleted rows
+let res = post_with_deleted().order_desc("deleted_at").exec()
+
+// Only deleted rows
+let res = post_only_deleted().exec()
 ```
 
 ---
