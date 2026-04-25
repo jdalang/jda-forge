@@ -1,5 +1,5 @@
-<% fn tmpl_post_row(title: []i8, author: []i8, date: []i8, id: []i8) %>
+<% fn tmpl_post_row(post: &PostRow) %>
 <div class="post">
-  <h2><a href="<%== post_path(id) %>"><%= title %></a></h2>
-  <p class="meta">by <%= author %> on <%== date %></p>
+  <h2><a href="<%== post_path(post.id) %>"><%= post.title %></a></h2>
+  <p class="meta">by <%= post.author %> on <%== post.created_at %></p>
 </div>

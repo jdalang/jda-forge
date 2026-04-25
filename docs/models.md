@@ -145,6 +145,46 @@ fn post_update_from(id: []i8, attrs: &ForgeAttrs) -> bool { ret forge_attrs_upda
 
 Column order in `post_create` / `post_update` matches the migration. `BOOLEAN` columns with defaults (e.g. `published`) are excluded from the generated params — toggle them with `post_toggle` or `post_update_column`.
 
+### Auto-generated row structs
+
+`compile_models` also emits a typed struct and converter for every table so you can access columns as fields instead of repeated `forge_result_col` calls:
+
+```jda
+// Generated for the posts table
+struct PostRow {
+    id:         []i8
+    title:      []i8
+    body:       []i8
+    author:     []i8
+    created_at: []i8
+    updated_at: []i8
+    deleted_at: []i8
+}
+
+fn post_row(result: &ForgeResult, r: i64) -> &PostRow { ... }
+```
+
+Use it in views and anywhere you want cleaner field access:
+
+```jda
+// controller passes &ForgeResult as before
+let post = post_find(id)
+
+// view converts to typed row
+let p = post_row(post, 0)
+p.title      // instead of forge_result_col(post, 0, "title")
+p.id
+p.created_at
+```
+
+In templates call `post_row(posts, r)` inline to pass a typed object to a partial:
+
+```html
+<% loop r in 0..posts.count { %>
+<%== tmpl_post_row(post_row(posts, r)) %>
+<% } %>
+```
+
 ---
 
 ## Generated Query Interface

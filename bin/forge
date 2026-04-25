@@ -85,6 +85,7 @@ EOF
 # ---------------------------------------------------------------------------
 
 snake_case() { echo "$1" | sed 's/\([A-Z]\)/_\1/g' | sed 's/^_//' | tr '[:upper:]' '[:lower:]'; }
+to_pascal()  { echo "$1" | awk '{n=split($0,a,"_"); r=""; for(i=1;i<=n;i++) r=r toupper(substr(a[i],1,1)) substr(a[i],2); print r}'; }
 plural() {
     local w="$1"
     case "$w" in
@@ -437,6 +438,46 @@ compile_models() {
             fi
         done < "$f"
     done
+
+    # Phase 3: emit typed row structs + <table>_row(result, r) converters
+    # These come first so struct types are defined before any function that uses them.
+    {
+        printf '// --- Typed row structs ---\n\n'
+        local si=0
+        while [ $si -lt $ntbls ]; do
+            local stb="${tbl_names[$si]}"
+            local scs="${tbl_cols[$si]:-}"
+            si=$((si+1))
+            [[ "$stb" == forge_* ]] && continue
+
+            local ssing; ssing=$(singularize "$stb")
+            local spascal; spascal=$(to_pascal "$ssing")
+
+            # Build ordered column list: id, user cols, created_at, updated_at, [deleted_at]
+            local scols=("id")
+            local shas_sd=0
+            [[ "${scs}" == *"deleted_at:sd"* ]] && shas_sd=1
+            for scv in ${scs:-}; do
+                local sc="${scv%%:*}"
+                local ssk="${scv##*:}"
+                [ "$ssk" = "sd" ] && continue
+                scols+=("$sc")
+            done
+            scols+=("created_at" "updated_at")
+            [ $shas_sd -eq 1 ] && scols+=("deleted_at")
+
+            printf 'struct %sRow {\n' "$spascal"
+            for scol in "${scols[@]}"; do printf '    %s: []i8\n' "$scol"; done
+            printf '}\n\n'
+
+            printf 'fn %s_row(result: &ForgeResult, r: i64) -> &%sRow {\n' "$ssing" "$spascal"
+            printf '    let row: &%sRow = alloc_pages(1)\n' "$spascal"
+            for scol in "${scols[@]}"; do
+                printf '    row.%s = forge_result_col(result, r, "%s")\n' "$scol" "$scol"
+            done
+            printf '    ret row\n}\n\n'
+        done
+    } >> "$tmp"
 
     # Generate functions for each user table
     local i=0

@@ -1,17 +1,15 @@
 <% fn view_posts_edit(ctx: i64, post: &ForgeResult) %>
-<% let id    = forge_result_col(post, 0, "id") %>
-<% let title = forge_result_col(post, 0, "title") %>
-<% let body  = forge_result_col(post, 0, "body") %>
+<% let p = post_row(post, 0) %>
 <%layout "Edit Post" %>
 <h1>Edit Post</h1>
-<form method="POST" action="<%== post_path(id) %>">
+<form method="POST" action="<%== post_path(p.id) %>">
   <input type="hidden" name="_method" value="PUT">
   <label>Title<br>
-    <input name="title" value="<%= title %>">
+    <input name="title" value="<%= p.title %>">
   </label><br><br>
   <label>Body<br>
-    <textarea name="body" rows="10"><%= body %></textarea>
+    <textarea name="body" rows="10"><%= p.body %></textarea>
   </label><br><br>
   <input type="hidden" name="_csrf" value="<%= forge_csrf_token(ctx) %>">
-  <button>Update</button> <a href="<%== post_path(id) %>">Cancel</a>
+  <button>Update</button> <a href="<%== post_path(p.id) %>">Cancel</a>
 </form>

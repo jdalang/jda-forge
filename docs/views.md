@@ -34,25 +34,36 @@ JDA Forge uses ERB-style `.html.jda` templates — HTML with embedded JDA code b
 - Use `<%= %>` for **user-supplied content**: titles, body text, author names, form values. It calls `forge_h()` which escapes `&`, `<`, `>`, `"`, `'`.
 - Use `<%== %>` for **HTML-safe values**: path helpers, partial calls, pre-built HTML strings, system-generated content like dates or IDs.
 
-### Rendering a partial
+### Rendering a partial with a row object
 
-Partials are just regular JDA functions. Call them with `<%== %>`:
-
-```html
-<%== tmpl_post_row(forge_result_col(posts, r, "title"), forge_result_col(posts, r, "id")) %>
-```
-
-To pass a variable from the caller, declare it in the partial's function signature:
+`forge compile-models` auto-generates a typed row struct and converter for every table. For a `posts` table it produces `PostRow` and `post_row(result, r)`:
 
 ```html
 <%# app/views/posts/_post.html.jda %>
-<% fn tmpl_post_row(title: []i8, id: []i8) %>
+<% fn tmpl_post_row(post: &PostRow) %>
 <div class="post">
-  <h2><a href="<%== post_path(id) %>"><%= title %></a></h2>
+  <h2><a href="<%== post_path(post.id) %>"><%= post.title %></a></h2>
+  <p class="meta">by <%= post.author %> on <%== post.created_at %></p>
 </div>
 ```
 
-Call it as a normal JDA function call inside `<%== %>`.
+```html
+<%# app/views/posts/index.html.jda — call with post_row() %>
+<% loop r in 0..posts.count { %>
+<%== tmpl_post_row(post_row(posts, r)) %>
+<% } %>
+```
+
+`post_row(posts, r)` extracts row `r` from a `&ForgeResult` and returns a `&PostRow` with every column as a field. Similarly `comment_row(comments, r)` returns `&CommentRow`.
+
+Use `post_row(result, 0)` in show/edit views to get a single row object:
+
+```html
+<% let p = post_row(post, 0) %>
+<%layout p.title %>
+<h1><%= p.title %></h1>
+<p><%= p.body %></p>
+```
 
 ---
 

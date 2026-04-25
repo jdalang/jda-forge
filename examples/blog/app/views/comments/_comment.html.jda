@@ -1,5 +1,5 @@
-<% fn tmpl_comment_row(author: []i8, body: []i8, date: []i8) %>
+<% fn tmpl_comment_row(comment: &CommentRow) %>
 <div class="comment">
-  <strong><%= author %></strong> <span class="meta"><%== date %></span>
-  <p><%= body %></p>
+  <strong><%= comment.author %></strong> <span class="meta"><%== comment.created_at %></span>
+  <p><%= comment.body %></p>
 </div>

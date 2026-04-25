@@ -1,27 +1,23 @@
 <% fn view_posts_show(ctx: i64, post: &ForgeResult, comments: &ForgeResult) %>
-<% let id     = forge_result_col(post, 0, "id") %>
-<% let title  = forge_result_col(post, 0, "title") %>
-<% let author = forge_result_col(post, 0, "author") %>
-<% let body   = forge_result_col(post, 0, "body") %>
-<% let date   = forge_result_col(post, 0, "created_at") %>
-<% let tok    = forge_csrf_token(ctx) %>
-<%layout title %>
+<% let p   = post_row(post, 0) %>
+<% let tok = forge_csrf_token(ctx) %>
+<%layout p.title %>
 <%== tmpl_flash(ctx) %>
-<h1><%= title %></h1>
-<p class="meta">by <%= author %> on <%== date %></p>
-<div class="body"><p><%= body %></p></div>
-<a href="<%== edit_post_path(id) %>">Edit</a> &nbsp;
-<%== forge_link_to_delete("Delete", post_path(id), tok) %>
+<h1><%= p.title %></h1>
+<p class="meta">by <%= p.author %> on <%== p.created_at %></p>
+<div class="body"><p><%= p.body %></p></div>
+<a href="<%== edit_post_path(p.id) %>">Edit</a> &nbsp;
+<%== forge_link_to_delete("Delete", post_path(p.id), tok) %>
 
 <hr>
 <h2>Comments (<%= i64_to_str(comments.count) %>)</h2>
 <% loop r in 0..comments.count { %>
-<%== tmpl_comment_row(forge_result_col(comments, r, "author"), forge_result_col(comments, r, "body"), forge_result_col(comments, r, "created_at")) %>
+<%== tmpl_comment_row(comment_row(comments, r)) %>
 <% } %>
 
 <hr>
 <h3>Leave a comment</h3>
-<form method="POST" action="<%== post_comments_path(id) %>">
+<form method="POST" action="<%== post_comments_path(p.id) %>">
   <label>Name<br><input name="author"></label><br><br>
   <label>Comment<br><textarea name="body" rows="4"></textarea></label><br><br>
   <input type="hidden" name="_csrf" value="<%= tok %>">
