@@ -3,6 +3,29 @@
 //                    DELETE /posts/:post_id/comments/:id
 // =============================================================================
 
+// Path helpers
+fn post_comments_path(post_id: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let prefix = "/posts/"
+    let suffix = "/comments"
+    loop i in 0..prefix.len  { buf[pos] = prefix[i]   pos = pos + 1 }
+    loop i in 0..post_id.len { buf[pos] = post_id[i]  pos = pos + 1 }
+    loop i in 0..suffix.len  { buf[pos] = suffix[i]   pos = pos + 1 }
+    ret buf[0..pos]
+}
+fn post_comment_path(post_id: []i8, id: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let prefix = "/posts/"
+    let mid    = "/comments/"
+    loop i in 0..prefix.len  { buf[pos] = prefix[i]   pos = pos + 1 }
+    loop i in 0..post_id.len { buf[pos] = post_id[i]  pos = pos + 1 }
+    loop i in 0..mid.len     { buf[pos] = mid[i]       pos = pos + 1 }
+    loop i in 0..id.len      { buf[pos] = id[i]        pos = pos + 1 }
+    ret buf[0..pos]
+}
+
 fn handle_comments_create(ctx: i64) {
     let post_id = ctx_param(ctx, "post_id")
     let author  = ctx_form(ctx, "author")
@@ -11,18 +34,18 @@ fn handle_comments_create(ctx: i64) {
     let errs = comment_validate(body, author)
     if forge_errors_any(errs) {
         ctx_flash_set(ctx, "alert", forge_errors_json(errs))
-        ctx_redirect(ctx, forge_path_id("posts", post_id))
+        ctx_redirect(ctx, post_path(post_id))
         ret
     }
 
     if !comment_create(post_id, author, body) {
         ctx_flash_set(ctx, "alert", "Could not save comment.")
-        ctx_redirect(ctx, forge_path_id("posts", post_id))
+        ctx_redirect(ctx, post_path(post_id))
         ret
     }
 
     ctx_flash_set(ctx, "notice", "Comment added.")
-    ctx_redirect(ctx, forge_path_id("posts", post_id))
+    ctx_redirect(ctx, post_path(post_id))
 }
 
 fn handle_comments_delete(ctx: i64) {
@@ -30,7 +53,7 @@ fn handle_comments_delete(ctx: i64) {
     let id      = ctx_param(ctx, "id")
     comment_delete(id)
     ctx_flash_set(ctx, "notice", "Comment removed.")
-    ctx_redirect(ctx, forge_path_id("posts", post_id))
+    ctx_redirect(ctx, post_path(post_id))
 }
 
 fn register_comment_routes(app: &ForgeApp) {

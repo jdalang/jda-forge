@@ -17,6 +17,22 @@ let res = forge_test_put   ("/posts/1", "title=Updated")
 let res = forge_test_delete("/posts/1")
 ```
 
+### Using path helpers
+
+Scaffold-generated routes files include path helpers. Use them in tests instead of hard-coded strings so that renaming a resource only requires changing the route definition, not every test:
+
+```jda
+let res = forge_test_get   (posts_path())
+let res = forge_test_post  (posts_path(), "title=Hello&body=World&author=Alice")
+let res = forge_test_get   (post_path("1"))
+let res = forge_test_put   (post_path("1"), "title=Updated")
+let res = forge_test_delete(post_path("1"))
+let res = forge_test_get   (new_post_path())
+let res = forge_test_get   (edit_post_path("1"))
+```
+
+The helpers are plain functions defined at the top of each routes file. They are in scope for the entire build because all source files are concatenated before compilation.
+
 - `forge_test_post`, `forge_test_put`, and `forge_test_delete` automatically attach a valid CSRF token, so you do not need to obtain or pass one in tests.
 - The body string can be form-encoded (`key=value&key2=value2`) or a raw JSON string — pass whatever the handler expects.
 - Path parameters, query strings, and everything else work exactly as they do in production.
@@ -105,23 +121,28 @@ Test files live in `test/` and are named after the resource or feature they cove
 // test/test_posts.jda
 
 fn test_posts_index() {
-    let res = forge_test_get("/posts")
+    let res = forge_test_get(posts_path())
     forge_assert_status(res, 200)
 }
 
 fn test_post_create_valid() {
-    let res = forge_test_post("/posts", "title=Hello&body=Long+enough+body&author=Alice")
+    let res = forge_test_post(posts_path(), "title=Hello&body=Long+enough+body&author=Alice")
     forge_assert_redirect(res)
 }
 
 fn test_post_create_missing_title() {
-    let res = forge_test_post("/posts", "title=&body=Some+body&author=Alice")
-    forge_assert_redirect(res)   // redirects to /posts/new with flash
+    let res = forge_test_post(posts_path(), "title=&body=Some+body&author=Alice")
+    forge_assert_redirect(res)   // redirects to new_post_path() with flash
 }
 
 fn test_post_not_found() {
-    let res = forge_test_get("/posts/99999")
+    let res = forge_test_get(post_path("99999"))
     forge_assert_status(res, 404)
+}
+
+fn test_post_delete() {
+    let res = forge_test_delete(post_path("1"))
+    forge_assert_redirect(res)
 }
 ```
 
@@ -194,13 +215,11 @@ fn test_api_user_fields() {
 
 ```jda
 fn test_posts_index() {
-    let res = forge_test_get("/posts")
-    forge_assert_status(res, 200)
+    forge_assert_status(forge_test_get(posts_path()), 200)
 }
 
 fn test_post_not_found() {
-    let res = forge_test_get("/posts/99999")
-    forge_assert_status(res, 404)
+    forge_assert_status(forge_test_get(post_path("99999")), 404)
 }
 ```
 
@@ -225,5 +244,14 @@ Fill in the remaining cases (create, update, delete, validation errors) to match
 | `forge_test_res_status(res)` | Read status as `i64` |
 | `forge_test_res_header(res, name)` | Read response header as `[]i8` |
 | `forge_exec_sql(query)` | Run SQL against test database |
+
+**Path helpers** (generated per resource, e.g. for `Post`):
+
+| Helper | Returns |
+|---|---|
+| `posts_path()` | `/posts` |
+| `new_post_path()` | `/posts/new` |
+| `post_path(id)` | `/posts/<id>` |
+| `edit_post_path(id)` | `/posts/<id>/edit` |
 
 Run tests: `forge test` or `FORGE_ENV=test jda run test/test_posts.jda`

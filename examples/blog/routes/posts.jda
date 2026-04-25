@@ -4,6 +4,12 @@
 //                 POST /posts/:id, DELETE /posts/:id
 // =============================================================================
 
+// Path helpers
+fn posts_path() -> []i8             { ret forge_path("posts") }
+fn new_post_path() -> []i8          { ret forge_path_new("posts") }
+fn post_path(id: []i8) -> []i8      { ret forge_path_id("posts", id) }
+fn edit_post_path(id: []i8) -> []i8 { ret forge_path_edit("posts", id) }
+
 fn handle_posts_index(ctx: i64) {
     let posts = post_published()
     let flash = tmpl_flash(ctx)
@@ -52,18 +58,18 @@ fn handle_posts_create(ctx: i64) {
     let errs = post_validate(title, body, author)
     if forge_errors_any(errs) {
         ctx_flash_set(ctx, "alert", forge_errors_json(errs))
-        ctx_redirect(ctx, "/posts/new")
+        ctx_redirect(ctx, new_post_path())
         ret
     }
 
     if !post_create(title, body, author) {
         ctx_flash_set(ctx, "alert", "Could not save post.")
-        ctx_redirect(ctx, "/posts/new")
+        ctx_redirect(ctx, new_post_path())
         ret
     }
 
     ctx_flash_set(ctx, "notice", "Post created.")
-    ctx_redirect(ctx, "/posts")
+    ctx_redirect(ctx, posts_path())
 }
 
 fn handle_posts_show(ctx: i64) {
@@ -103,7 +109,7 @@ fn handle_posts_show(ctx: i64) {
 
     let act1 = " <a href=/posts/"
     let act2 = "/edit>Edit</a> &nbsp;"
-    let del1 = forge_link_to_delete("Delete", forge_path_id("posts", id), forge_csrf_token(ctx))
+    let del1 = forge_link_to_delete("Delete", post_path(id), forge_csrf_token(ctx))
     loop i in 0..act1.len { buf[pos] = act1[i]  pos = pos + 1 }
     loop i in 0..id.len   { buf[pos] = id[i]     pos = pos + 1 }
     loop i in 0..act2.len { buf[pos] = act2[i]  pos = pos + 1 }
@@ -183,25 +189,25 @@ fn handle_posts_update(ctx: i64) {
     let errs = post_validate(title, body, "placeholder")
     if forge_errors_any(errs) {
         ctx_flash_set(ctx, "alert", forge_errors_json(errs))
-        ctx_redirect(ctx, forge_path_edit("posts", id))
+        ctx_redirect(ctx, edit_post_path(id))
         ret
     }
 
     if !post_update(id, title, body) {
         ctx_flash_set(ctx, "alert", "Could not update post.")
-        ctx_redirect(ctx, forge_path_edit("posts", id))
+        ctx_redirect(ctx, edit_post_path(id))
         ret
     }
 
     ctx_flash_set(ctx, "notice", "Post updated.")
-    ctx_redirect(ctx, forge_path_id("posts", id))
+    ctx_redirect(ctx, post_path(id))
 }
 
 fn handle_posts_delete(ctx: i64) {
     let id = ctx_param(ctx, "id")
     post_delete(id)
     ctx_flash_set(ctx, "notice", "Post deleted.")
-    ctx_redirect(ctx, "/posts")
+    ctx_redirect(ctx, posts_path())
 }
 
 fn register_post_routes(app: &ForgeApp) {

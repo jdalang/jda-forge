@@ -801,6 +801,40 @@ fn main() {
 
 The generated handlers are stubs. Fill them in with your model calls, validation, and templates. The `handle_posts_create` stub follows the validate-flash-redirect pattern described in the [CRUD example](#47-a-complete-crud-example) above.
 
+### Path helpers
+
+Every scaffold-generated routes file includes four path helper functions. For a `Post` resource they look like this:
+
+```jda
+fn posts_path() -> []i8             { ret forge_path("posts") }         // "/posts"
+fn new_post_path() -> []i8          { ret forge_path_new("posts") }     // "/posts/new"
+fn post_path(id: []i8) -> []i8      { ret forge_path_id("posts", id) }  // "/posts/<id>"
+fn edit_post_path(id: []i8) -> []i8 { ret forge_path_edit("posts", id) }// "/posts/<id>/edit"
+```
+
+Use them anywhere you would otherwise hard-code a string path — handlers, templates, and tests:
+
+```jda
+// In a handler
+ctx_redirect(ctx, posts_path())
+ctx_redirect(ctx, post_path(id))
+ctx_redirect(ctx, edit_post_path(id))
+
+// In a test
+forge_test_get   (post_path("1"))
+forge_test_delete(post_path("1"))
+forge_test_post  (posts_path(), body)
+```
+
+The underlying `forge_path*` functions are available for any resource name if you need paths outside of generated code:
+
+| Function | Result |
+|---|---|
+| `forge_path("posts")` | `/posts` |
+| `forge_path_new("posts")` | `/posts/new` |
+| `forge_path_id("posts", id)` | `/posts/<id>` |
+| `forge_path_edit("posts", id)` | `/posts/<id>/edit` |
+
 ### Naming conventions
 
 Scaffold follows these conventions consistently:
@@ -808,5 +842,6 @@ Scaffold follows these conventions consistently:
 - Route file: `routes/<resource_plural>.jda`
 - Handler prefix: `handle_<resource_plural>_<action>`
 - Registration function: `register_<resource_singular>_routes(app: i64)`
+- Path helpers: `<plural>_path()`, `<singular>_path(id)`, `new_<singular>_path()`, `edit_<singular>_path(id)`
 
-For a resource named `Comment` the generated file is `routes/comments.jda` with handlers `handle_comments_index`, `handle_comments_show`, and so on.
+For a resource named `Comment` the generated file is `routes/comments.jda` with handlers `handle_comments_index`, `handle_comments_show`, path helpers `comments_path()`, `comment_path(id)`, and so on.
