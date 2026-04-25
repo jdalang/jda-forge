@@ -2555,6 +2555,41 @@ fn forge_q_where_raw(q: &ForgeQuery, expr: []i8) -> &ForgeQuery {
     ret q
 }
 
+// where_bind — Rails-style parameterized WHERE: ? placeholders, pipe-separated args
+// e.g. .where_bind("role = ? and name = ?", "admin|alice")
+// Each ? is replaced with the next pipe-delimited arg, SQL-escaped and quoted.
+// Values cannot contain '|'. For values with pipes, use separate where_eq calls.
+fn forge_q_where_bind(q: &ForgeQuery, tmpl: []i8, args: []i8) -> &ForgeQuery {
+    forge__where_connector(q)
+    let ai   = 0i64   // position in args
+    let prev = 0i64   // start of current template segment
+    loop ti in 0..tmpl.len {
+        if tmpl[ti] == '?' {
+            if ti > prev { forge__wbuf(q, tmpl[prev..ti]) }
+            let start = ai
+            loop ai < args.len and args[ai] != '|' { ai = ai + 1 }
+            let val = args[start..ai]
+            if ai < args.len { ai = ai + 1 }
+            forge__wbuf(q, "'")
+            forge__wbuf_escaped(q, val)
+            forge__wbuf(q, "'")
+            prev = ti + 1
+        }
+    }
+    if prev < tmpl.len { forge__wbuf(q, tmpl[prev..tmpl.len]) }
+    ret q
+}
+
+// where_eq(col, val) — equality shorthand; like Rails where(col: val)
+fn forge_q_where_eq(q: &ForgeQuery, col: []i8, val: []i8) -> &ForgeQuery {
+    forge__where_connector(q)
+    forge__wbuf(q, col)
+    forge__wbuf(q, " = '")
+    forge__wbuf_escaped(q, val)
+    forge__wbuf(q, "'")
+    ret q
+}
+
 fn forge_q_or(q: &ForgeQuery) -> &ForgeQuery {
     q.or_mode = true
     ret q
@@ -3733,6 +3768,13 @@ fn forge_page_meta_json(total: i64, page: i64, per: i64) -> []i8 {
 // =============================================================================
 // Section I — View Helpers
 // =============================================================================
+
+// forge_h — inline HTML-escape for template use; returns a []i8 slice
+fn forge_h(src: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let n = forge_html_escape(src, buf)
+    ret buf[0..n]
+}
 
 fn forge_html_escape(src: []i8, dst: &i8) -> i64 {
     let pos = 0i64

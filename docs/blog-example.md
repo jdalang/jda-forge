@@ -108,9 +108,23 @@ fn app_config() -> ForgeConfig {
 
 ---
 
-## models/post.jda — validation + soft delete
+## models/post.jda — query interface + validation + soft delete
 
 ```jda
+// Rails AR-style query interface
+fn post_q() -> &ForgeQuery { ret forge_q("posts") }
+fn post_all() -> &ForgeResult {
+    ret forge_q("posts").order_desc("created_at").exec()
+}
+fn post_published() -> &ForgeResult {
+    ret forge_q("posts").where_eq("published", "true").order_desc("created_at").exec()
+}
+fn post_count() -> i64    { ret forge_q("posts").count() }
+fn post_exists(id: []i8) -> bool {
+    ret forge_q("posts").where_eq("id", id).exists()
+}
+
+// Validations
 fn post_validate(title: []i8, body: []i8, author: []i8) -> &ForgeErrors {
     let e = forge_errors_new()
     forge_validate_presence  (e, "title",  title)
@@ -127,6 +141,17 @@ fn post_delete(id: []i8) -> bool {
 ```
 
 `forge_q("posts")` automatically excludes rows where `deleted_at IS NOT NULL`.
+
+Chain anything off `post_q()`:
+
+```jda
+let res = post_q()
+    .where_ilike("title", "%jda%")
+    .left_join("users", "users.id = posts.user_id")
+    .order_desc("created_at")
+    .page(2, 20)
+    .exec()
+```
 
 ---
 

@@ -15,11 +15,11 @@ fn comment_find(id: []i8) -> &ForgeResult {
 }
 
 fn comment_for_post(post_id: []i8) -> &ForgeResult {
-    let q = forge_q("comments")
-    forge_q_where(q, "post_id", "=", post_id)
-    forge_q_where(q, "deleted_at", "IS", "NULL")
-    forge_q_order(q, "created_at", "ASC")
-    ret forge_q_exec(q)
+    ret forge_q("comments")
+        .where_eq("post_id", post_id)
+        .where_null("deleted_at")
+        .order_asc("created_at")
+        .exec()
 }
 
 fn comment_create(post_id: []i8, author: []i8, body: []i8) -> bool {

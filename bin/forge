@@ -26,6 +26,13 @@ usage() {
     cat <<EOF
 JDA Forge CLI v${FORGE_VERSION}
 
+Run:
+  forge server                              Build and start the dev server  (alias: forge s)
+  forge server --port 3000                  Start on a custom port
+  forge server --environment production     Use a different environment
+  forge console                             Open a database console  (alias: forge c)
+  forge console --environment staging       Connect to a different environment
+
 Project:
   forge new <name>                          Create a new Forge application
   forge install                             Install libs from Forgefile (writes lock)
@@ -50,6 +57,9 @@ Version pinning (in Forgefile):
 
 Examples:
   forge new myblog
+  forge server
+  forge server --port 3000
+  forge console
   forge add forge-markdown --version v1.0.0
   forge add payments https://github.com/myorg/jda-payments
   forge generate scaffold Post title:string body:text user:references
@@ -678,17 +688,39 @@ gen_model() {
     {
         echo "// Model: ${name} — table: ${table}"
         echo ""
+        echo "// --- Query interface (Rails AR style) ---"
+        echo ""
+        echo "fn ${snake}_q() -> &ForgeQuery {"
+        echo "    ret forge_q(\"${table}\")"
+        echo "}"
+        echo ""
+        echo "fn ${snake}_all() -> &ForgeResult {"
+        echo "    ret forge_q(\"${table}\").order_desc(\"created_at\").exec()"
+        echo "}"
+        echo ""
         echo "fn ${snake}_find(id: []i8) -> &ForgeResult {"
         echo "    ret forge_find(\"${table}\", id)"
         echo "}"
+        echo ""
         echo "fn ${snake}_find_by(col: []i8, val: []i8) -> &ForgeResult {"
         echo "    ret forge_find_by(\"${table}\", col, val)"
         echo "}"
-        echo "fn ${snake}_all() -> &ForgeResult {"
-        echo "    let q = forge_q(\"${table}\")"
-        echo "    forge_q_order(q, \"created_at\", \"DESC\")"
-        echo "    ret forge_q_exec(q)"
+        echo ""
+        echo "fn ${snake}_where(col: []i8, val: []i8) -> &ForgeQuery {"
+        echo "    ret forge_q(\"${table}\").where_eq(col, val)"
         echo "}"
+        echo ""
+        echo "fn ${snake}_count() -> i64 {"
+        echo "    ret forge_q_count(forge_q(\"${table}\"))"
+        echo "}"
+        echo ""
+        echo "fn ${snake}_exists(id: []i8) -> bool {"
+        echo "    ret forge_q(\"${table}\").where_eq(\"id\", id).exists()"
+        echo "}"
+        echo ""
+        echo "fn ${snake}_delete(id: []i8) -> bool { ret forge_soft_delete(\"${table}\", id) }"
+        echo ""
+        echo "// --- Validations ---"
         echo ""
         echo "fn ${snake}_validate("
         for f in "${fields[@]:-}"; do
@@ -710,8 +742,6 @@ gen_model() {
         done
         echo "    ret e"
         echo "}"
-        echo ""
-        echo "fn ${snake}_delete(id: []i8) -> bool { ret forge_soft_delete(\"${table}\", id) }"
     } > "$out"
     ok "created $out"
 }
@@ -859,6 +889,70 @@ JDA
 }
 
 # ---------------------------------------------------------------------------
+# forge server — build and start the app (like rails s)
+# ---------------------------------------------------------------------------
+
+cmd_server() {
+    local env_name="${FORGE_ENV:-development}"
+    local port=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --port|-p)        port="$2";     shift 2 ;;
+            --environment|-e) env_name="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    [ ! -f "Forgefile" ] && err "No Forgefile found. Are you in a Forge project directory?"
+    [ ! -d "libs" ]      && err "libs/ not found. Run 'forge install' first."
+    [ ! -f "Makefile" ]  && err "No Makefile found. Run 'forge new' to scaffold a project."
+
+    export FORGE_ENV="$env_name"
+    [ -n "$port" ] && export APP_PORT="$port"
+
+    info "Starting Forge server (${env_name})"
+    [ -n "$port" ] && dim "Port: ${port}"
+
+    exec make run
+}
+
+# ---------------------------------------------------------------------------
+# forge console — open a database console (like rails c / rails db)
+# ---------------------------------------------------------------------------
+
+cmd_console() {
+    local env_name="${FORGE_ENV:-development}"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --environment|-e) env_name="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    [ ! -f "Forgefile" ] && err "No Forgefile found. Are you in a Forge project directory?"
+
+    # Load DATABASE_URL: start with .env, override with .env.<environment>
+    local db_url=""
+    if [ -f ".env" ]; then
+        local v; v=$(grep "^DATABASE_URL=" ".env" 2>/dev/null | head -1 | cut -d= -f2-)
+        [ -n "$v" ] && db_url="$v"
+    fi
+    local env_file=".env.${env_name}"
+    if [ -f "$env_file" ]; then
+        local v; v=$(grep "^DATABASE_URL=" "$env_file" 2>/dev/null | head -1 | cut -d= -f2-)
+        [ -n "$v" ] && db_url="$v"
+    fi
+
+    [ -z "$db_url" ] && err "DATABASE_URL not set in .env or ${env_file}"
+
+    command -v psql >/dev/null 2>&1 || err "psql not found. Install PostgreSQL client tools."
+
+    info "Connecting to database (${env_name})"
+    dim "$db_url"
+    exec psql "$db_url"
+}
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -867,6 +961,8 @@ JDA
 CMD="$1"; shift
 
 case "$CMD" in
+    server|s)     cmd_server "$@" ;;
+    console|c)    cmd_console "$@" ;;
     new)          cmd_new "${1:-}" ;;
     install)      cmd_install "${1:-}" ;;
     add)          cmd_add "$@" ;;

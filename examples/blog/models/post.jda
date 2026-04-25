@@ -16,17 +16,24 @@ fn post_find(id: []i8) -> &ForgeResult {
     ret forge_find("posts", id)
 }
 
+fn post_q() -> &ForgeQuery {
+    ret forge_q("posts")
+}
+
 fn post_published() -> &ForgeResult {
-    let q = forge_q("posts")
-    forge_q_where(q, "published", "=", "true")
-    forge_q_order(q, "created_at", "DESC")
-    ret forge_q_exec(q)
+    ret forge_q("posts").where_eq("published", "true").order_desc("created_at").exec()
 }
 
 fn post_all() -> &ForgeResult {
-    let q = forge_q("posts")
-    forge_q_order(q, "created_at", "DESC")
-    ret forge_q_exec(q)
+    ret forge_q("posts").order_desc("created_at").exec()
+}
+
+fn post_count() -> i64 {
+    ret forge_q("posts").count()
+}
+
+fn post_exists(id: []i8) -> bool {
+    ret forge_q("posts").where_eq("id", id).exists()
 }
 
 fn post_comments(post_id: []i8) -> &ForgeResult {
