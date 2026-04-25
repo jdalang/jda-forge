@@ -216,65 +216,51 @@ forge_button_to("Publish", "/posts/42/publish", "POST")
 
 ## 4. Layout pattern
 
-The standard pattern is a `layout` function that wraps a page-specific content string. The layout handles navigation, the `<head>`, and flash messages. Individual page functions build their content string and pass it to `layout`.
+The layout lives in `app/views/layouts/application.html.jda`. It receives a `title` and the rendered page `body`, wraps them in the full HTML shell, and returns the complete page string.
+
+```html
+<% fn tmpl_layout(title: []i8, body: []i8) %>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title><%= title %> — MyApp</title>
+  <%== forge_stylesheet_tag("application.css") %>
+</head>
+<body>
+<nav><a href="<%== posts_path %>">Posts</a></nav>
+<%== body %>
+<%== forge_javascript_tag("application.js") %>
+</body>
+</html>
+```
+
+Any view that adds `<%layout "Title" %>` automatically wraps its output in `tmpl_layout`:
+
+```html
+<% fn view_posts_index(ctx: i64, posts: &ForgeResult) %>
+<%layout "Posts" %>
+<%== tmpl_flash(ctx) %>
+<h1>Posts</h1>
+...
+```
+
+`forge compile-views` compiles this to:
 
 ```jda
-// views/templates.jda
-
-fn layout(ctx: i64, title: []i8, content: []i8) -> []i8 {
-    let flash_notice = ctx_flash_get(ctx, "notice")
-    let flash_alert  = ctx_flash_get(ctx, "alert")
-    let flash_html = ""
-    if flash_notice.len > 0 {
-        flash_html = "<div class=\"notice\">" + forge_h(flash_notice) + "</div>"
-    }
-    if flash_alert.len > 0 {
-        flash_html = flash_html + "<div class=\"alert\">" + forge_h(flash_alert) + "</div>"
-    }
-    ret "<!DOCTYPE html><html><head><title>" + forge_h(title) + " — MyApp</title>" +
-        "<link rel=\"stylesheet\" href=\"/static/app.css\"></head><body>" +
-        "<nav><a href=\"/posts\">Posts</a></nav>" +
-        flash_html +
-        "<main>" + content + "</main>" +
-        "</body></html>"
+fn view_posts_index(ctx: i64, posts: &ForgeResult) -> []i8 {
+    let buf = forge_buf_new(8)
+    buf.write(tmpl_flash(ctx))
+    buf.write("<h1>Posts</h1>\n...")
+    ret tmpl_layout("Posts", buf.done())
 }
 ```
 
-A page function builds its HTML, then passes it to `layout`:
+The controller calls the compiled function unchanged:
 
 ```jda
-fn posts_index_page(ctx: i64, posts: &ForgeResult) -> []i8 {
-    let buf: &i8 = alloc_pages(8)
-    let pos = 0i64
-
-    let h1 = "<h1>Posts</h1><table>"
-    loop i in 0..h1.len { buf[pos] = h1[i]  pos = pos + 1 }
-
-    loop r in 0..posts.count {
-        let id    = forge_result_col(posts, r, "id")
-        let title = forge_result_col(posts, r, "title")
-        let row = "<tr><td>" + forge_h(title) + "</td><td>" +
-                  forge_link_to("View", "/posts/" + id) + "</td></tr>"
-        loop i in 0..row.len { buf[pos] = row[i]  pos = pos + 1 }
-    }
-
-    let end = "</table>" + forge_link_to("New Post", "/posts/new")
-    loop i in 0..end.len { buf[pos] = end[i]  pos = pos + 1 }
-
-    ret layout(ctx, "Posts", buf[0..pos])
-}
-```
-
-### Buffer sizing
-
-`alloc_pages(n)` allocates `n * 4096` bytes. For most pages one page (4 KB) is enough; use 8 or more for pages that render large lists. There is no reallocation — size the buffer conservatively up front.
-
-### Calling a page function from a handler
-
-```jda
-fn handle_posts_index(ctx: i64) {
-    let posts = post_all()
-    ctx_html(ctx, 200, posts_index_page(ctx, posts))
+fn posts_index(ctx: i64) {
+    ctx_render(ctx, view_posts_index(ctx, post_all()))
 }
 ```
 
@@ -282,57 +268,63 @@ fn handle_posts_index(ctx: i64) {
 
 ## 5. Reading query results in views
 
-`forge_result_col` retrieves a column value from a query result by row index and column name.
+`compile_models` generates a typed row struct and `<table>_row()` converter for every table. Use them instead of repeated `forge_result_col` calls.
 
-```jda
-let posts = post_all()
-loop r in 0..posts.count {
-    let id     = forge_result_col(posts, r, "id")
-    let title  = forge_result_col(posts, r, "title")
-    let author = forge_result_col(posts, r, "author")
-    // build HTML using id, title, author
-}
+```html
+<%# loop over a result set %>
+<% loop r in 0..posts.count { %>
+<% let p = post_row(posts, r) %>
+<p><%= p.title %> by <%= p.author %></p>
+<% } %>
 ```
 
-All values returned by `forge_result_col` are `[]i8` strings. Escape them with `forge_h` before embedding in HTML.
+For a single-row result (show/edit views), convert at the top:
+
+```html
+<% let p = post_row(post, 0) %>
+<%layout p.title %>
+<h1><%= p.title %></h1>
+<p><%= p.body %></p>
+```
+
+`post_row(result, r)` returns a `&PostRow` struct with every column as a `[]i8` field (`id`, `title`, `body`, `author`, `created_at`, `updated_at`, `deleted_at`). The struct and function are auto-generated into `_build/models.jda` from the migration schema — no manual maintenance.
+
+`forge_result_col` is still available if you need a single column without converting the whole row.
 
 ---
 
 ## 6. Partials
 
-Partials are named, reusable view fragments. Register a function as a partial once at startup; render it by name from any view.
+Partials are `.html.jda` template files whose names start with `_`. They are compiled into ordinary JDA functions by `forge compile-views` and can be called from any other template.
 
 ### Defining a partial
 
-A partial function receives a `vars` pointer (a key/value store) and returns `[]i8`.
-
-```jda
-fn render_post_row(vars: &i64) -> []i8 {
-    let title = forge_partial_var(vars, "title")
-    let id    = forge_partial_var(vars, "id")
-    ret "<tr><td>" + forge_h(title) + "</td><td>" +
-        forge_link_to("View", "/posts/" + id) + "</td></tr>"
-}
+```html
+<%# app/views/posts/_post.html.jda %>
+<% fn tmpl_post_row(post: &PostRow) %>
+<div class="post">
+  <h2><a href="<%== post_path(post.id) %>"><%= post.title %></a></h2>
+  <p class="meta">by <%= post.author %> on <%== post.created_at %></p>
+</div>
 ```
 
-### Registering a partial
+### Calling a partial
 
-```jda
-forge_partial_register("post_row", fn_addr(render_post_row))
+Use `<%== %>` (raw) to call the partial function and embed its output:
+
+```html
+<% loop r in 0..posts.count { %>
+<%== tmpl_post_row(post_row(posts, r)) %>
+<% } %>
 ```
 
-Call `forge_partial_register` once at application startup before any request is handled.
+Arguments map directly to the partial's function parameters. There is no implicit locals hash — the signature is the contract, and mismatches are caught at compile time.
 
-### Rendering a partial
+### Partial for a single item (show/edit)
 
-```jda
-let vars = forge_partial_vars_new()
-forge_partial_var_set(vars, "title", post_title)
-forge_partial_var_set(vars, "id",    post_id)
-let html = forge_partial("post_row", vars)
-```
-
-Variables are string key/value pairs. Retrieve them inside the partial with `forge_partial_var`.
+```html
+<% let p = post_row(post, 0) %>
+<%== render_post_form(post_path(p.id), p.title, p.body, forge_csrf_token(ctx), "Update") %>
 
 ---
 

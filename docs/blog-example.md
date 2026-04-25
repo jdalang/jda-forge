@@ -235,7 +235,7 @@ Controllers use path helper constants (`posts_path`, `new_post_path`) rather tha
 <p>No posts yet. <a href="<%== new_post_path %>">Write the first one.</a></p>
 <% } %>
 <% loop r in 0..posts.count { %>
-<%== tmpl_post_row(forge_result_col(posts, r, "title"), forge_result_col(posts, r, "author"), forge_result_col(posts, r, "created_at"), forge_result_col(posts, r, "id")) %>
+<%== tmpl_post_row(post_row(posts, r)) %>
 <% } %>
 ```
 

@@ -73,9 +73,11 @@ Walkthrough: [docs/blog-example.md](docs/blog-example.md)
 
 **Routing** — resources DSL, namespaces, middleware, path helpers, before/after filters.
 
+**Views** — ERB-style `.html.jda` templates compiled to plain JDA functions by `forge compile-views`. Write HTML with embedded code using `<% %>` (code), `<%= %>` (escaped output), `<%== %>` (raw output), and `<%layout "Title" %>` to wrap in the application layout. One file = one function; partials start with `_`.
+
 **Multiple databases** — register named connections by URL (`forge_db_add("analytics", url)`), query any of them with `forge_q_on("analytics", "events")`, mix PostgreSQL and MySQL/MariaDB in one app.
 
-**ORM** — Rails-style query builder (`where_eq`, `order`, `limit`, `joins`, `group`, `having`, aggregates, scopes, batch processing). Tables with `deleted_at` get automatic soft-delete scoping — `post_all()` excludes deleted rows; `post_with_deleted()` and `post_only_deleted()` opt back in. Auto-generates typed CRUD per table including `post_reload`, `post_toggle`, `post_increment`, `post_decrement`, plus `forge_q_pick`, `forge_q_reorder`, `forge_q_reverse_order`, `forge_q_find_each`.
+**ORM** — Rails-style query builder (`where_eq`, `order`, `limit`, `joins`, `group`, `having`, aggregates, scopes, batch processing). Tables with `deleted_at` get automatic soft-delete scoping — `post_all()` excludes deleted rows; `post_with_deleted()` and `post_only_deleted()` opt back in. Auto-generates typed CRUD per table including `post_reload`, `post_toggle`, `post_increment`, `post_decrement`, plus `forge_q_pick`, `forge_q_reorder`, `forge_q_reverse_order`, `forge_q_find_each`. Also generates a typed row struct (`PostRow`) and converter (`post_row(result, r)`) per table so templates can use `post.title`, `post.id` instead of `forge_result_col` calls.
 
 **Model init** — associations, callbacks, and validations declared together in one `*_model_init` function so the full shape of a model is visible in one place:
 
