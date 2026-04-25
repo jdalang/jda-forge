@@ -3761,12 +3761,26 @@ fn app_config() -> ForgeConfig {
 
 The first registered connection (`"primary"`) is the default for all queries.
 
-### Querying a specific connection
+### Binding a model to a connection
 
-Use `forge_q_on(conn_name, table)` to pin a query to a named connection:
+Declare the connection inside the model's validations init with `forge_model_db`. Every generated helper for that table (`event_all`, `event_find`, `event_q`, `event_create`, etc.) will automatically route through that connection — no per-call changes needed.
 
 ```jda
-// All queries on the analytics connection
+fn event_validations_init() {
+    forge_model("events")
+    forge_model_db("analytics")          // all event_* queries use "analytics"
+    forge_field("name, type", FORGE_V_PRESENCE)
+}
+```
+
+Models without a `forge_model_db` call use the primary connection.
+
+### Ad-hoc queries on a specific connection
+
+Use `forge_q_on(conn_name, table)` when you need a one-off query against a different connection without declaring a model-level binding:
+
+```jda
+// One-off analytics query
 forge_q_on("analytics", "events")
     .where_eq("type", "click")
     .order_desc("created_at")
@@ -3775,12 +3789,6 @@ forge_q_on("analytics", "events")
 
 // Scalar aggregate on the warehouse
 forge_q_on("warehouse", "sales").sum("amount")
-```
-
-Generated model functions use the primary connection by default. To route a model to a different connection, override `post_q`:
-
-```jda
-fn post_q() -> &ForgeQuery { ret forge_q_on("analytics", "posts") }
 ```
 
 ### Switching the active connection

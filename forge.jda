@@ -3735,13 +3735,50 @@ fn forge__where_connector(q: &ForgeQuery) {
 }
 
 // ---------------------------------------------------------------------------
+// Model-database binding registry
+// Each table can declare a non-primary connection via forge_model_db().
+// forge_q() consults this registry so all generated helpers route correctly.
+// ---------------------------------------------------------------------------
+
+let FORGE_MODEL_DB_MAX: i64 = 64
+
+let g_forge_model_db_tables:     &i8  = 0   // 64 slots × 64 bytes
+let g_forge_model_db_table_lens: &i64 = 0
+let g_forge_model_db_conn_idxs:  &i64 = 0
+let g_forge_model_db_count:      i64  = 0
+
+fn forge_model_db_registry_init() {
+    if g_forge_model_db_tables != 0 { ret }
+    g_forge_model_db_tables     = alloc_pages(1)   // 64 * 64 = 4 096 bytes
+    g_forge_model_db_table_lens = alloc_pages(1)
+    g_forge_model_db_conn_idxs  = alloc_pages(1)
+}
+
+// Returns the registered conn_idx for this table, or -1 if none.
+fn forge_model_db_lookup(table: []i8) -> i64 {
+    if g_forge_model_db_tables == 0 { ret -1 }
+    let tl = table.len
+    loop i in 0..g_forge_model_db_count {
+        if g_forge_model_db_table_lens[i] != tl { continue }
+        let base  = i * 64
+        let match = true
+        loop j in 0..tl {
+            if g_forge_model_db_tables[base + j] != table[j] { match = false  break }
+        }
+        if match { ret g_forge_model_db_conn_idxs[i] }
+    }
+    ret -1
+}
+
+// ---------------------------------------------------------------------------
 // Constructor
 // ---------------------------------------------------------------------------
 
 fn forge_q(table: []i8) -> &ForgeQuery {
     let q: &ForgeQuery = alloc_pages(2)
     q.table          = table
-    q.conn_idx       = g_forge_db_current
+    let db_override  = forge_model_db_lookup(table)
+    if db_override >= 0 { q.conn_idx = db_override } else { q.conn_idx = g_forge_db_current }
     q.where_len      = 0
     q.order_len      = 0
     q.sel_len        = 0
@@ -5036,6 +5073,21 @@ fn forge_model(table: []i8) {
     if tl > 64 { tl = 64 }
     loop i in 0..tl { g_forge_model_buf[i] = table[i] }
     g_forge_model_len = tl
+}
+
+// Bind this model's table to a named connection so all generated helpers
+// (model_all, model_q, model_find, etc.) query that connection by default.
+// Call once inside the model's validations init, after forge_model().
+fn forge_model_db(conn_name: []i8) {
+    forge_model_db_registry_init()
+    let tl  = g_forge_model_len
+    let idx = g_forge_model_db_count
+    if idx >= FORGE_MODEL_DB_MAX { ret }
+    let base = idx * 64
+    loop i in 0..tl { g_forge_model_db_tables[base + i] = g_forge_model_buf[i] }
+    g_forge_model_db_table_lens[idx] = tl
+    g_forge_model_db_conn_idxs[idx]  = forge_db_conn_idx(conn_name)
+    g_forge_model_db_count = idx + 1
 }
 
 fn forge_field(fields: []i8, rule: i64) {
