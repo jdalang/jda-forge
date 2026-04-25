@@ -1,5 +1,5 @@
 // =============================================================================
-// JDA Forge — Competitive Web Framework for the Jda Language
+// JDA Forge -- Competitive Web Framework for the Jda Language
 // Version 2.1
 // =============================================================================
 //
@@ -28,7 +28,7 @@
 //   ctx_form(ctx, "email")                  -> []i8   url-encoded body field
 //   ctx_form_default(ctx, "role", "user")   -> []i8   with fallback
 //   ctx_header(ctx, "Accept")               -> []i8   request header
-//   ctx_method(ctx)                         -> []i8   "GET" / "POST" / …
+//   ctx_method(ctx)                         -> []i8   "GET" / "POST" / ...
 //   ctx_path(ctx)                           -> []i8   "/users/42"
 //   ctx_ip(ctx)                             -> []i8   client IP (proxy-aware)
 //   ctx_body(ctx)                           -> []i8   raw body bytes
@@ -92,7 +92,7 @@
 //   }
 //
 // STATIC FILES
-//   app_static(app, "/public", "./www")     // GET /public/file.js → ./www/file.js
+//   app_static(app, "/public", "./www")     // GET /public/file.js -> ./www/file.js
 //
 // TEMPLATE RENDERING
 //   let vars = erb_vars_new()
@@ -137,9 +137,9 @@ const FORGE_MAX_GRP_MW   = 4
 const FORGE_REQ_SIZE     = 8192
 const FORGE_STATIC_BUF   = 1048576   // 1 MB max static file
 
-const FORGE_SYS_WRITE    = 1
-const FORGE_SYS_RECVFROM = 45
-const FORGE_SYS_CLOSE    = 3
+const FORGE_SYS_WRITE    = 4    // macOS BSD: write
+const FORGE_SYS_RECVFROM = 29   // macOS BSD: recvfrom
+const FORGE_SYS_CLOSE    = 6    // macOS BSD: close
 
 // Session store
 const FORGE_MAX_SESSIONS      = 128
@@ -149,7 +149,7 @@ const FORGE_SESSION_KEY_CAP   = 32
 const FORGE_SESSION_VAL_CAP   = 128
 
 // =============================================================================
-// ForgeConfig — server configuration
+// ForgeConfig -- server configuration
 // =============================================================================
 struct ForgeConfig {
     host:       []i8
@@ -198,7 +198,7 @@ struct ForgeSession {
 }
 
 // =============================================================================
-// ForgeCtx — per-request context (passed as i64 pointer to handlers)
+// ForgeCtx -- per-request context (passed as i64 pointer to handlers)
 // =============================================================================
 struct ForgeCtx {
     req:         HttpRequest
@@ -214,7 +214,7 @@ struct ForgeCtx {
 }
 
 // =============================================================================
-// ForgeRoute — single registered route
+// ForgeRoute -- single registered route
 // =============================================================================
 struct ForgeRoute {
     method:   []i8
@@ -226,7 +226,7 @@ struct ForgeRoute {
 }
 
 // =============================================================================
-// ForgeGroup — route group with shared prefix and middleware
+// ForgeGroup -- route group with shared prefix and middleware
 // =============================================================================
 struct ForgeGroup {
     app:      &ForgeApp
@@ -236,7 +236,7 @@ struct ForgeGroup {
 }
 
 // =============================================================================
-// ForgeApp — the application object
+// ForgeApp -- the application object
 // =============================================================================
 struct ForgeApp {
     routes:          [FORGE_MAX_ROUTES]ForgeRoute
@@ -310,11 +310,11 @@ fn app_patch (app: &ForgeApp, p: []i8, h: i64) { app_route(app, "PATCH",  p, h) 
 
 fn app_root(app: &ForgeApp, h: i64) { app_get(app, "/", h) }
 
-// ctx_render — send 200 HTML response (convenience alias for ctx_html)
-fn ctx_render(ctx: i64, html: []i8) { ctx_html(ctx, 200, html) }
+// ctx_html_200 -- send 200 HTML response (convenience alias for ctx_html)
+fn ctx_html_200(ctx: i64, html: []i8) { ctx_html(ctx, 200, html) }
 
 // =============================================================================
-// ForgeBuf — growable string buffer for view rendering
+// ForgeBuf -- growable string buffer for view rendering
 //
 // Eliminates manual loop-copy boilerplate. Use in view functions:
 //
@@ -347,9 +347,16 @@ fn forge_buf_new(pages: i64) -> &ForgeBuf {
 }
 
 fn forge_buf_write(b: &ForgeBuf, s: []i8) -> &ForgeBuf {
+    let dp = *(b as i64)
+    let pos = b.pos
+    let cap = b.cap
     loop i in 0..s.len {
-        if b.pos < b.cap { b.data[b.pos] = s[i]  b.pos = b.pos + 1 }
+        if pos < cap {
+            dp[pos] = s[i]
+            pos = pos + 1
+        }
     }
+    b.pos = pos
     ret b
 }
 
@@ -362,7 +369,7 @@ fn forge_buf_write_esc(b: &ForgeBuf, val: []i8) -> &ForgeBuf {
 }
 
 // =============================================================================
-// Route scopes — namespace and nested resource grouping
+// Route scopes -- namespace and nested resource grouping
 //
 // let admin = forge_scope(app, "/admin")
 // admin.get("/users",     fn_addr(handle_admin_users_index))
@@ -420,7 +427,7 @@ fn forge__resources_nested_scope(app: &ForgeApp, base: []i8, res: []i8) -> &Forg
 }
 
 // =============================================================================
-// Explicit resource registration — pass fn_addr for each handler.
+// Explicit resource registration -- pass fn_addr for each handler.
 // Pass 0 to skip a route. Returns nested &ForgeScope at /{res}/:{sing}_id.
 // =============================================================================
 
@@ -477,7 +484,7 @@ fn forge_scope_resource_explicit(s: &ForgeScope, res: []i8,
 }
 
 // =============================================================================
-// Action registry — maps ("controller", "action") → fn_ptr.
+// Action registry -- maps ("controller", "action") -> fn_ptr.
 // forge_controllers_init() (generated by scaffold in config/controllers.jda)
 // calls forge_action_register once per action. Then forge_resources("posts")
 // and app.resources("posts") auto-discover handlers by naming convention.
@@ -547,20 +554,20 @@ fn forge_action_get(ctrl: []i8, action: []i8) -> i64 {
     ret 0
 }
 
-// Parse "controller#action" — returns controller part
+// Parse "controller#action" -- returns controller part
 fn forge__ctrl_from_str(s: []i8) -> []i8 {
     loop i in 0..s.len { if s[i] == '#' { ret s[0..i] } }
     ret s
 }
 
-// Parse "controller#action" — returns action part
+// Parse "controller#action" -- returns action part
 fn forge__act_from_str(s: []i8) -> []i8 {
     loop i in 0..s.len { if s[i] == '#' { ret s[i+1..s.len] } }
     ret ""
 }
 
 // =============================================================================
-// Controller action auto-discovery API — looks up actions from the registry.
+// Controller action auto-discovery API -- looks up actions from the registry.
 // Use after forge_controllers_init() has been called in main().
 //
 // UFCS on &ForgeApp:   app.resources("posts")   app.root("posts#index")
@@ -614,7 +621,7 @@ fn forge_namespace(app: &ForgeApp, ns: []i8) -> &ForgeScope {
     ret forge_scope(app, forge__scope_join("/", ns))
 }
 
-// UFCS on &ForgeApp — app.root / app.resources / app.namespace / app.get etc.
+// UFCS on &ForgeApp -- app.root / app.resources / app.namespace / app.get etc.
 fn forge_app_root(app: &ForgeApp, s: []i8) {
     let h = forge_action_get(forge__ctrl_from_str(s), forge__act_from_str(s))
     if h != 0 { app_get(app, "/", h) }
@@ -808,43 +815,69 @@ fn forge_match_path(pattern: []i8, path: []i8, ctx: &ForgeCtx) -> bool {
 // =============================================================================
 fn forge_dispatch(app: &ForgeApp, ctx_ptr: i64) {
     let ctx: &ForgeCtx = ctx_ptr
+    let app_i64 = app as i64
 
-    // 1. Check normal routes
-    loop i in 0..app.route_count {
+    // 1. Normal routes: stride=72, routes at offset 0, route_count at 18432
+    let nroutes = *(app_i64 + 18432)
+    let i = 0i64
+    loop i < nroutes {
         ctx.param_count = 0
-        let route = &app.routes[i]
-        if forge_slice_eq(route.method, ctx.req.method) and
-           forge_match_path(route.pattern, ctx.req.path, ctx) {
-            // Global middleware
-            loop j in 0..app.mw_count {
-                call_fn(app.middleware[j], ctx_ptr)
+        let rbase = app_i64 + i * 72
+        let rmethod  = *(rbase)
+        let rpattern = *(rbase + 8)
+        let rhandler = *(rbase + 16)
+        if forge_slice_eq(rmethod, ctx.req.method) and
+           forge_match_path(rpattern, ctx.req.path, ctx) {
+            // Global middleware: at offset 18440, mw_count at 18568
+            let nmw = *(app_i64 + 18568)
+            let j = 0i64
+            loop j < nmw {
+                let mwfn = *(app_i64 + 18440 + j * 8)
+                call_fn(mwfn, ctx_ptr)
                 if ctx.sent { ret }
+                j = j + 1
             }
-            // Group-scoped middleware
-            loop j in 0..route.grp_mwc {
-                call_fn(route.grp_mw[j], ctx_ptr)
+            // Group middleware: grp_mw at rbase+24, grp_mwc at rbase+56
+            let grp_mwc = *(rbase + 56)
+            let k = 0i64
+            loop k < grp_mwc {
+                let grp_mwfn = *(rbase + 24 + k * 8)
+                call_fn(grp_mwfn, ctx_ptr)
                 if ctx.sent { ret }
+                k = k + 1
             }
-            // Handler
-            call_fn(route.handler, ctx_ptr)
-            // Post-handler middleware (response already sent, just hooks)
-            loop j in 0..app.after_count { call_fn(app.after[j], ctx_ptr) }
+            call_fn(rhandler, ctx_ptr)
+            // After middleware: at offset 18576, after_count at 18704
+            let nafter = *(app_i64 + 18704)
+            let m = 0i64
+            loop m < nafter {
+                let afn = *(app_i64 + 18576 + m * 8)
+                call_fn(afn, ctx_ptr)
+                m = m + 1
+            }
             ret
         }
+        i = i + 1
     }
 
-    // 2. Check static file routes
-    loop i in 0..app.static_count {
-        let sr = &app.static_routes[i]
-        if forge_starts_with(ctx.req.path, sr.url_prefix) {
-            forge_serve_static(ctx_ptr, sr.url_prefix, sr.fs_root)
+    // 2. Static routes: at offset 18712, stride=16, static_count at 18840
+    let nstatic = *(app_i64 + 18840)
+    let i2 = 0i64
+    loop i2 < nstatic {
+        let sbase = app_i64 + 18712 + i2 * 16
+        let url_prefix = *(sbase)
+        if forge_starts_with(ctx.req.path, url_prefix) {
+            let fs_root = *(sbase + 8)
+            forge_serve_static(ctx_ptr, url_prefix, fs_root)
             ret
         }
+        i2 = i2 + 1
     }
 
     // 3. 404
-    if app.not_found_h != 0 {
-        call_fn(app.not_found_h, ctx_ptr)
+    let not_found_h = *(app_i64 + 18848)
+    if not_found_h != 0 {
+        call_fn(not_found_h, ctx_ptr)
     } else {
         ctx_not_found(ctx_ptr)
     }
@@ -904,35 +937,24 @@ fn app_listen(app: &ForgeApp, port: i32) {
     g_forge_app = app
     app.config.port = port
 
-    let host = app.config.host
-    let workers = app.config.workers
-    if workers <= 0 { workers = 256 }
-
-    let listener = TcpListener::bind(host, port as u16)
-        .unwrap_or_else(|e| {
-            print("forge: bind failed\n")
-            exit(1)
-        })
-
-    print("forge: listening on ")
-    syscall(FORGE_SYS_WRITE, 1, host, host.len, 0, 0)
-    print(":")
+    print("forge: listening on :")
     print_int(port)
     print("\n")
 
-    let ch = chan_new(workers * 4)
-    loop i in 0..workers { spawn { forge_worker(ch) } }
+    let lfd = TcpListener__bind("0.0.0.0", port)
+    if lfd < 0 { print("forge: bind failed\n")  ret }
 
+    let sa: &i8 = alloc_pages(1)
+    let salen: &i32 = alloc_pages(1)
     loop {
-        match listener.accept() {
-            ok(conn) => { chan_send(ch, conn.fd as i64) }
-            err(_)   => {}
-        }
+        salen[0] = 16
+        let cfd = syscall(30, lfd, sa, salen, 0, 0, 0) as i32
+        if cfd >= 0 { forge_handle_fd(cfd) }
     }
 }
 
 // =============================================================================
-// Context — request accessors
+// Context -- request accessors
 // =============================================================================
 fn ctx_fd    (ctx_ptr: i64) -> i32  { let c: &ForgeCtx = ctx_ptr   ret c.fd }
 fn ctx_method(ctx_ptr: i64) -> []i8 { let c: &ForgeCtx = ctx_ptr   ret c.req.method }
@@ -989,7 +1011,7 @@ fn ctx_ip(ctx_ptr: i64) -> []i8 {
 }
 
 // =============================================================================
-// Context store — pass data between middleware and handler
+// Context store -- pass data between middleware and handler
 // =============================================================================
 fn ctx_set(ctx_ptr: i64, key: []i8, val: i64) {
     let c: &ForgeCtx = ctx_ptr
@@ -1062,7 +1084,7 @@ fn ctx_del_cookie(ctx_ptr: i64, name: []i8) {
     ctx_set_cookie(ctx_ptr, name, "", 0)
 }
 
-// forge__cookie_sign — FNV-32a signature of val mixed with secret (8 hex chars).
+// forge__cookie_sign -- FNV-32a signature of val mixed with secret (8 hex chars).
 fn forge__cookie_sign(val: []i8, secret: []i8) -> []i8 {
     let h = 2166136261i64
     let prime = 16777619i64
@@ -1074,7 +1096,7 @@ fn forge__cookie_sign(val: []i8, secret: []i8) -> []i8 {
     ret out[0..8]
 }
 
-// ctx_cookie_signed_set — write cookie with FNV-32a signature appended as ".XXXXXXXX".
+// ctx_cookie_signed_set -- write cookie with FNV-32a signature appended as ".XXXXXXXX".
 fn ctx_cookie_signed_set(ctx_ptr: i64, name: []i8, val: []i8, max_age_secs: i64) {
     let sig = forge__cookie_sign(val, g_forge_cfg.secret_key)
     let sv_buf: &i8 = alloc_pages(1)
@@ -1085,7 +1107,7 @@ fn ctx_cookie_signed_set(ctx_ptr: i64, name: []i8, val: []i8, max_age_secs: i64)
     ctx_set_cookie(ctx_ptr, name, sv_buf[0..svp], max_age_secs)
 }
 
-// ctx_cookie_signed_get — verify signature and return value, or "" on tamper.
+// ctx_cookie_signed_get -- verify signature and return value, or "" on tamper.
 fn ctx_cookie_signed_get(ctx_ptr: i64, name: []i8) -> []i8 {
     let raw = ctx_cookie(ctx_ptr, name)
     if raw.len < 10 { ret "" }          // at least 1 char + '.' + 8 hex
@@ -1113,15 +1135,21 @@ fn ctx_set_header(ctx_ptr: i64, name: []i8, val: []i8) {
 
 fn forge_build_hdr_str(c: &ForgeCtx, buf: &i8) -> i64 {
     let pos = 0i64
-    loop i in 0..c.out_hcount {
-        let nm = c.out_hdrs[i].name
-        let vl = c.out_hdrs[i].val
+    let c_i64 = c as i64
+    let hc = c.out_hcount
+    let i = 0i64
+    loop i < hc {
+        let hbase = c_i64 + 280 + i * 16
+        let nm = *(hbase)
+        let vl = *(hbase + 8)
+        let vl_len = vl.len
         loop j in 0..nm.len { buf[pos] = nm[j]   pos = pos + 1 }
         buf[pos] = ':'   pos = pos + 1
         buf[pos] = ' '   pos = pos + 1
-        loop j in 0..vl.len  { buf[pos] = vl[j]  pos = pos + 1 }
+        loop j in 0..vl_len  { buf[pos] = vl[j]  pos = pos + 1 }
         buf[pos] = '\r'  pos = pos + 1
         buf[pos] = '\n'  pos = pos + 1
+        i = i + 1
     }
     ret pos
 }
@@ -1179,7 +1207,7 @@ fn ctx_redirect_perm(ctx_ptr: i64, url: []i8) {
     ctx_respond(ctx_ptr, 301, "", "")
 }
 
-// ctx_redirect_back — redirect to the Referer header; fall back to fallback URL.
+// ctx_redirect_back -- redirect to the Referer header; fall back to fallback URL.
 fn ctx_redirect_back(ctx_ptr: i64, fallback: []i8) {
     let ref_hdr = ctx_header(ctx_ptr, "Referer")
     if ref_hdr.len > 0 {
@@ -1189,7 +1217,7 @@ fn ctx_redirect_back(ctx_ptr: i64, fallback: []i8) {
     }
 }
 
-// ctx_etag — set ETag response header; send 304 if If-None-Match matches.
+// ctx_etag -- set ETag response header; send 304 if If-None-Match matches.
 fn ctx_etag(ctx_ptr: i64, tag: []i8) -> bool {
     let inm = ctx_header(ctx_ptr, "If-None-Match")
     if forge_slice_eq(inm, tag) {
@@ -1200,7 +1228,7 @@ fn ctx_etag(ctx_ptr: i64, tag: []i8) -> bool {
     ret false
 }
 
-// ctx_last_modified — set Last-Modified header (Unix timestamp as string).
+// ctx_last_modified -- set Last-Modified header (Unix timestamp as string).
 // Returns true and sends 304 if If-Modified-Since matches.
 fn ctx_last_modified(ctx_ptr: i64, ts: []i8) -> bool {
     let ims = ctx_header(ctx_ptr, "If-Modified-Since")
@@ -1212,7 +1240,7 @@ fn ctx_last_modified(ctx_ptr: i64, ts: []i8) -> bool {
     ret false
 }
 
-// ctx_stale — returns true if the client cache is stale (must re-render).
+// ctx_stale -- returns true if the client cache is stale (must re-render).
 // Sets ETag header; sends 304 and returns false if client is up-to-date.
 fn ctx_stale(ctx_ptr: i64, etag: []i8) -> bool {
     ret not ctx_etag(ctx_ptr, etag)
@@ -1226,7 +1254,7 @@ fn ctx_unprocessable      (ctx_ptr: i64, msg: []i8)   { ctx_json(ctx_ptr, 422, m
 fn ctx_service_unavailable(ctx_ptr: i64)               { ctx_text(ctx_ptr, 503, "Service Unavailable") }
 fn ctx_head               (ctx_ptr: i64, status: i32)   { ctx_respond(ctx_ptr, status, "", "") }
 
-// File download — sends body with Content-Disposition: attachment
+// File download -- sends body with Content-Disposition: attachment
 fn ctx_download(ctx_ptr: i64, body: []i8, filename: []i8) {
     let buf = [320]i8
     let pos = 0i64
@@ -1307,7 +1335,7 @@ fn forge_serve_static(ctx_ptr: i64, url_prefix: []i8, fs_root: []i8) {
 fn forge_tcp_write_all(fd: i32, buf: &i8, n: i64) {
     let sent = 0i64
     loop sent < n {
-        let wrote = syscall(1, fd, buf + sent, n - sent, 0, 0, 0) as i64
+        let wrote = syscall(4, fd, buf + sent, n - sent, 0, 0, 0) as i64
         if wrote > 0 { sent = sent + wrote }
         else         { ret }
     }
@@ -1350,7 +1378,7 @@ fn ctx_upgrade_ws(ctx_ptr: i64) -> bool {
     ret true
 }
 
-// Send a text frame (server → client, unmasked)
+// Send a text frame (server -> client, unmasked)
 fn forge_ws_send_text(fd: i32, msg: []i8) {
     let hdr = [10]i8
     let hn = 0i64
@@ -1367,7 +1395,7 @@ fn forge_ws_send_text(fd: i32, msg: []i8) {
     forge_tcp_write_all(fd, msg, mlen)
 }
 
-// Send a binary frame (server → client, unmasked)
+// Send a binary frame (server -> client, unmasked)
 fn forge_ws_send_binary(fd: i32, data: []i8) {
     let hdr = [10]i8
     let hn = 0i64
@@ -1415,7 +1443,7 @@ fn forge_ws_recv(fd: i32, buf: &i8, max: i64) -> i64 {
         if got <= 0 { ret -1 }
         total = total + got
     }
-    // Unmask payload (client→server always masked)
+    // Unmask payload (client->server always masked)
     if masked {
         loop i in 0..total {
             buf[i] = buf[i] as i64 ^ mask[i - (i / 4) * 4] as i64
@@ -1433,18 +1461,18 @@ fn forge_ws_close(fd: i32) {
 }
 
 // =============================================================================
-// Channels — Action Cable style pub/sub over WebSocket
+// Channels -- Action Cable style pub/sub over WebSocket
 //
 // Register named channels at startup, then broadcast to all subscribers
-// from anywhere in the app — handlers, jobs, callbacks.
+// from anywhere in the app -- handlers, jobs, callbacks.
 //
 // Wire protocol (JSON over WebSocket):
-//   Client → Server  {"command":"subscribe","channel":"posts"}
-//   Client → Server  {"command":"message","channel":"posts","data":"..."}
-//   Client → Server  {"command":"unsubscribe","channel":"posts"}
-//   Server → Client  {"type":"confirm_subscription","channel":"posts"}
-//   Server → Client  {"type":"rejection","channel":"posts"}
-//   Server → Client  {"type":"message","channel":"posts","message":<data>}
+//   Client -> Server  {"command":"subscribe","channel":"posts"}
+//   Client -> Server  {"command":"message","channel":"posts","data":"..."}
+//   Client -> Server  {"command":"unsubscribe","channel":"posts"}
+//   Server -> Client  {"type":"confirm_subscription","channel":"posts"}
+//   Server -> Client  {"type":"rejection","channel":"posts"}
+//   Server -> Client  {"type":"message","channel":"posts","message":<data>}
 //
 // Usage:
 //   // startup
@@ -1466,9 +1494,9 @@ const FORGE_CHAN_ENTRY_STRIDE = 96   // 64 + 8 + 8 + 8 + 8
 
 // Passed to on_sub / on_msg / on_unsub callbacks as a packed i64 pointer.
 struct ForgeChanCbArg {
-    fd:       i64
-    data:     i64   // &i8 pointer to payload bytes (0 for subscribe/unsubscribe events)
-    data_len: i64
+    sub_fd:       i64
+    sub_data:     i64
+    sub_data_len: i64
 }
 
 struct ForgeChanEntry {
@@ -1481,7 +1509,7 @@ struct ForgeChanEntry {
 
 let g_forge_chan_base:      i64  = 0
 let g_forge_chan_count:     i64  = 0
-let g_forge_chan_fds:       &i64 = 0   // flat [FORGE_CHAN_MAX * FORGE_CHAN_FD_MAX] — -1 = empty slot
+let g_forge_chan_fds:       &i64 = 0   // flat [FORGE_CHAN_MAX * FORGE_CHAN_FD_MAX] -- -1 = empty slot
 let g_forge_chan_fd_counts: &i64 = 0   // [FORGE_CHAN_MAX] subscriber count per channel
 
 fn forge_chan_entry_at(i: i64) -> &ForgeChanEntry {
@@ -1553,7 +1581,7 @@ fn forge_channel_unsubscribe(name: []i8, fd: i32) {
     }
 }
 
-// Remove fd from ALL channels — call on WebSocket disconnect.
+// Remove fd from ALL channels -- call on WebSocket disconnect.
 fn forge_channel_unsubscribe_fd(fd: i32) {
     forge_chan_init()
     loop ci in 0..g_forge_chan_count {
@@ -1656,7 +1684,7 @@ fn forge_channel_handle(ctx_ptr: i64) {
 
         if forge_slice_eq(cmd, "subscribe") {
             if ci < 0 {
-                // Unknown channel — send rejection
+                // Unknown channel -- send rejection
                 let rej: &i8 = alloc_pages(1)
                 let rp = 0i64
                 let rp1 = "{\"type\":\"rejection\",\"channel\":\""
@@ -1680,7 +1708,7 @@ fn forge_channel_handle(ctx_ptr: i64) {
                 let entry = forge_chan_entry_at(ci)
                 if entry.on_sub != 0 {
                     let arg: &ForgeChanCbArg = alloc_pages(1)
-                    arg.fd = fd as i64  arg.data = 0  arg.data_len = 0
+                    arg.sub_fd = fd as i64  arg.sub_data = 0  arg.sub_data_len = 0
                     call_fn(entry.on_sub, arg as i64)
                 }
             }
@@ -1690,9 +1718,9 @@ fn forge_channel_handle(ctx_ptr: i64) {
                 let entry = forge_chan_entry_at(ci)
                 if entry.on_msg != 0 {
                     let arg: &ForgeChanCbArg = alloc_pages(1)
-                    arg.fd       = fd as i64
-                    arg.data     = data_buf as i64
-                    arg.data_len = data_len
+                    arg.sub_fd   = fd as i64
+                    arg.sub_data = data_buf as i64
+                    arg.sub_data_len = data_len
                     call_fn(entry.on_msg, arg as i64)
                 }
             }
@@ -1701,7 +1729,7 @@ fn forge_channel_handle(ctx_ptr: i64) {
                 let entry = forge_chan_entry_at(ci)
                 if entry.on_unsub != 0 {
                     let arg: &ForgeChanCbArg = alloc_pages(1)
-                    arg.fd = fd as i64  arg.data = 0  arg.data_len = 0
+                    arg.sub_fd = fd as i64  arg.sub_data = 0  arg.sub_data_len = 0
                     call_fn(entry.on_unsub, arg as i64)
                 }
                 forge_channel_unsubscribe(chan, fd)
@@ -1781,10 +1809,10 @@ fn forge_secure_headers(ctx_ptr: i64) {
     ctx_set_header(ctx_ptr, "Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 }
 
-// Rate limiter state (global — shared across all workers via atomic ops)
+// Rate limiter state (global -- shared across all workers via atomic ops)
 let g_forge_rl_count:  i64 = 0
 let g_forge_rl_window: i64 = 0
-const FORGE_RL_LIMIT = 600    // requests per window (10 req/sec × 60s)
+const FORGE_RL_LIMIT = 600    // requests per window (10 req/sec x 60s)
 const FORGE_RL_WINDOW_MS = 60000
 
 // Rate limit: simple global token bucket (600 req/min across all clients)
@@ -1803,7 +1831,7 @@ fn forge_rate_limit(ctx_ptr: i64) {
     }
 }
 
-// forge_rate_limit_key — per-key rate limiting (e.g., per IP or per user).
+// forge_rate_limit_key -- per-key rate limiting (e.g., per IP or per user).
 // key should uniquely identify the client (IP, user id, route+IP, etc.).
 // max: maximum requests in window_sec seconds.
 // Uses the in-process cache as a sliding window counter.
@@ -1829,7 +1857,7 @@ fn forge_rate_limit_key(ctx_ptr: i64, key: []i8, max: i64, window_sec: i64) {
     }
 }
 
-// forge_token_generate — return a URL-safe random token of n bytes.
+// forge_token_generate -- return a URL-safe random token of n bytes.
 fn forge_token_generate(n: i64) -> []i8 {
     let buf: &i8 = alloc_pages(1)
     // Use /dev/urandom via open+read syscalls
@@ -1837,7 +1865,7 @@ fn forge_token_generate(n: i64) -> []i8 {
     let ps = "/dev/urandom"
     loop i in 0..ps.len { path_buf[i] = ps[i] }
     path_buf[ps.len] = 0
-    let fd = syscall(2, path_buf as i64, 0, 0, 0, 0, 0) as i32   // open O_RDONLY
+    let fd = syscall(5, path_buf as i64, 0, 0, 0, 0, 0) as i32   // open O_RDONLY (macOS=5)
     if fd < 0 {
         // Fallback: derive from time + counter
         let t = time_now_ms()
@@ -1847,15 +1875,15 @@ fn forge_token_generate(n: i64) -> []i8 {
         ret buf[0..n]
     }
     let raw: &i8 = alloc_pages(1)
-    syscall(0, fd as i64, raw as i64, n, 0, 0, 0)   // read
-    syscall(3, fd as i64, 0, 0, 0, 0, 0)             // close
+    syscall(3, fd as i64, raw as i64, n, 0, 0, 0)   // read (macOS=3)
+    syscall(6, fd as i64, 0, 0, 0, 0, 0)             // close (macOS=6)
     // Encode to URL-safe base64-alphabet characters
     let alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
     loop i in 0..n { buf[i] = alpha[(raw[i] as i64 and 0x3F)] }
     ret buf[0..n]
 }
 
-// forge_token_eq_timing — constant-time string comparison to prevent timing attacks.
+// forge_token_eq_timing -- constant-time string comparison to prevent timing attacks.
 fn forge_token_eq_timing(a: []i8, b: []i8) -> bool {
     if a.len != b.len { ret false }
     let diff = 0i64
@@ -1863,7 +1891,7 @@ fn forge_token_eq_timing(a: []i8, b: []i8) -> bool {
     ret diff == 0
 }
 
-// Basic Auth middleware — expects Authorization: Basic <base64(user:pass)>
+// Basic Auth middleware -- expects Authorization: Basic <base64(user:pass)>
 // Set expected credentials via global constants before calling app_listen.
 let g_forge_ba_user: []i8 = ""
 let g_forge_ba_pass: []i8 = ""
@@ -1901,7 +1929,7 @@ fn forge_basic_auth(ctx_ptr: i64) {
     let pass = decoded[colon+1..dlen]
     if forge_slice_eq(user, g_forge_ba_user) and forge_slice_eq(pass, g_forge_ba_pass) {
         ctx_set(ctx_ptr, "basic_user", user as i64)
-        ret   // authenticated — continue
+        ret   // authenticated -- continue
     }
     ctx_set_header(ctx_ptr, "WWW-Authenticate", "Basic realm=\"forge\"")
     ctx_unauthorized(ctx_ptr)
@@ -1919,7 +1947,7 @@ fn forge_set_jwt_secret(secret: []i8) {
 }
 
 fn forge_jwt_b64url_decode(src: []i8, dst: &i8) -> i64 {
-    // Convert base64url → base64: replace - with +, _ with /
+    // Convert base64url -> base64: replace - with +, _ with /
     let tmp: &i8 = alloc_pages(1)
     let n = src.len
     loop i in 0..n {
@@ -1997,7 +2025,7 @@ fn forge_jwt_auth(ctx_ptr: i64) {
 }
 
 // =============================================================================
-// URL utilities — percent-decode, form parsing
+// URL utilities -- percent-decode, form parsing
 // =============================================================================
 
 fn forge_hex_val(c: i8) -> i64 {
@@ -2131,7 +2159,7 @@ fn forge_sse_close(fd: i32) {
 }
 
 // =============================================================================
-// Sessions — in-memory session store
+// Sessions -- in-memory session store
 // Register forge_session_start as a global middleware before other middleware.
 // Sessions persist for the lifetime of the server process.
 // =============================================================================
@@ -2262,7 +2290,7 @@ fn ctx_session_clear(ctx_ptr: i64) {
 }
 
 // =============================================================================
-// Flash messages — one-time session messages
+// Flash messages -- one-time session messages
 // Requires forge_session_start middleware.
 // =============================================================================
 
@@ -2289,7 +2317,7 @@ fn ctx_flash_get(ctx_ptr: i64, kind: []i8) -> []i8 {
     ret msg
 }
 
-// ctx_flash_now — flash visible only in the current request (stored in ctx store,
+// ctx_flash_now -- flash visible only in the current request (stored in ctx store,
 // not in the session, so it does not survive to the next request).
 fn ctx_flash_now(ctx_ptr: i64, kind: []i8, msg: []i8) {
     let kb: &i8 = alloc_pages(1)
@@ -2311,7 +2339,7 @@ fn ctx_flash_now_get(ctx_ptr: i64, kind: []i8) -> []i8 {
     ret val as []i8
 }
 
-// ctx_flash_keep — re-persist the current flash so it survives to the next request.
+// ctx_flash_keep -- re-persist the current flash so it survives to the next request.
 // Call from a before filter when you want to propagate flash across a redirect chain.
 fn ctx_flash_keep(ctx_ptr: i64, kind: []i8) {
     let msg = ctx_flash_get(ctx_ptr, kind)
@@ -2365,7 +2393,7 @@ fn forge_proxy_headers(ctx_ptr: i64) {
 }
 
 // =============================================================================
-// Background Jobs — spawn-based worker pool
+// Background Jobs -- spawn-based worker pool
 // Call forge_jobs_start(n) once in main() before app_listen.
 // Then use forge_job_enqueue(fn_addr(my_job), arg) anywhere.
 //
@@ -2459,7 +2487,7 @@ fn forge_job_enqueue_retry(fn_ptr: i64, arg: i64, max_retries: i64) {
     forge_job_enqueue(fn_addr(forge__retry_job), r as i64)
 }
 
-// ForgeRetryBackoffArg — retry with exponential backoff using nanosleep.
+// ForgeRetryBackoffArg -- retry with exponential backoff using nanosleep.
 struct ForgeRetryBackoffArg {
     fn_ptr:    i64
     arg:       i64
@@ -2476,7 +2504,7 @@ fn forge__ms_sleep(ms: i64) {
     let ts: &ForgeTimespec = alloc_pages(1)
     ts.sec  = ms / 1000
     ts.nsec = (ms % 1000) * 1000000
-    syscall(35, ts as i64, 0, 0, 0, 0, 0)   // SYS_NANOSLEEP (Linux x86-64)
+    syscall(240, ts as i64, 0, 0, 0, 0, 0)   // SYS_NANOSLEEP (macOS=240)
 }
 
 fn forge__retry_job_backoff(packed: i64) {
@@ -2502,7 +2530,7 @@ fn forge_job_enqueue_retry_backoff(fn_ptr: i64, arg: i64, max_retries: i64, base
     forge_job_enqueue(fn_addr(forge__retry_job_backoff), r as i64)
 }
 
-// forge_job_enqueue_retry_discard — retry with a discard predicate.
+// forge_job_enqueue_retry_discard -- retry with a discard predicate.
 // discard_fn(arg) -> i64: if non-zero, job is permanently discarded (no further retries).
 struct ForgeRetryDiscardArg {
     fn_ptr:    i64
@@ -2537,7 +2565,7 @@ fn forge_job_enqueue_retry_discard(fn_ptr: i64, arg: i64, max_retries: i64, disc
     forge_job_enqueue(fn_addr(forge__retry_job_discard), r as i64)
 }
 
-// forge_job_enqueue_in — enqueue fn_ptr after delay_ms milliseconds.
+// forge_job_enqueue_in -- enqueue fn_ptr after delay_ms milliseconds.
 // Spawns a lightweight goroutine that sleeps then dispatches into the worker pool.
 struct ForgeDelayedJobArg {
     fn_ptr:   i64
@@ -2560,7 +2588,7 @@ fn forge_job_enqueue_in(fn_ptr: i64, arg: i64, delay_ms: i64) {
 }
 
 // =============================================================================
-// I18n — internationalization / translation
+// I18n -- internationalization / translation
 // Load locales from "key=value\n" flat files with forge_i18n_load.
 // Use forge_t(ctx, "greeting") in handlers; locale follows ctx "locale" store key.
 //
@@ -2587,7 +2615,7 @@ let g_forge_i18n_locale: []i8 = "en"   // default locale
 
 fn forge_i18n_init() {
     if g_forge_i18n_base != 0 { ret }
-    // 512 × 344 = 176 KB → 44 pages
+    // 512 x 344 = 176 KB -> 44 pages
     let block: &i8 = alloc_pages(44)
     g_forge_i18n_base = block as i64
 }
@@ -2689,7 +2717,7 @@ fn forge_locale_set_ctx(ctx_ptr: i64, locale: []i8) {
 }
 
 // =============================================================================
-// Mailer — send email via SMTP
+// Mailer -- send email via SMTP
 // Call forge_mailer_config once in main() with your SMTP server details.
 //
 // Example:
@@ -2837,7 +2865,7 @@ fn forge_mail_send(mail: ForgeMail) -> bool {
     forge_smtp_write(fd, subj_buf[0..sbp])
     if mail.html { forge_smtp_write(fd, mime_html) }
     else         { forge_smtp_write(fd, mime_txt) }
-    forge_smtp_write(fd, "")   // blank line → body starts
+    forge_smtp_write(fd, "")   // blank line -> body starts
 
     // Body
     forge_smtp_write(fd, mail.body)
@@ -2867,7 +2895,7 @@ fn forge_mail_job(arg: i64) {
     forge_mail_send(ForgeMail { to: m.to, from: m.from, subject: m.subject, body: m.body, html: m.html })
 }
 
-// forge_mail_send_in — send mail asynchronously after delay_ms milliseconds.
+// forge_mail_send_in -- send mail asynchronously after delay_ms milliseconds.
 fn forge_mail_send_in(mail: ForgeMail, delay_ms: i64) {
     let m: &ForgeMail = alloc_pages(1)
     m.to      = mail.to
@@ -2879,7 +2907,7 @@ fn forge_mail_send_in(mail: ForgeMail, delay_ms: i64) {
 }
 
 // =============================================================================
-// Mailer previews — development-only browser preview of email templates.
+// Mailer previews -- development-only browser preview of email templates.
 //
 // Register preview functions in your app/mailers/ files:
 //   forge_mail_preview_register("welcome", fn_addr(preview_welcome_email))
@@ -2973,7 +3001,7 @@ fn forge_mail_preview_handler(ctx: i64) {
 }
 
 // =============================================================================
-// Database — PostgreSQL wire protocol (simple query mode)
+// Database -- PostgreSQL wire protocol (simple query mode)
 // Call forge_db_config once in main() before app_listen.
 //
 // Example:
@@ -2982,7 +3010,7 @@ fn forge_mail_preview_handler(ctx: i64) {
 //   // Execute INSERT/UPDATE/DELETE
 //   forge_db_exec("INSERT INTO users (email) VALUES ('alice@example.com')")
 //
-//   // SELECT — returns rows as ForgeResult
+//   // SELECT -- returns rows as ForgeResult
 //   let res = forge_db_query("SELECT id, email FROM users")
 //   loop i in 0..res.count {
 //       let id    = forge_row_col(res, i, 0)
@@ -2993,7 +3021,7 @@ const FORGE_DB_MAX_COLS    = 32
 const FORGE_DB_MAX_ROWS    = 256
 const FORGE_DB_COL_CAP     = 512
 const FORGE_DB_COL_STRIDE  = 520   // sizeof(ForgeDbCell): 512+8
-const FORGE_DB_ROW_STRIDE  = 16648 // 32 × 520 + 8 (count)
+const FORGE_DB_ROW_STRIDE  = 16648 // 32 x 520 + 8 (count)
 const FORGE_DB_RECV_BUF    = 65536
 
 struct ForgeDbCell {
@@ -3017,7 +3045,7 @@ struct ForgeResult {
 }
 
 // =============================================================================
-// Multi-database registry — named connections, multiple drivers
+// Multi-database registry -- named connections, multiple drivers
 //
 // Register connections at startup:
 //   forge_db_add("primary",   forge_env_get("DATABASE_URL"))
@@ -3185,7 +3213,7 @@ fn forge_db_conn_idx(name: []i8) -> i64 {
     ret 0
 }
 
-// Legacy globals — kept for backward compat and used when no registry is set.
+// Legacy globals -- kept for backward compat and used when no registry is set.
 let g_forge_db_host: []i8 = ""
 let g_forge_db_port: i32  = 5432
 let g_forge_db_user: []i8 = ""
@@ -3253,7 +3281,7 @@ fn forge_db_write_i16(buf: &i8, off: i64, val: i64) {
 }
 
 // =============================================================================
-// PostgreSQL driver — wire protocol v3
+// PostgreSQL driver -- wire protocol v3
 // =============================================================================
 
 fn forge_pg_connect(host: []i8, port: i32, user: []i8, pass: []i8, dbname: []i8) -> i32 {
@@ -3331,7 +3359,7 @@ fn forge_pg_query(host: []i8, port: i32, user: []i8, pass: []i8, dbname: []i8, s
         if mlen > 0 { forge_db_recv_n(fd, body, mlen) }
 
         if mtype == 'T' {
-            // RowDescription — parse column count and names
+            // RowDescription -- parse column count and names
             ncols = forge_db_read_i16(body, 0)
             result.col_count = ncols
             let tp = 2i64
@@ -3376,9 +3404,9 @@ fn forge_pg_query(host: []i8, port: i32, user: []i8, pass: []i8, dbname: []i8, s
                 result.count = row_i + 1
             }
         } else if mtype == 'C' {
-            // CommandComplete — parse affected rows from tag like "INSERT 0 3"
+            // CommandComplete -- parse affected rows from tag like "INSERT 0 3"
             let tag = body[0..mlen]
-            // Find last space → number after it is row count
+            // Find last space -> number after it is row count
             let li = 0i64
             loop i in 0..tag.len { if tag[i] == ' ' { li = i } }
             if li > 0 {
@@ -3391,7 +3419,7 @@ fn forge_pg_query(host: []i8, port: i32, user: []i8, pass: []i8, dbname: []i8, s
                 result.affected = acc
             }
         } else if mtype == 'Z' {
-            break   // ReadyForQuery — done
+            break   // ReadyForQuery -- done
         } else if mtype == 'E' {
             break   // ErrorResponse
         }
@@ -3411,7 +3439,7 @@ fn forge_db_exec(sql: []i8) -> bool {
 }
 
 // =============================================================================
-// MySQL driver — wire protocol v4.1 / v10 handshake
+// MySQL driver -- wire protocol v4.1 / v10 handshake
 // Supports mysql_native_password authentication.
 // =============================================================================
 
@@ -3557,7 +3585,7 @@ fn forge_mysql_query(conn: &ForgeDBConn, sql: []i8) -> &ForgeResult {
     if buf[0] == 0xFF { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret result }
 
     if buf[0] == 0x00 {
-        // OK packet — parse affected rows
+        // OK packet -- parse affected rows
         let p: &i64 = alloc_pages(1)   p[0] = 1
         result.affected = forge_mysql_lenenc(buf, p)
         syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
@@ -3667,11 +3695,11 @@ fn forge_result_col(res: &ForgeResult, row_i: i64, col: []i8) -> []i8 {
     ret ""
 }
 
-// Shortcut for the "id" column — enables post_obj.id() via UFCS
+// Shortcut for the "id" column -- enables post_obj.id() via UFCS
 fn forge_result_id(res: &ForgeResult) -> []i8 { ret forge_result_col(res, 0, "id") }
 
 // =============================================================================
-// Migrations — run SQL migration files in order
+// Migrations -- run SQL migration files in order
 // Files must be named NNN_description.sql (e.g. 001_create_users.sql).
 // Tracks completed migrations in a "forge_migrations" table.
 //
@@ -3687,7 +3715,7 @@ fn forge_migrate(dir: []i8) {
     // by constructing filenames 001..999 and checking if they exist.
     let i = 1i64
     loop i <= 999 {
-        // Build path: dir + "/" + NNN_*.sql — try to open and execute
+        // Build path: dir + "/" + NNN_*.sql -- try to open and execute
         // Since we can't list directories, migrations must be registered via forge_migration_add
         // (see below). This runner executes registered migrations in order.
         i = i + 1
@@ -3738,7 +3766,7 @@ fn forge_migration_run(name: []i8, sql: []i8) {
 }
 
 // =============================================================================
-// Admin UI — auto-generated CRUD interface
+// Admin UI -- auto-generated CRUD interface
 // Register models with forge_admin_register, then mount at /admin.
 //
 // Example:
@@ -3825,7 +3853,7 @@ fn forge_admin_list(ctx: i64) {
     let buf: &i8 = alloc_pages(8)
     let pos = 0i64
     let h1 = "<h1>"
-    let h1e = "</h1><a href=/admin>← Back</a><table border=1><tr>"
+    let h1e = "</h1><a href=/admin><- Back</a><table border=1><tr>"
     loop i in 0..h1.len         { buf[pos] = h1[i]   pos = pos + 1 }
     loop i in 0..model_name.len { buf[pos] = model_name[i]  pos = pos + 1 }
     loop i in 0..h1e.len        { buf[pos] = h1e[i]  pos = pos + 1 }
@@ -3865,7 +3893,7 @@ fn forge_admin_list(ctx: i64) {
 }
 
 // =============================================================================
-// Section A — DB Utilities + Query Builder
+// Section A -- DB Utilities + Query Builder
 // =============================================================================
 
 const FORGE_QUERY_WHERE_CAP  = 2048
@@ -4009,7 +4037,7 @@ fn forge__where_connector(q: &ForgeQuery) {
 
 let FORGE_MODEL_DB_MAX: i64 = 64
 
-let g_forge_model_db_tables:     &i8  = 0   // 64 slots × 64 bytes
+let g_forge_model_db_tables:     &i8  = 0   // 64 slots x 64 bytes
 let g_forge_model_db_table_lens: &i64 = 0
 let g_forge_model_db_conn_idxs:  &i64 = 0
 let g_forge_model_db_count:      i64  = 0
@@ -4087,7 +4115,7 @@ fn forge_q_distinct(q: &ForgeQuery) -> &ForgeQuery {
 }
 
 // ---------------------------------------------------------------------------
-// WHERE — core
+// WHERE -- core
 // ---------------------------------------------------------------------------
 
 fn forge_q_where(q: &ForgeQuery, col: []i8, op: []i8, val: []i8) -> &ForgeQuery {
@@ -4113,7 +4141,7 @@ fn forge_q_where_raw(q: &ForgeQuery, expr: []i8) -> &ForgeQuery {
     ret q
 }
 
-// where_bind — parameterized WHERE: ? placeholders, pipe-separated args
+// where_bind -- parameterized WHERE: ? placeholders, pipe-separated args
 // e.g. .where_bind("role = ? and name = ?", "admin|alice")
 // Each ? is replaced with the next pipe-delimited arg, SQL-escaped and quoted.
 // Values cannot contain '|'. For values with pipes, use separate where_eq calls.
@@ -4138,7 +4166,7 @@ fn forge_q_where_bind(q: &ForgeQuery, tmpl: []i8, args: []i8) -> &ForgeQuery {
     ret q
 }
 
-// where_eq(col, val) — equality shorthand
+// where_eq(col, val) -- equality shorthand
 fn forge_q_where_eq(q: &ForgeQuery, col: []i8, val: []i8) -> &ForgeQuery {
     forge__where_connector(q)
     forge__wbuf(q, col)
@@ -4154,7 +4182,7 @@ fn forge_q_or(q: &ForgeQuery) -> &ForgeQuery {
 }
 
 // ---------------------------------------------------------------------------
-// WHERE — convenience helpers
+// WHERE -- convenience helpers
 // ---------------------------------------------------------------------------
 
 fn forge_q_where_not(q: &ForgeQuery, col: []i8, val: []i8) -> &ForgeQuery {
@@ -4245,7 +4273,7 @@ fn forge_q_where_lte(q: &ForgeQuery, col: []i8, val: []i8) -> &ForgeQuery {
     ret q
 }
 
-// WHERE col IN ('a','b','c') — vals is a comma-separated string e.g. "admin,user,guest"
+// WHERE col IN ('a','b','c') -- vals is a comma-separated string e.g. "admin,user,guest"
 fn forge_q_where_in(q: &ForgeQuery, col: []i8, vals: []i8) -> &ForgeQuery {
     forge__where_connector(q)
     forge__wbuf(q, col)
@@ -4422,7 +4450,7 @@ fn forge_q_sql(q: &ForgeQuery, dst: &i8) -> i64 {
         loop i in 0..q.join_len { dst[pos] = q.join_buf[i]  pos = pos + 1 }
     }
 
-    // WHERE — include soft-delete filter unless no_soft_delete is set
+    // WHERE -- include soft-delete filter unless no_soft_delete is set
     let has_sd_filter = not q.no_soft_delete and not q.only_deleted
     let has_only_del  = q.only_deleted
     if has_sd_filter or has_only_del or q.where_len > 0 {
@@ -4576,7 +4604,7 @@ fn forge_q_max(q: &ForgeQuery, col: []i8) -> []i8 { ret forge__aggregate(q, "MAX
 fn forge_q_min(q: &ForgeQuery, col: []i8) -> []i8 { ret forge__aggregate(q, "MIN", col) }
 
 // ---------------------------------------------------------------------------
-// DML — update_all / delete_all
+// DML -- update_all / delete_all
 // ---------------------------------------------------------------------------
 
 fn forge_q_update_all(q: &ForgeQuery, set_clause: []i8) -> bool {
@@ -4646,7 +4674,7 @@ fn forge_find_in_batches(table: []i8, batch_size: i64, fn_ptr: i64) {
     }
 }
 
-// forge_q_find_each — call fn_ptr(ctx: i64, row: &ForgeResult) for each row.
+// forge_q_find_each -- call fn_ptr(ctx: i64, row: &ForgeResult) for each row.
 // fn_ptr signature: fn(i64) where arg is a single-row ForgeResult cast to i64.
 fn forge_q_find_each(q: &ForgeQuery, fn_ptr: i64) {
     q.lim = 1
@@ -4663,21 +4691,21 @@ fn forge_q_find_each(q: &ForgeQuery, fn_ptr: i64) {
 // Soft-delete query helpers
 // ---------------------------------------------------------------------------
 
-// forge_q_with_deleted — include soft-deleted rows (skip deleted_at IS NULL filter).
+// forge_q_with_deleted -- include soft-deleted rows (skip deleted_at IS NULL filter).
 fn forge_q_with_deleted(q: &ForgeQuery) -> &ForgeQuery {
     q.no_soft_delete = true
     q.only_deleted   = false
     ret q
 }
 
-// forge_q_only_deleted — query only soft-deleted rows.
+// forge_q_only_deleted -- query only soft-deleted rows.
 fn forge_q_only_deleted(q: &ForgeQuery) -> &ForgeQuery {
     q.only_deleted   = true
     q.no_soft_delete = true
     ret q
 }
 
-// forge_q_where_not_deleted — explicitly add deleted_at IS NULL (useful when
+// forge_q_where_not_deleted -- explicitly add deleted_at IS NULL (useful when
 // chaining without relying on the default filter).
 fn forge_q_where_not_deleted(q: &ForgeQuery) -> &ForgeQuery {
     q.no_soft_delete = false
@@ -4685,7 +4713,7 @@ fn forge_q_where_not_deleted(q: &ForgeQuery) -> &ForgeQuery {
     ret q
 }
 
-// forge_q_unscope — remove soft-delete filter and ORDER BY.
+// forge_q_unscope -- remove soft-delete filter and ORDER BY.
 fn forge_q_unscope(q: &ForgeQuery) -> &ForgeQuery {
     q.no_soft_delete = true
     q.only_deleted   = false
@@ -4697,7 +4725,7 @@ fn forge_q_unscope(q: &ForgeQuery) -> &ForgeQuery {
 // Additional query helpers
 // ---------------------------------------------------------------------------
 
-// forge_q_pick — return the value of a single column from the first matching row.
+// forge_q_pick -- return the value of a single column from the first matching row.
 fn forge_q_pick(q: &ForgeQuery, col: []i8) -> []i8 {
     forge_q_select(q, col)
     q.lim = 1
@@ -4706,7 +4734,7 @@ fn forge_q_pick(q: &ForgeQuery, col: []i8) -> []i8 {
     ret forge_row_col(res, 0, 0)
 }
 
-// forge_q_reorder — clear existing ORDER BY and apply a new one.
+// forge_q_reorder -- clear existing ORDER BY and apply a new one.
 fn forge_q_reorder(q: &ForgeQuery, col: []i8, dir: []i8) -> &ForgeQuery {
     q.order_len = 0
     let buf: &i8 = q.order_buf as &i8
@@ -4718,7 +4746,7 @@ fn forge_q_reorder(q: &ForgeQuery, col: []i8, dir: []i8) -> &ForgeQuery {
     ret q
 }
 
-// forge_q_reverse_order — flip ASC to DESC and vice-versa in the current order.
+// forge_q_reverse_order -- flip ASC to DESC and vice-versa in the current order.
 fn forge_q_reverse_order(q: &ForgeQuery) -> &ForgeQuery {
     if q.order_len == 0 {
         let s = "id DESC"
@@ -4750,7 +4778,7 @@ fn forge_q_reverse_order(q: &ForgeQuery) -> &ForgeQuery {
     ret q
 }
 
-// forge_find_or_init_by — return ForgeAttrs pre-seeded with col=val.
+// forge_find_or_init_by -- return ForgeAttrs pre-seeded with col=val.
 // Caller checks forge_attrs_is_new(a) to decide between insert and update.
 // The attrs object is always fresh; for existing rows, "id" is also set.
 fn forge_find_or_init_by(table: []i8, col: []i8, val: []i8) -> &ForgeAttrs {
@@ -4769,7 +4797,7 @@ fn forge_find_or_init_by(table: []i8, col: []i8, val: []i8) -> &ForgeAttrs {
     ret a
 }
 
-// forge_insert_all — bulk INSERT from a slice of pre-built value tuples.
+// forge_insert_all -- bulk INSERT from a slice of pre-built value tuples.
 // rows_csv: comma-separated tuples already SQL-escaped, e.g. "('a','b'),('c','d')"
 // col_names_csv: column list, e.g. "title, body, author"
 fn forge_insert_all(table: []i8, col_names_csv: []i8, rows_csv: []i8) -> bool {
@@ -4856,7 +4884,7 @@ fn forge_exec_sql(raw_sql: []i8) -> bool {
 }
 
 // =============================================================================
-// Section B — Validations
+// Section B -- Validations
 // =============================================================================
 const FORGE_MAX_ERRORS = 16
 
@@ -5188,7 +5216,7 @@ fn forge_validate_equal_to(e: &ForgeErrors, field: []i8, val: []i8, n: i64) -> b
     ret false
 }
 
-// Manual-only — declarative uniqueness requires an id that the attrs layer does not carry.
+// Manual-only -- declarative uniqueness requires an id that the attrs layer does not carry.
 // Call directly from a controller or a FORGE_CB_BEFORE_SAVE callback.
 fn forge_validate_uniqueness(e: &ForgeErrors, table: []i8, field: []i8, val: []i8, exclude_id: []i8) -> bool {
     let q = forge_q(table)
@@ -5203,7 +5231,7 @@ fn forge_validate_uniqueness(e: &ForgeErrors, table: []i8, field: []i8, val: []i
 }
 
 // =============================================================================
-// Section B3 — Declarative Validations
+// Section B3 -- Declarative Validations
 // =============================================================================
 const FORGE_V_PRESENCE      = 1
 const FORGE_V_EMAIL         = 2
@@ -5245,7 +5273,7 @@ let g_forge_save_context: []i8         = ""   // "create" or "update"
 
 fn forge_v_init() {
     if g_forge_v_store != 0 { ret }
-    g_forge_v_store = alloc_pages(6)   // 128 × 186 = 23808 < 24576
+    g_forge_v_store = alloc_pages(6)   // 128 x 186 = 23808 < 24576
 }
 
 fn forge_last_errors() -> &ForgeErrors {
@@ -5257,17 +5285,17 @@ const FORGE_FA_MAX  = 24
 const FORGE_FA_NCAP = 48
 const FORGE_FA_VCAP = 512
 
-let g_fa_names: &i8  = 0   // FORGE_FA_MAX × FORGE_FA_NCAP
-let g_fa_vals:  &i8  = 0   // FORGE_FA_MAX × FORGE_FA_VCAP
-let g_fa_meta:  &i8  = 0   // FORGE_FA_MAX × 16: nlen(i64) + vlen(i64)
+let g_fa_names: &i8  = 0   // FORGE_FA_MAX x FORGE_FA_NCAP
+let g_fa_vals:  &i8  = 0   // FORGE_FA_MAX x FORGE_FA_VCAP
+let g_fa_meta:  &i8  = 0   // FORGE_FA_MAX x 16: nlen(i64) + vlen(i64)
 let g_fa_count: i64  = 0
 let g_fa_ready: bool = false
 
 fn forge_fa_init() {
     if g_fa_ready { ret }
-    g_fa_names = alloc_pages(1)   // 24 × 48  = 1152 < 4096
-    g_fa_vals  = alloc_pages(3)   // 24 × 512 = 12288
-    g_fa_meta  = alloc_pages(1)   // 24 × 16  = 384  < 4096
+    g_fa_names = alloc_pages(1)   // 24 x 48  = 1152 < 4096
+    g_fa_vals  = alloc_pages(3)   // 24 x 512 = 12288
+    g_fa_meta  = alloc_pages(1)   // 24 x 16  = 384  < 4096
     g_fa_ready = true
 }
 
@@ -5488,7 +5516,7 @@ fn forge_field_confirm(field: []i8, confirm_field: []i8) {
     forge_field_param(field, FORGE_V_CONFIRMATION, confirm_field)
 }
 
-// forge_field_on_create / forge_field_on_update — validate a field only on
+// forge_field_on_create / forge_field_on_update -- validate a field only on
 // create or only on update.  Call after the rule-registering helper.
 //   forge_field("email", FORGE_V_PRESENCE)
 //   forge_field_on_create("email")  // mark the just-registered rule
@@ -5556,7 +5584,7 @@ fn forge_attrs_validate(table: []i8) -> bool {
 }
 
 // =============================================================================
-// Section C — Model Callbacks
+// Section C -- Model Callbacks
 // =============================================================================
 const FORGE_CB_BEFORE_SAVE   = 1
 const FORGE_CB_AFTER_SAVE    = 2
@@ -5607,7 +5635,7 @@ fn forge_callback_add(table: []i8, event: i64, fn_ptr: i64) {
     g_forge_cb_count = n + 1
 }
 
-// Model-level callback declaration — use inside *_validations_init after forge_model().
+// Model-level callback declaration -- use inside *_validations_init after forge_model().
 fn forge_callback(event: i64, fn_ptr: i64) {
     forge_callback_add(g_forge_model_buf[0..g_forge_model_len], event, fn_ptr)
 }
@@ -5626,7 +5654,7 @@ fn forge_callback_run(table: []i8, event: i64, row_ptr: i64) -> bool {
 }
 
 // =============================================================================
-// Section D — Associations
+// Section D -- Associations
 // =============================================================================
 
 fn forge_belongs_to(table: []i8, fk_val: []i8) -> &ForgeResult {
@@ -5646,7 +5674,7 @@ fn forge_has_one(table: []i8, fk_col: []i8, owner_id: []i8) -> &ForgeResult {
 }
 
 // =============================================================================
-// Section D2 — Association registry (model-level declarations)
+// Section D2 -- Association registry (model-level declarations)
 //
 // Supports belongs_to, has_many, has_one, has_many_through (HABTM),
 // polymorphic belongs_to, polymorphic has_many, and self-referential (parent/child).
@@ -5662,13 +5690,13 @@ let FORGE_ASSOC_POLY_HAS_MANY:    i64 = 6   // polymorphic has_many
 let FORGE_ASSOC_MAX:              i64 = 128
 
 // Per-entry layout (all arrays are [MAX * 64] bytes unless noted):
-//   models      — owner table name
-//   names       — association name
-//   types       — FORGE_ASSOC_* constant
-//   targets     — target/through table
-//   fkeys       — primary FK column (or owner FK for through)
-//   extras      — join table (through), type column (poly)
-//   extras2     — target FK in join (through), type value (poly has_many)
+//   models      -- owner table name
+//   names       -- association name
+//   types       -- FORGE_ASSOC_* constant
+//   targets     -- target/through table
+//   fkeys       -- primary FK column (or owner FK for through)
+//   extras      -- join table (through), type column (poly)
+//   extras2     -- target FK in join (through), type value (poly has_many)
 
 let g_forge_assoc_models:       &i8  = 0
 let g_forge_assoc_model_lens:   &i64 = 0
@@ -5748,29 +5776,29 @@ fn forge_assoc_has_one(name: []i8, target_table: []i8, fk_col: []i8) {
 }
 
 // has_and_belongs_to_many :tags, through: :post_tags
-// name        — association name ("tags")
-// target      — target table ("tags")
-// join_table  — join table ("post_tags")
-// owner_fk    — owner FK column in join table ("post_id")
-// target_fk   — target FK column in join table ("tag_id")
+// name        -- association name ("tags")
+// target      -- target table ("tags")
+// join_table  -- join table ("post_tags")
+// owner_fk    -- owner FK column in join table ("post_id")
+// target_fk   -- target FK column in join table ("tag_id")
 fn forge_assoc_has_many_through(name: []i8, target: []i8, join_table: []i8, owner_fk: []i8, target_fk: []i8) {
     forge_assoc_reg_full(FORGE_ASSOC_HAS_MANY_THROUGH, name, target, owner_fk, join_table, target_fk)
 }
 
 // belongs_to :commentable, polymorphic: true
-// name     — association name ("commentable")
-// type_col — column holding the type string ("commentable_type")
-// id_col   — column holding the FK ("commentable_id")
+// name     -- association name ("commentable")
+// type_col -- column holding the type string ("commentable_type")
+// id_col   -- column holding the FK ("commentable_id")
 fn forge_assoc_poly_belongs_to(name: []i8, type_col: []i8, id_col: []i8) {
     forge_assoc_reg_full(FORGE_ASSOC_POLY_BELONGS_TO, name, "", id_col, type_col, "")
 }
 
 // has_many :comments, as: :commentable
-// name      — association name ("comments")
-// target    — target table ("comments")
-// fk_id     — FK id column in target ("commentable_id")
-// fk_type   — FK type column in target ("commentable_type")
-// type_val  — type discriminator stored in fk_type column ("Post")
+// name      -- association name ("comments")
+// target    -- target table ("comments")
+// fk_id     -- FK id column in target ("commentable_id")
+// fk_type   -- FK type column in target ("commentable_type")
+// type_val  -- type discriminator stored in fk_type column ("Post")
 fn forge_assoc_poly_has_many(name: []i8, target: []i8, fk_id: []i8, fk_type: []i8, type_val: []i8) {
     forge_assoc_reg_full(FORGE_ASSOC_POLY_HAS_MANY, name, target, fk_id, fk_type, type_val)
 }
@@ -5813,7 +5841,7 @@ fn forge_assoc_find(model_table: []i8, assoc_name: []i8) -> i64 {
 // Runtime dispatch
 // ---------------------------------------------------------------------------
 
-// forge_assoc_query — standard associations + has_many_through + poly_has_many.
+// forge_assoc_query -- standard associations + has_many_through + poly_has_many.
 // id_or_fk is the FK value (belongs_to) or owner ID (has_many / has_one / through).
 fn forge_assoc_query(model_table: []i8, assoc_name: []i8, id_or_fk: []i8) -> &ForgeResult {
     let i = forge_assoc_find(model_table, assoc_name)
@@ -5878,7 +5906,7 @@ fn forge_assoc_query(model_table: []i8, assoc_name: []i8, id_or_fk: []i8) -> &Fo
     ret 0
 }
 
-// forge_assoc_poly_query — polymorphic belongs_to.
+// forge_assoc_poly_query -- polymorphic belongs_to.
 // type_val is the value of the type column (e.g. "Post");
 // id_val is the FK value.  The target table is derived from type_val.
 fn forge_assoc_poly_query(model_table: []i8, assoc_name: []i8, type_val: []i8, id_val: []i8) -> &ForgeResult {
@@ -5891,7 +5919,7 @@ fn forge_assoc_poly_query(model_table: []i8, assoc_name: []i8, type_val: []i8, i
 }
 
 // =============================================================================
-// Section E — Transactions
+// Section E -- Transactions
 // =============================================================================
 
 fn forge_tx_begin() -> i32 {
@@ -6034,7 +6062,7 @@ fn forge_tx_rollback(fd: i32) {
 }
 
 // =============================================================================
-// Counter caches — denormalized association counts.
+// Counter caches -- denormalized association counts.
 //
 // Call forge_counter_cache once per association in your model_init:
 //   forge_counter_cache("comments", "post_id", "posts", "comments_count")
@@ -6080,7 +6108,7 @@ fn forge_counter_cache(child_table: []i8, fk_col: []i8, parent_table: []i8, coun
     g_forge_cc_count = g_forge_cc_count + 1
 }
 
-// forge__cc_adjust — increment (delta=1) or decrement (delta=-1) counters.
+// forge__cc_adjust -- increment (delta=1) or decrement (delta=-1) counters.
 // For inserts: fk_val comes from forge_fa_get (still in global temp store).
 // For deletes: caller supplies fk_val fetched from DB.
 fn forge__cc_adjust_by_fk(child_table: []i8, fk_col: []i8, fk_val: []i8, delta: i64) {
@@ -6119,7 +6147,7 @@ fn forge__cc_adjust_by_fk(child_table: []i8, fk_col: []i8, fk_val: []i8, delta: 
     }
 }
 
-// Called from forge_attrs_insert — fk values still in forge_fa_get store.
+// Called from forge_attrs_insert -- fk values still in forge_fa_get store.
 fn forge__cc_after_create(child_table: []i8) {
     forge_cc_init()
     loop i in 0..g_forge_cc_count {
@@ -6133,7 +6161,7 @@ fn forge__cc_after_create(child_table: []i8) {
     }
 }
 
-// Called from forge_soft_delete — fk looked up from DB.
+// Called from forge_soft_delete -- fk looked up from DB.
 fn forge__cc_after_delete(child_table: []i8, child_id: []i8) {
     forge_cc_init()
     loop i in 0..g_forge_cc_count {
@@ -6153,7 +6181,7 @@ fn forge__cc_after_delete(child_table: []i8, child_id: []i8) {
     }
 }
 
-// forge_counter_cache_reset — recount from scratch (useful after bulk imports).
+// forge_counter_cache_reset -- recount from scratch (useful after bulk imports).
 fn forge_counter_cache_reset(child_table: []i8) {
     forge_cc_init()
     loop i in 0..g_forge_cc_count {
@@ -6187,7 +6215,7 @@ fn forge_counter_cache_reset(child_table: []i8) {
 }
 
 // =============================================================================
-// Section F — Soft Delete
+// Section F -- Soft Delete
 // =============================================================================
 
 fn forge_soft_delete(table: []i8, id: []i8) -> bool {
@@ -6244,7 +6272,7 @@ fn forge_purge(table: []i8, id: []i8) -> bool {
     ret forge_db_exec(buf[0..pos])
 }
 
-// forge_touch — UPDATE table SET updated_at = NOW() WHERE id = '...'
+// forge_touch -- UPDATE table SET updated_at = NOW() WHERE id = '...'
 // Skips validations and callbacks.
 fn forge_touch(table: []i8, id: []i8) -> bool {
     let buf: &i8 = alloc_pages(1)
@@ -6260,7 +6288,7 @@ fn forge_touch(table: []i8, id: []i8) -> bool {
     ret forge_db_exec(buf[0..pos])
 }
 
-// forge_update_column — single-column UPDATE, bypasses validations and callbacks.
+// forge_update_column -- single-column UPDATE, bypasses validations and callbacks.
 fn forge_update_column(table: []i8, id: []i8, col: []i8, val: []i8) -> bool {
     let buf: &i8 = alloc_pages(2)
     let pos = 0i64
@@ -6282,7 +6310,7 @@ fn forge_update_column(table: []i8, id: []i8, col: []i8, val: []i8) -> bool {
     ret forge_db_exec(buf[0..pos])
 }
 
-// forge_hard_delete — DELETE with BEFORE/AFTER_DELETE + AFTER_COMMIT callbacks.
+// forge_hard_delete -- DELETE with BEFORE/AFTER_DELETE + AFTER_COMMIT callbacks.
 // Hard-deletes the row; use forge_purge to skip callbacks.
 fn forge_hard_delete(table: []i8, id: []i8) -> bool {
     if not forge_callback_run(table, FORGE_CB_BEFORE_DELETE, 0) { ret false }
@@ -6306,7 +6334,7 @@ fn forge_hard_delete(table: []i8, id: []i8) -> bool {
     ret ok
 }
 
-// forge_find_or_create_by — returns existing row or inserts a minimal record.
+// forge_find_or_create_by -- returns existing row or inserts a minimal record.
 fn forge_find_or_create_by(table: []i8, col: []i8, val: []i8) -> &ForgeResult {
     let res = forge_find_by(table, col, val)
     if res.count > 0 { ret res }
@@ -6316,7 +6344,7 @@ fn forge_find_or_create_by(table: []i8, col: []i8, val: []i8) -> &ForgeResult {
     ret forge_find_by(table, col, val)
 }
 
-// forge_attrs_upsert — INSERT ... ON CONFLICT (col) DO UPDATE SET ...
+// forge_attrs_upsert -- INSERT ... ON CONFLICT (col) DO UPDATE SET ...
 fn forge_attrs_upsert(a: &ForgeAttrs, table: []i8, conflict_col: []i8) -> bool {
     if not forge_attrs_validate(table) { ret false }
     if not forge_callback_run(table, FORGE_CB_BEFORE_SAVE, 0) { ret false }
@@ -6347,7 +6375,7 @@ fn forge_attrs_upsert(a: &ForgeAttrs, table: []i8, conflict_col: []i8) -> bool {
     ret ok
 }
 
-// forge_increment — UPDATE table SET col = col + N WHERE id = '...'
+// forge_increment -- UPDATE table SET col = col + N WHERE id = '...'
 fn forge_increment(table: []i8, id: []i8, col: []i8, by: i64) -> bool {
     let buf: &i8 = alloc_pages(2)
     let pos = 0i64
@@ -6370,7 +6398,7 @@ fn forge_increment(table: []i8, id: []i8, col: []i8, by: i64) -> bool {
     ret forge_db_exec(buf[0..pos])
 }
 
-// forge_decrement — UPDATE table SET col = col - N WHERE id = '...'
+// forge_decrement -- UPDATE table SET col = col - N WHERE id = '...'
 fn forge_decrement(table: []i8, id: []i8, col: []i8, by: i64) -> bool {
     let buf: &i8 = alloc_pages(2)
     let pos = 0i64
@@ -6393,14 +6421,14 @@ fn forge_decrement(table: []i8, id: []i8, col: []i8, by: i64) -> bool {
     ret forge_db_exec(buf[0..pos])
 }
 
-// forge_reload — re-fetch a record from DB by id.
+// forge_reload -- re-fetch a record from DB by id.
 fn forge_reload(table: []i8, id: []i8) -> &ForgeResult {
     let q = forge_q_with_deleted(forge_q(table))
     forge_q_where(q, "id", "=", id)
     ret forge_q_first(q)
 }
 
-// forge_toggle — flip a boolean column: SET col = NOT col WHERE id = '...'
+// forge_toggle -- flip a boolean column: SET col = NOT col WHERE id = '...'
 fn forge_toggle(table: []i8, id: []i8, col: []i8) -> bool {
     let buf: &i8 = alloc_pages(2)
     let pos = 0i64
@@ -6418,13 +6446,13 @@ fn forge_toggle(table: []i8, id: []i8, col: []i8) -> bool {
     ret forge_db_exec(buf[0..pos])
 }
 
-// Transactions — wraps PostgreSQL BEGIN / COMMIT / ROLLBACK.
+// Transactions -- wraps PostgreSQL BEGIN / COMMIT / ROLLBACK.
 fn forge_begin()    -> bool { ret forge_db_exec("BEGIN") }
 fn forge_commit()   -> bool { ret forge_db_exec("COMMIT") }
 fn forge_rollback() -> bool { ret forge_db_exec("ROLLBACK") }
 
-// forge_transaction — runs fn_ptr inside a BEGIN/COMMIT block.
-// fn_ptr signature: fn(i64) -> bool  — return false to trigger rollback.
+// forge_transaction -- runs fn_ptr inside a BEGIN/COMMIT block.
+// fn_ptr signature: fn(i64) -> bool  -- return false to trigger rollback.
 fn forge_transaction(fn_ptr: i64) -> bool {
     if not forge_begin() { ret false }
     let ok = call_fn(fn_ptr, 0) as bool
@@ -6433,13 +6461,13 @@ fn forge_transaction(fn_ptr: i64) -> bool {
     ret false
 }
 
-// forge_secure_password_set — hashes password via bcrypt and sets "password_hash".
+// forge_secure_password_set -- hashes password via bcrypt and sets "password_hash".
 fn forge_secure_password_set(a: &ForgeAttrs, password: []i8) -> &ForgeAttrs {
     let hash = forge_bcrypt_hash(password)
     ret forge_attrs_set(a, "password_hash", hash)
 }
 
-// forge_secure_password_verify — looks up "password_hash" column and verifies.
+// forge_secure_password_verify -- looks up "password_hash" column and verifies.
 fn forge_secure_password_verify(table: []i8, id: []i8, password: []i8) -> bool {
     let res = forge_find(table, id)
     if res.count == 0 { ret false }
@@ -6448,7 +6476,7 @@ fn forge_secure_password_verify(table: []i8, id: []i8, password: []i8) -> bool {
 }
 
 // =============================================================================
-// Section G — Serializer
+// Section G -- Serializer
 // =============================================================================
 
 fn forge_row_to_json(res: &ForgeResult, row_i: i64) -> []i8 {
@@ -6498,7 +6526,7 @@ fn forge_result_to_json(res: &ForgeResult) -> []i8 {
     ret buf[0..pos]
 }
 
-// Render a full ForgeResult as a JSON array — all columns, all rows
+// Render a full ForgeResult as a JSON array -- all columns, all rows
 fn ctx_json_result(ctx: i64, res: &ForgeResult) {
     ctx_json(ctx, 200, forge_result_to_json(res))
 }
@@ -6509,7 +6537,7 @@ fn ctx_json_row(ctx: i64, res: &ForgeResult) {
 }
 
 // ---------------------------------------------------------------------------
-// ForgeJson — selective JSON object builder
+// ForgeJson -- selective JSON object builder
 //
 //   let post = post_find(id)
 //   let j = forge_json_new()
@@ -6551,7 +6579,7 @@ fn forge_json_field(j: &ForgeJson, key: []i8, val: []i8) -> &ForgeJson {
     ret j
 }
 
-// field_raw — value is inserted as-is (use for numbers, booleans, nested objects)
+// field_raw -- value is inserted as-is (use for numbers, booleans, nested objects)
 fn forge_json_field_raw(j: &ForgeJson, key: []i8, raw: []i8) -> &ForgeJson {
     if !j.empty { j.buf[j.pos] = ','  j.pos = j.pos + 1 }
     j.empty = false
@@ -6569,7 +6597,7 @@ fn forge_json_done(j: &ForgeJson) -> []i8 {
 }
 
 // ---------------------------------------------------------------------------
-// ForgeJsonArray — build a JSON array from serialized objects
+// ForgeJsonArray -- build a JSON array from serialized objects
 //
 //   let a = forge_json_array_new()
 //   loop r in 0..posts.count {
@@ -6606,7 +6634,7 @@ fn forge_json_array_done(a: &ForgeJsonArray) -> []i8 {
 }
 
 // ---------------------------------------------------------------------------
-// ForgeAttrs — key/value builder for safe INSERT and UPDATE
+// ForgeAttrs -- key/value builder for safe INSERT and UPDATE
 //
 //   forge_attrs_new().set("title", title).set("body", body).insert("posts")
 //   forge_attrs_new().set("title", title).set("body", body).update("posts", id)
@@ -6715,7 +6743,7 @@ fn forge_attrs_update(a: &ForgeAttrs, table: []i8, id: []i8) -> bool {
 }
 
 // =============================================================================
-// Section H — Controller Layer
+// Section H -- Controller Layer
 // =============================================================================
 const FORGE_CTRL_MAX_FILTERS     = 8
 const FORGE_CTRL_FILTER_NAME_CAP = 64   // enough for "show, edit, update, delete"
@@ -6769,7 +6797,7 @@ fn forge_ctrl_after(ctrl: &ForgeController, fn_ptr: i64, only: []i8) {
     ctrl.ac = n + 1
 }
 
-// forge_ctrl_before_except — register a before filter that runs for ALL actions
+// forge_ctrl_before_except -- register a before filter that runs for ALL actions
 // EXCEPT those in the comma-separated except list.
 // Internally stored with only_l = 0 (match all) but checked via a negative list
 // at dispatch time by encoding the except list with a leading '!' sentinel.
@@ -6788,14 +6816,14 @@ fn forge_ctrl_before_except(ctrl: &ForgeController, fn_ptr: i64, except: []i8) {
     ctrl.bc = n + 1
 }
 
-// forge_ctrl_rescue — register a fallback handler called when the action
+// forge_ctrl_rescue -- register a fallback handler called when the action
 // completes without sending a response (unhandled error path).
 // Handler signature: fn my_rescue(ctx: i64)
 fn forge_ctrl_rescue(ctrl: &ForgeController, fn_ptr: i64) {
     ctrl.rescue_fn = fn_ptr
 }
 
-// forge__action_in_list — returns true if action appears in a comma-separated list.
+// forge__action_in_list -- returns true if action appears in a comma-separated list.
 // Handles "show", "show, edit", "show,edit,update,delete" (spaces optional).
 fn forge__action_in_list(list: []i8, action: []i8) -> bool {
     let i = 0i64
@@ -6847,7 +6875,7 @@ fn forge_ctrl_dispatch(ctrl: &ForgeController, ctx: i64, action_fn: i64, action_
 }
 
 // =============================================================================
-// Controller registry — maps resource name → ForgeController.
+// Controller registry -- maps resource name -> ForgeController.
 // forge_ctrl_register("posts", ctrl)  called once at startup (before routes).
 // forge_ctrl_run("posts", "show", fn_addr(posts_show), ctx)  called per request
 //   by the generated dispatch shims in _build/controllers.jda.
@@ -6890,7 +6918,7 @@ fn forge_ctrl_lookup(name: []i8) -> &ForgeController {
     ret 0 as &ForgeController
 }
 
-// forge_ctrl_run — called by generated dispatch shims.
+// forge_ctrl_run -- called by generated dispatch shims.
 // Looks up the registered controller for resource; runs filters then action.
 // If no controller is registered, calls the action directly (zero overhead path).
 fn forge_ctrl_run(resource: []i8, action: []i8, fn_ptr: i64, ctx: i64) {
@@ -7006,7 +7034,7 @@ fn forge_page_meta_json(total: i64, page: i64, per: i64) -> []i8 {
     ret buf[0..pos]
 }
 
-// ctx_permit — strong parameters: extract and whitelist form fields from context.
+// ctx_permit -- strong parameters: extract and whitelist form fields from context.
 // Returns a ForgeAttrs builder ready for .insert() or .update().
 //   let attrs = ctx_permit(ctx, "title, body, author")
 //   if attrs.insert("posts") { ... }
@@ -7029,7 +7057,7 @@ fn ctx_permit(ctx: i64, fields: []i8) -> &ForgeAttrs {
     ret a
 }
 
-// ctx_save_errors — sets the "alert" flash from forge_last_errors().
+// ctx_save_errors -- sets the "alert" flash from forge_last_errors().
 // Use in the failure branch after a failed insert/update.
 fn ctx_save_errors(ctx: i64) {
     let errs = forge_last_errors()
@@ -7040,28 +7068,28 @@ fn ctx_save_errors(ctx: i64) {
     }
 }
 
-// JSON response helpers — shorthand for API controllers.
+// JSON response helpers -- shorthand for API controllers.
 fn ctx_json_ok     (ctx: i64, json: []i8) { ctx_json(ctx, 200, json) }
 fn ctx_json_created(ctx: i64, json: []i8) { ctx_json(ctx, 201, json) }
 
-// ctx_json_errors — 422 Unprocessable Entity with forge_last_errors() body.
+// ctx_json_errors -- 422 Unprocessable Entity with forge_last_errors() body.
 fn ctx_json_errors(ctx: i64) {
     let errs = forge_last_errors()
     ctx_json(ctx, 422, forge_errors_json(errs))
 }
 
-// ctx_respond_to — branch on request format (Accept header or ?format= param).
-// html_fn and json_fn have signature fn(i64) — receive ctx as argument.
+// ctx_respond_to -- branch on request format (Accept header or ?format= param).
+// html_fn and json_fn have signature fn(i64) -- receive ctx as argument.
 fn ctx_respond_to(ctx: i64, html_fn: i64, json_fn: i64) {
     let fmt = ctx_format(ctx)
     if forge_slice_eq(fmt, "json") { call_fn(json_fn, ctx) } else { call_fn(html_fn, ctx) }
 }
 
 // =============================================================================
-// Section I — View Helpers
+// Section I -- View Helpers
 // =============================================================================
 
-// forge_h — inline HTML-escape for template use; returns a []i8 slice
+// forge_h -- inline HTML-escape for template use; returns a []i8 slice
 fn forge_h(src: []i8) -> []i8 {
     let buf: &i8 = alloc_pages(1)
     let n = forge_html_escape(src, buf)
@@ -7278,7 +7306,7 @@ fn forge_select_tag(name: []i8, options: []i8, selected: []i8) -> []i8 {
 }
 
 // =============================================================================
-// Form builder with model binding — generates a label + input pair in a
+// Form builder with model binding -- generates a label + input pair in a
 // <div class="field"> wrapper, pre-filled from the supplied current value.
 // Use inside ERB templates with <%== %> since the output is already HTML-safe.
 //
@@ -7364,7 +7392,7 @@ fn forge_path_edit(resource: []i8, id: []i8) -> []i8 {
     ret buf[0..pos]
 }
 
-// Nested resource path helpers — build /parent/parent_id/child[/id][/edit|/new]
+// Nested resource path helpers -- build /parent/parent_id/child[/id][/edit|/new]
 fn forge_nested_path(parent: []i8, parent_id: []i8, child: []i8) -> []i8 {
     let buf = forge_buf_new(1)
     buf.write("/").write(parent).write("/").write(parent_id).write("/").write(child)
@@ -7408,7 +7436,7 @@ fn forge_pluralize(count: i64, singular: []i8, plural: []i8) -> []i8 {
     ret plural
 }
 
-// forge_highlight — wrap every case-insensitive occurrence of phrase in str with
+// forge_highlight -- wrap every case-insensitive occurrence of phrase in str with
 // open_tag + match + close_tag.  tag_name is just the element name, e.g. "em".
 fn forge_highlight(s: []i8, phrase: []i8, tag_name: []i8) -> []i8 {
     if phrase.len == 0 { ret s }
@@ -7442,7 +7470,7 @@ fn forge_highlight(s: []i8, phrase: []i8, tag_name: []i8) -> []i8 {
     ret buf.done()
 }
 
-// forge_excerpt — extract up to radius chars around the first occurrence of phrase.
+// forge_excerpt -- extract up to radius chars around the first occurrence of phrase.
 // Adds "..." at edges when the excerpt doesn't include the string boundaries.
 fn forge_excerpt(s: []i8, phrase: []i8, radius: i64) -> []i8 {
     if s.len == 0 { ret "" }
@@ -7474,7 +7502,7 @@ fn forge_excerpt(s: []i8, phrase: []i8, radius: i64) -> []i8 {
     ret buf.done()
 }
 
-// forge_enum_val — return the 0-based index of name in a comma-separated list.
+// forge_enum_val -- return the 0-based index of name in a comma-separated list.
 // Returns "-1" when not found.
 fn forge_enum_val(name: []i8, vals_csv: []i8) -> []i8 {
     let idx = 0i64
@@ -7498,7 +7526,7 @@ fn forge_enum_val(name: []i8, vals_csv: []i8) -> []i8 {
     ret "-1"
 }
 
-// forge_enum_name — return the name at 0-based position idx in a comma-separated list.
+// forge_enum_name -- return the name at 0-based position idx in a comma-separated list.
 // Returns "" when idx is out of range.
 fn forge_enum_name(idx: i64, vals_csv: []i8) -> []i8 {
     let cur = 0i64
@@ -7517,7 +7545,7 @@ fn forge_enum_name(idx: i64, vals_csv: []i8) -> []i8 {
     ret ""
 }
 
-// forge_time_ago — return human-readable relative time string ("5 minutes ago").
+// forge_time_ago -- return human-readable relative time string ("5 minutes ago").
 fn forge_time_ago(ts_ms: i64) -> []i8 {
     let now = time_now_ms()
     let diff = now - ts_ms
@@ -7572,7 +7600,7 @@ fn forge_time_ago(ts_ms: i64) -> []i8 {
     ret buf[0..pos]
 }
 
-// forge_distance_of_time — human-readable distance between two timestamps (ms).
+// forge_distance_of_time -- human-readable distance between two timestamps (ms).
 fn forge_distance_of_time(from_ms: i64, to_ms: i64) -> []i8 {
     let diff = to_ms - from_ms
     if diff < 0 { diff = -diff }
@@ -7611,7 +7639,7 @@ fn forge_distance_of_time(from_ms: i64, to_ms: i64) -> []i8 {
     ret buf[0..pos]
 }
 
-// forge_number_to_currency — format integer cents as "$12.34".
+// forge_number_to_currency -- format integer cents as "$12.34".
 fn forge_number_to_currency(cents: i64) -> []i8 {
     let buf: &i8 = alloc_pages(1)
     let pos = 0i64
@@ -7642,7 +7670,7 @@ fn forge_number_to_currency(cents: i64) -> []i8 {
     ret buf[0..pos]
 }
 
-// forge_number_with_delimiter — format integer with commas: 1234567 → "1,234,567".
+// forge_number_with_delimiter -- format integer with commas: 1234567 -> "1,234,567".
 fn forge_number_with_delimiter(n: i64) -> []i8 {
     let buf: &i8 = alloc_pages(1)
     let pos = 0i64
@@ -7661,7 +7689,7 @@ fn forge_number_with_delimiter(n: i64) -> []i8 {
     ret buf[0..pos]
 }
 
-// forge_word_wrap — wrap s at word boundaries, inserting "\n" at width.
+// forge_word_wrap -- wrap s at word boundaries, inserting "\n" at width.
 fn forge_word_wrap(s: []i8, width: i64) -> []i8 {
     let buf: &i8 = alloc_pages(4)
     let pos = 0i64
@@ -7762,7 +7790,7 @@ fn forge_partial(name: []i8, vars: &i64) -> []i8 {
 }
 
 // =============================================================================
-// Section J — Testing Framework
+// Section J -- Testing Framework
 // =============================================================================
 const FORGE_MAX_TESTS      = 128
 const FORGE_TEST_NAME_CAP  = 64
@@ -7839,7 +7867,7 @@ fn forge_test_run() {
     loop i in 0..s3.len { sum_buf[sp] = s3[i]  sp = sp + 1 }
     syscall(FORGE_SYS_WRITE, 1, sum_buf, sp, 0, 0, 0)
     if fail_count > 0 {
-        syscall(231, 1, 0, 0, 0, 0, 0)   // exit_group(1)
+        syscall(1, 1, 0, 0, 0, 0, 0)   // exit(1) (macOS=1)
     }
 }
 
@@ -7903,7 +7931,7 @@ fn forge_test_delete(path: []i8) -> &ForgeTestResponse {
     ret forge_test_request("DELETE", path, "")
 }
 
-// Short request aliases — drop the _test_ infix
+// Short request aliases -- drop the _test_ infix
 fn forge_get(path: []i8) -> &ForgeTestResponse              { ret forge_test_get(path) }
 fn forge_post(path: []i8, body: []i8) -> &ForgeTestResponse { ret forge_test_post(path, body) }
 fn forge_put(path: []i8, body: []i8) -> &ForgeTestResponse  { ret forge_test_put(path, body) }
@@ -8081,17 +8109,17 @@ fn forge_test_db_count(table: []i8) -> i64 {
     ret acc
 }
 
-// forge_test_rollback — issue ROLLBACK so DB changes in a test don't persist.
+// forge_test_rollback -- issue ROLLBACK so DB changes in a test don't persist.
 fn forge_test_rollback() {
     forge_db_exec("ROLLBACK")
 }
 
-// forge_test_setup — begin a transaction so forge_test_rollback can undo it.
+// forge_test_setup -- begin a transaction so forge_test_rollback can undo it.
 fn forge_test_setup() {
     forge_db_exec("BEGIN")
 }
 
-// forge_test_fixture — insert a test record and return its id.
+// forge_test_fixture -- insert a test record and return its id.
 // attrs is a &ForgeAttrs built with forge_attrs_new().set(...).
 fn forge_test_fixture(table: []i8, attrs: &ForgeAttrs) -> []i8 {
     forge_attrs_insert(attrs, table)
@@ -8103,7 +8131,7 @@ fn forge_test_fixture(table: []i8, attrs: &ForgeAttrs) -> []i8 {
     ret forge_row_col(res, 0, forge_col_index(res, "id"))
 }
 
-// forge_test_res_json — assert that a JSON response body contains key=expected.
+// forge_test_res_json -- assert that a JSON response body contains key=expected.
 // Looks for "key":"expected" or "key":expected (non-string) in the body.
 fn forge_test_res_json(res: &ForgeTestResponse, key: []i8, expected: []i8) -> &ForgeTestResponse {
     let body = res.body
@@ -8151,7 +8179,7 @@ fn forge_test_res_json(res: &ForgeTestResponse, key: []i8, expected: []i8) -> &F
 }
 
 // =============================================================================
-// Section K — Environment & Config
+// Section K -- Environment & Config
 // =============================================================================
 const FORGE_ENV_MAX  = 64
 const FORGE_ENV_KCAP = 64
@@ -8309,7 +8337,7 @@ fn forge_log_info (msg: []i8) { forge_log_write(FORGE_LOG_INFO,  "INFO",  msg) }
 fn forge_log_warn (msg: []i8) { forge_log_write(FORGE_LOG_WARN,  "WARN",  msg) }
 fn forge_log_error(msg: []i8) { forge_log_write(FORGE_LOG_ERROR, "ERROR", msg) }
 
-// forge_log_ctx_at — structured request log: "[req_id method path] msg"
+// forge_log_ctx_at -- structured request log: "[req_id method path] msg"
 fn forge_log_ctx_at(ctx: i64, level: i64, msg: []i8) {
     if level < g_forge_log_level { ret }
     let rid = ctx_header(ctx, "X-Request-ID")
@@ -8329,7 +8357,7 @@ fn forge_log_ctx_debug(ctx: i64, msg: []i8) { forge_log_ctx_at(ctx, FORGE_LOG_DE
 fn forge_log_ctx_warn (ctx: i64, msg: []i8) { forge_log_ctx_at(ctx, FORGE_LOG_WARN,  msg) }
 fn forge_log_ctx_error(ctx: i64, msg: []i8) { forge_log_ctx_at(ctx, FORGE_LOG_ERROR, msg) }
 
-// forge_log_tagged — emit a tagged log line: "[tag] msg"
+// forge_log_tagged -- emit a tagged log line: "[tag] msg"
 fn forge_log_tagged(tag: []i8, level: i64, msg: []i8) {
     if level < g_forge_log_level { ret }
     let buf = forge_buf_new(1)
@@ -8342,7 +8370,7 @@ fn forge_log_tagged(tag: []i8, level: i64, msg: []i8) {
 }
 
 // =============================================================================
-// Dirty tracking — snapshot and compare attribute values across a request.
+// Dirty tracking -- snapshot and compare attribute values across a request.
 //
 // Snapshot loaded values right after a find:
 //   let res = post_find(id)
@@ -8389,7 +8417,7 @@ fn forge_dirty_load_result(table: []i8, id: []i8, res: &ForgeResult, col: []i8) 
 }
 
 // =============================================================================
-// Instrumentation — lightweight event bus.
+// Instrumentation -- lightweight event bus.
 //
 // Subscribe before the server starts:
 //   forge_subscribe("sql.query", fn_addr(on_sql_query))
@@ -8444,7 +8472,7 @@ fn forge_instrument(event: []i8, payload: i64) {
 }
 
 // =============================================================================
-// Section L — Concerns
+// Section L -- Concerns
 // =============================================================================
 
 fn forge_timestamps_create(table: []i8, id: []i8) -> bool {
@@ -8569,14 +8597,14 @@ fn forge_audit_log(ctx: i64, model: []i8, action: []i8, record_id: []i8) {
 }
 
 // =============================================================================
-// Section M — File Uploads (Multipart)
+// Section M -- File Uploads (Multipart)
 // =============================================================================
 
 struct ForgeUpload {
     field_name:   []i8
     filename:     []i8
     content_type: []i8
-    data:         []i8
+    file_data:    []i8
     size:         i64
 }
 
@@ -8697,7 +8725,7 @@ fn forge_multipart_parse(ctx: i64, field: []i8, upload: &ForgeUpload) -> bool {
                     upload.field_name   = part_name
                     upload.filename     = part_file
                     upload.content_type = part_ct
-                    upload.data         = data_copy[0..data_slice.len]
+                    upload.file_data    = data_copy[0..data_slice.len]
                     upload.size         = data_slice.len
                     ret true
                 }
@@ -8719,7 +8747,7 @@ fn ctx_multipart_file(ctx: i64, field: []i8) -> &ForgeUpload {
 fn ctx_multipart_field(ctx: i64, field: []i8) -> []i8 {
     let up: &ForgeUpload = alloc_pages(1)
     if forge_multipart_parse(ctx, field, up) {
-        ret up.data
+        ret up.file_data
     }
     ret ""
 }
@@ -8733,9 +8761,9 @@ fn forge_upload_save(upload: &ForgeUpload, dir: []i8) -> []i8 {
     path_buf[pos] = 0   // null terminate
     let flags = 577i64   // O_WRONLY|O_CREAT|O_TRUNC
     let mode  = 420i64   // 0644
-    let fd = syscall(2, path_buf, flags, mode, 0, 0, 0) as i32
+    let fd = syscall(5, path_buf, flags, mode, 0, 0, 0) as i32  // open (macOS=5)
     if fd < 0 { ret "" }
-    let data = upload.data
+    let data = upload.file_data
     // Write in 4096-byte chunks using a stack buffer
     let wbuf: &i8 = alloc_pages(1)
     let written = 0i64
@@ -8770,7 +8798,7 @@ fn forge_validate_upload_size(upload: &ForgeUpload, max_bytes: i64) -> bool {
 }
 
 // =============================================================================
-// Section N — Caching
+// Section N -- Caching
 // =============================================================================
 const FORGE_CACHE_MAX  = 256
 const FORGE_CACHE_KCAP = 128
@@ -8876,7 +8904,7 @@ fn forge_cache_clear() {
     }
 }
 
-// forge_cache_fetch — return cached value if present; otherwise call fn_ptr()
+// forge_cache_fetch -- return cached value if present; otherwise call fn_ptr()
 // which must return []i8, store it with ttl_sec, and return it.
 // fn_ptr signature: fn(i64) -> i64  (arg unused; return value cast to []i8)
 fn forge_cache_fetch(key: []i8, ttl_sec: i64, fn_ptr: i64) -> []i8 {
@@ -8888,7 +8916,7 @@ fn forge_cache_fetch(key: []i8, ttl_sec: i64, fn_ptr: i64) -> []i8 {
 }
 
 // =============================================================================
-// Current attributes — request-scoped key/value store keyed by ctx pointer.
+// Current attributes -- request-scoped key/value store keyed by ctx pointer.
 // Values live for 30 seconds (well beyond any request lifetime) and are
 // addressed by a composite key "__cur_<ctx>_<key>" inside the cache.
 // =============================================================================
@@ -8947,7 +8975,7 @@ fn forge_etag_middleware(ctx: i64) {
 }
 
 // =============================================================================
-// Default welcome page — shown at / in new apps until the developer defines
+// Default welcome page -- shown at / in new apps until the developer defines
 // their own root route.  Mount with forge_welcome_mount(app) in main.jda.
 // =============================================================================
 
@@ -8955,8 +8983,8 @@ fn forge_welcome_handler(ctx: i64) {
     let env         = forge_env()
     let forge_ver   = forge_env_get("FORGE_CLI_VERSION")
     let jda_ver     = forge_env_get("JDA_VERSION")
-    if forge_ver.len == 0 { forge_ver = "—" }
-    if jda_ver.len  == 0  { jda_ver  = "—" }
+    if forge_ver.len == 0 { forge_ver = "--" }
+    if jda_ver.len  == 0  { jda_ver  = "--" }
     let env_class = "badge-other"
     if forge_slice_eq(env, "development") { env_class = "badge-dev"  }
     if forge_slice_eq(env, "production")  { env_class = "badge-prod" }
@@ -8965,7 +8993,7 @@ fn forge_welcome_handler(ctx: i64) {
     let b = forge_buf_new(16)
     b.write("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">")
     b.write("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">")
-    b.write("<title>JDA Forge \xe2\x80\x94 Welcome</title>")
+    b.write("<title>JDA Forge &mdash; Welcome</title>")
     b.write("<style>")
     b.write("*{margin:0;padding:0;box-sizing:border-box}")
     b.write("body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;")
@@ -8996,11 +9024,11 @@ fn forge_welcome_handler(ctx: i64) {
     b.write(".hint{font-size:.78rem;color:#94a3b8;line-height:1.6;margin-top:1rem}")
     b.write("</style></head><body><div class=\"page\">")
 
-    // SVG logo — layered blue shield, blue anvil, flame arrow, integrated curly brace
+    // SVG logo -- layered blue shield, blue anvil, flame arrow, integrated curly brace
     b.write("<div class=\"logo\">")
     b.write("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 280 230\" width=\"180\" height=\"148\">")
     b.write("<defs>")
-    // Shield outer gradient (deep navy → mid blue)
+    // Shield outer gradient (deep navy -> mid blue)
     b.write("<linearGradient id=\"so\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"100%\">")
     b.write("<stop offset=\"0%\" stop-color=\"#0a2564\"/>")
     b.write("<stop offset=\"100%\" stop-color=\"#1976d2\"/>")
@@ -9010,7 +9038,7 @@ fn forge_welcome_handler(ctx: i64) {
     b.write("<stop offset=\"0%\" stop-color=\"#17408b\"/>")
     b.write("<stop offset=\"100%\" stop-color=\"#1565c0\"/>")
     b.write("</linearGradient>")
-    // Anvil gradient — vibrant blue-teal
+    // Anvil gradient -- vibrant blue-teal
     b.write("<linearGradient id=\"av\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"100%\">")
     b.write("<stop offset=\"0%\" stop-color=\"#1565c0\"/>")
     b.write("<stop offset=\"100%\" stop-color=\"#0288d1\"/>")
@@ -9032,7 +9060,7 @@ fn forge_welcome_handler(ctx: i64) {
     b.write("<path d=\"M118 24 L188 46 L188 118 Q188 166 118 190 Q48 166 48 118 L48 46 Z\"")
     b.write(" fill=\"url(#gl)\"/>")
 
-    // Curly brace — integrated into right shield edge
+    // Curly brace -- integrated into right shield edge
     b.write("<path d=\"M196 72 Q218 80 210 102 Q204 120 216 132 Q204 144 210 164 Q218 184 196 192\"")
     b.write(" fill=\"none\" stroke=\"#29b6f6\" stroke-width=\"9\" stroke-linecap=\"round\"/>")
 
@@ -9093,7 +9121,7 @@ fn forge_welcome_handler(ctx: i64) {
 
     b.write("<div class=\"card\"><h3>Models</h3><p>")
     b.write("Add migrations to <code>db/migrate/</code>. ")
-    b.write("Run <code>make run</code> \xe2\x80\x94 Forge auto-migrates on start.")
+    b.write("Run <code>make run</code> &mdash; Forge auto-migrates on start.")
     b.write("</p></div>")
 
     b.write("<div class=\"card\"><h3>Docs</h3><p>")
