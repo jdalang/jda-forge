@@ -39,6 +39,9 @@ Run:
   forge console --environment staging       Connect to a different environment
   forge db:migrate                          Run pending migrations
   forge db:migrate --environment production Run migrations against a specific environment
+  forge db:rollback                         Roll back the last migration
+  forge db:rollback --step 3               Roll back the last 3 migrations
+  forge db:rollback --version 002          Roll back until only migrations up to 002 remain
   forge db:status                           Show which migrations have run and which are pending
 
 Project:
@@ -337,7 +340,11 @@ compile_models() {
         in_create="false"
         tbl_idx=-1
 
+        local in_down="false"
         while IFS= read -r raw || [[ -n "$raw" ]]; do
+            # Stop parsing schema once we hit the down section
+            [[ "$raw" =~ ^--[[:space:]]*migrate:down ]] && { in_down="true"; continue; }
+            [ "$in_down" = "true" ] && continue
             local L="${raw#"${raw%%[![:space:]]*}"}"
             L="${L%"${L##*[![:space:]]}"}"
             [[ -z "$L" || "$L" == "--"* ]] && continue
@@ -1242,6 +1249,7 @@ gen_migration() {
     {
         echo "-- Migration: ${num}_${snake}"
         echo ""
+        echo "-- migrate:up"
         if [[ "$snake" == create_* ]]; then
             local table="${snake#create_}"
             echo "CREATE TABLE IF NOT EXISTS ${table} ("
@@ -1268,11 +1276,20 @@ gen_migration() {
                     echo "CREATE INDEX IF NOT EXISTS idx_${table}_${col} ON ${table} (${col});"
                 fi
             done
+            echo ""
+            echo "-- migrate:down"
+            echo "DROP TABLE IF EXISTS ${table};"
         elif [[ "$snake" == add_*_to_* ]]; then
             local table="${snake##*_to_}"
             for f in "${fields[@]:-}"; do
                 [ -z "$f" ] && continue
                 echo "ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${f%%:*} $(sql_type "${f##*:}");"
+            done
+            echo ""
+            echo "-- migrate:down"
+            for f in "${fields[@]:-}"; do
+                [ -z "$f" ] && continue
+                echo "ALTER TABLE ${table} DROP COLUMN IF EXISTS ${f%%:*};"
             done
         elif [[ "$snake" == remove_*_from_* ]]; then
             local table="${snake##*_from_}"
@@ -1280,8 +1297,14 @@ gen_migration() {
                 [ -z "$f" ] && continue
                 echo "ALTER TABLE ${table} DROP COLUMN IF EXISTS ${f%%:*};"
             done
+            echo ""
+            echo "-- migrate:down"
+            echo "-- TODO: restore removed columns"
         else
             echo "-- TODO: write migration SQL"
+            echo ""
+            echo "-- migrate:down"
+            echo "-- TODO: write rollback SQL"
         fi
     } > "$out"
     ok "created $out"
@@ -1592,6 +1615,16 @@ cmd_server() {
 # forge console — open a database console (like rails c / rails db)
 # ---------------------------------------------------------------------------
 
+# Extract SQL from the -- migrate:up section (everything before -- migrate:down).
+extract_migration_up() {
+    awk '/^[[:space:]]*--[[:space:]]*migrate:down/{exit} /^[[:space:]]*--[[:space:]]*migrate:up/{found=1; next} found{print}' "$1"
+}
+
+# Extract SQL from the -- migrate:down section (everything after -- migrate:down).
+extract_migration_down() {
+    awk '/^[[:space:]]*--[[:space:]]*migrate:down/{found=1; next} found{print}' "$1"
+}
+
 # Load DATABASE_URL from .env then .env.<environment>. Prints the URL; empty on failure.
 load_db_url() {
     local env_name="${1:-development}"
@@ -1658,7 +1691,13 @@ cmd_db_migrate() {
             -c "SELECT COUNT(*) FROM forge_migrations WHERE name='${name}'" 2>/dev/null)
         if [ "${already:-0}" = "0" ]; then
             info "Running $name"
-            psql "$db_url" -q -f "$f" || err "Migration failed: $name"
+            # Run only the -- migrate:up section; fall back to full file for legacy migrations
+            local up_sql; up_sql=$(extract_migration_up "$f")
+            if [ -z "$up_sql" ]; then
+                psql "$db_url" -q -f "$f" || err "Migration failed: $name"
+            else
+                echo "$up_sql" | psql "$db_url" -q || err "Migration failed: $name"
+            fi
             psql "$db_url" -q -c \
                 "INSERT INTO forge_migrations (name, ran_at) VALUES ('${name}', EXTRACT(EPOCH FROM NOW())::BIGINT)"
             ok "$name"
@@ -1671,6 +1710,66 @@ cmd_db_migrate() {
     else
         ok "${ran} migration(s) ran."
     fi
+}
+
+cmd_db_rollback() {
+    local env_name="${FORGE_ENV:-development}"
+    local step=1
+    local target_version=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --environment|-e) env_name="$2"; shift 2 ;;
+            --step|-s)        step="$2";     shift 2 ;;
+            --version)        target_version="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    [ ! -f "Forgefile" ] && err "No Forgefile found. Are you in a Forge project directory?"
+    [ ! -d "db/migrate" ] && err "db/migrate/ not found."
+
+    local db_url; db_url=$(load_db_url "$env_name")
+    [ -z "$db_url" ] && err "DATABASE_URL not set in .env or .env.${env_name}"
+
+    command -v psql >/dev/null 2>&1 || err "psql not found. Install PostgreSQL client tools."
+
+    psql "$db_url" -q -c \
+        "CREATE TABLE IF NOT EXISTS forge_migrations (name TEXT PRIMARY KEY, ran_at BIGINT)" \
+        2>/dev/null || err "Could not connect to database."
+
+    local rolled=0
+    while true; do
+        # Get the last applied migration
+        local last; last=$(psql "$db_url" -tAq \
+            -c "SELECT name FROM forge_migrations ORDER BY name DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+        [ -z "$last" ] && { info "Nothing to rollback."; break; }
+
+        # If --version set, stop once we're at or below the target
+        if [ -n "$target_version" ]; then
+            local last_num; last_num=$((10#$(echo "$last" | cut -d_ -f1)))
+            local target_num; target_num=$((10#$(printf "%03d" "$((10#${target_version}))")))
+            [ "$last_num" -le "$target_num" ] && break
+        fi
+
+        # Find the migration file
+        local file="db/migrate/${last}.sql"
+        [ ! -f "$file" ] && err "Migration file not found: $file"
+
+        # Extract and validate the down section
+        local down_sql; down_sql=$(extract_migration_down "$file")
+        [ -z "$down_sql" ] && err "No -- migrate:down section in $file. Add one before rolling back."
+
+        info "Rolling back $last"
+        echo "$down_sql" | psql "$db_url" -q || err "Rollback failed: $last"
+        psql "$db_url" -q -c "DELETE FROM forge_migrations WHERE name='${last}'"
+        ok "$last"
+        rolled=$((rolled + 1))
+
+        step=$((step - 1))
+        [ -z "$target_version" ] && [ "$step" -le 0 ] && break
+    done
+
+    [ "$rolled" -eq 0 ] || ok "${rolled} migration(s) rolled back."
 }
 
 cmd_db_status() {
@@ -1745,8 +1844,9 @@ case "$CMD" in
         ;;
     compile-routes)  compile_routes  ;;
     compile-models)  compile_models  ;;
-    db:migrate)      cmd_db_migrate "$@" ;;
-    db:status)       cmd_db_status  "$@" ;;
+    db:migrate)      cmd_db_migrate  "$@" ;;
+    db:rollback)     cmd_db_rollback "$@" ;;
+    db:status)       cmd_db_status   "$@" ;;
     version|--version|-v) echo "JDA Forge CLI v${FORGE_VERSION}" ;;
     help|--help|-h) usage ;;
     *) err "Unknown command: $CMD. Run 'forge help'." ;;

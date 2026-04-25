@@ -139,3 +139,125 @@ get "/ws"   "ws#handle"
 - Fragmented messages are reassembled internally; `forge_ws_recv` always returns a complete message.
 - Server-to-client frames are sent unmasked, as required by the spec.
 - Each connection upgrade spawns a goroutine in Forge's connection pool. The handler runs for the lifetime of the connection.
+
+---
+
+# Channels
+
+Channels are a higher-level pub/sub layer built on top of WebSocket — similar to Action Cable in Rails. A channel is a named topic; clients subscribe to it and the server broadcasts to all subscribers.
+
+## Setup
+
+Register channels at startup, before `app_listen`:
+
+```jda
+fn main() {
+    load_env()
+    forge_jobs_start(4)
+    forge_migration_run("db/migrate")
+
+    forge_channel_register("posts",
+        fn_addr(posts_subscribed),
+        fn_addr(posts_received),
+        fn_addr(posts_unsubscribed))
+
+    let app = app_new_config(app_config())
+    // ... middleware ...
+    app_get(app, "/cable", fn_addr(handle_cable))
+    app_listen(app, 8080)
+}
+```
+
+Add the route and handler:
+
+```jda
+fn handle_cable(ctx: i64) {
+    forge_channel_handle(ctx)   // upgrades WS + runs event loop until disconnect
+}
+```
+
+`forge_channel_handle` upgrades the connection to WebSocket, reads JSON commands from the client, and dispatches them to the appropriate channel callbacks. It blocks until the client disconnects, then cleans up all subscriptions automatically.
+
+## Callbacks
+
+Each channel has three optional callbacks. All share the same signature `fn my_cb(arg: i64)` where `arg` is a pointer to `ForgeChanCbArg`.
+
+```jda
+fn posts_subscribed(packed: i64) {
+    let a: &ForgeChanCbArg = packed
+    // a.fd = the client's WebSocket fd (i64)
+    // send a welcome message back to just this client
+    forge_ws_send_text(a.fd as i32, "{\"welcome\":true}")
+}
+
+fn posts_received(packed: i64) {
+    let a: &ForgeChanCbArg = packed
+    let data = (a.data as &i8)[0..a.data_len]
+    // data is the "data" field from the client message
+    // broadcast it to all subscribers
+    forge_channel_broadcast("posts", data)
+}
+
+fn posts_unsubscribed(packed: i64) {
+    // a.fd just left — cleanup if needed
+}
+```
+
+`ForgeChanCbArg` fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `fd` | `i64` | WebSocket file descriptor for this client |
+| `data` | `i64` | Pointer to payload bytes (`&i8`), `0` for subscribe/unsubscribe |
+| `data_len` | `i64` | Length of `data` |
+
+Pass `0` for any callback you don't need:
+
+```jda
+forge_channel_register("notifications", fn_addr(notif_subscribed), 0, 0)
+```
+
+## Broadcasting
+
+Broadcast from anywhere — a controller action, a background job, a callback:
+
+```jda
+fn post_create(ctx: i64) {
+    // ... create the post ...
+    forge_channel_broadcast("posts", "{\"event\":\"created\",\"id\":\"42\"}")
+    ctx_redirect(ctx, "/posts")
+}
+```
+
+The message is wrapped in the envelope `{"type":"message","channel":"posts","message":<data>}` before being sent to each subscriber.
+
+## Wire protocol
+
+The channel endpoint speaks a simple JSON protocol over WebSocket:
+
+**Client → Server**
+```json
+{"command":"subscribe","channel":"posts"}
+{"command":"message","channel":"posts","data":"hello"}
+{"command":"unsubscribe","channel":"posts"}
+```
+
+**Server → Client**
+```json
+{"type":"confirm_subscription","channel":"posts"}
+{"type":"rejection","channel":"posts"}
+{"type":"message","channel":"posts","message":"hello"}
+```
+
+## Channels API reference
+
+```jda
+forge_channel_register(name, on_sub_fn, on_msg_fn, on_unsub_fn)
+forge_channel_handle(ctx)                    // route handler — runs event loop
+forge_channel_broadcast(name, data)          // fan out to all subscribers
+forge_channel_subscribe(name, fd)            // add fd to channel (manual)
+forge_channel_unsubscribe(name, fd)          // remove fd from channel (manual)
+forge_channel_unsubscribe_fd(fd)             // remove fd from all channels
+```
+
+Limits: up to 64 registered channels, 256 subscribers per channel.

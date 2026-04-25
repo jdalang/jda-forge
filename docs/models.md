@@ -1580,6 +1580,25 @@ ALTER TABLE posts ADD COLUMN slug VARCHAR(255);
 CREATE UNIQUE INDEX idx_posts_slug ON posts (slug);
 ```
 
+### Migration file format
+
+Every generated migration has two sections:
+
+```sql
+-- migrate:up
+CREATE TABLE posts (
+    id         BIGSERIAL PRIMARY KEY,
+    title      VARCHAR(255),
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    deleted_at TIMESTAMP
+);
+
+-- migrate:down
+DROP TABLE IF EXISTS posts;
+```
+
+`forge db:migrate` runs only the `-- migrate:up` section. `forge db:rollback` runs the `-- migrate:down` section. Files without a `-- migrate:down` marker are treated as up-only (legacy format — the entire file runs on migrate, rollback is blocked).
+
 ### Running migrations
 
 ```bash
@@ -1587,7 +1606,18 @@ forge db:migrate
 forge db:migrate --environment production
 ```
 
-Reads `db/migrate/*.sql` in order, checks each filename against the `forge_migrations` tracking table, and runs any that haven't been applied yet. Safe to run repeatedly — already-applied migrations are skipped.
+Reads `db/migrate/*.sql` in order, checks each filename against the `forge_migrations` tracking table, and runs any `-- migrate:up` sections that haven't been applied yet. Safe to run repeatedly.
+
+### Rolling back
+
+```bash
+forge db:rollback                    # undo the last migration
+forge db:rollback --step 3           # undo the last 3 migrations
+forge db:rollback --version 002      # rollback until only migrations ≤ 002 remain
+forge db:rollback --environment staging
+```
+
+Each rollback runs the `-- migrate:down` section of the target migration and removes it from the `forge_migrations` tracking table.
 
 ```bash
 forge db:status          # show ran vs. pending

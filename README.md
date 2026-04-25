@@ -108,6 +108,8 @@ fn post_validations_init() {
 
 **WebSocket & SSE** — upgrade, broadcast, Server-Sent Events.
 
+**Channels** — Action Cable style pub/sub over WebSocket. Register named channels (`forge_channel_register`), broadcast from anywhere (`forge_channel_broadcast`), and handle the full subscribe/message/unsubscribe lifecycle with typed callbacks.
+
 **Migrations** — numbered SQL files, auto-run at startup, tracked in database.
 
 **Testing** — in-process request tests, no sockets, chainable assertions. `forge_test_fixture` inserts test records, `forge_test_rollback` / `forge_test_setup` wrap each test in a transaction, `forge_test_res_json` asserts JSON response keys.
@@ -128,6 +130,9 @@ forge console                                # open database console  (alias: fo
 forge console --environment staging          # connect to staging DB
 forge db:migrate                             # run pending migrations
 forge db:migrate --environment production    # run migrations on a specific environment
+forge db:rollback                            # roll back last migration
+forge db:rollback --step 3                   # roll back last 3 migrations
+forge db:rollback --version 002              # rollback to version 002
 forge db:status                              # show ran vs. pending migrations
 
 forge new <name>                             # scaffold a new project

@@ -1396,6 +1396,287 @@ fn forge_ws_close(fd: i32) {
 }
 
 // =============================================================================
+// Channels — Action Cable style pub/sub over WebSocket
+//
+// Register named channels at startup, then broadcast to all subscribers
+// from anywhere in the app — handlers, jobs, callbacks.
+//
+// Wire protocol (JSON over WebSocket):
+//   Client → Server  {"command":"subscribe","channel":"posts"}
+//   Client → Server  {"command":"message","channel":"posts","data":"..."}
+//   Client → Server  {"command":"unsubscribe","channel":"posts"}
+//   Server → Client  {"type":"confirm_subscription","channel":"posts"}
+//   Server → Client  {"type":"rejection","channel":"posts"}
+//   Server → Client  {"type":"message","channel":"posts","message":<data>}
+//
+// Usage:
+//   // startup
+//   forge_channel_register("posts", fn_addr(posts_subscribed), fn_addr(posts_received), fn_addr(posts_unsubscribed))
+//
+//   // route handler (blocks until disconnect)
+//   fn handle_cable(ctx: i64) { forge_channel_handle(ctx) }
+//
+//   // broadcast from anywhere
+//   forge_channel_broadcast("posts", json_str)
+//
+// Callback signature: fn my_cb(arg: i64) where arg is a *ForgeChanCbArg.
+// =============================================================================
+
+const FORGE_CHAN_MAX       = 64
+const FORGE_CHAN_FD_MAX    = 256
+const FORGE_CHAN_NAME_CAP  = 64
+const FORGE_CHAN_ENTRY_STRIDE = 96   // 64 + 8 + 8 + 8 + 8
+
+// Passed to on_sub / on_msg / on_unsub callbacks as a packed i64 pointer.
+struct ForgeChanCbArg {
+    fd:       i64
+    data:     i64   // &i8 pointer to payload bytes (0 for subscribe/unsubscribe events)
+    data_len: i64
+}
+
+struct ForgeChanEntry {
+    name:     [FORGE_CHAN_NAME_CAP]i8
+    name_len: i64
+    on_sub:   i64
+    on_msg:   i64
+    on_unsub: i64
+}
+
+let g_forge_chan_base:      i64  = 0
+let g_forge_chan_count:     i64  = 0
+let g_forge_chan_fds:       &i64 = 0   // flat [FORGE_CHAN_MAX * FORGE_CHAN_FD_MAX] — -1 = empty slot
+let g_forge_chan_fd_counts: &i64 = 0   // [FORGE_CHAN_MAX] subscriber count per channel
+
+fn forge_chan_entry_at(i: i64) -> &ForgeChanEntry {
+    ret (g_forge_chan_base + i * FORGE_CHAN_ENTRY_STRIDE) as &ForgeChanEntry
+}
+
+fn forge_chan_init() {
+    if g_forge_chan_base != 0 { ret }
+    g_forge_chan_base      = alloc_pages(2) as i64   // 64 * 96 = 6144 bytes
+    g_forge_chan_fds       = alloc_pages(32)          // 64 * 256 * 8 = 131072 bytes
+    g_forge_chan_fd_counts = alloc_pages(1)            // 64 * 8 = 512 bytes
+    loop i in 0..(FORGE_CHAN_MAX * FORGE_CHAN_FD_MAX) {
+        g_forge_chan_fds[i] = -1
+    }
+}
+
+// Find index of a registered channel by name. Returns -1 if not found.
+fn forge_chan_find_idx(name: []i8) -> i64 {
+    loop i in 0..g_forge_chan_count {
+        let e = forge_chan_entry_at(i)
+        if forge_slice_eq(e.name[0..e.name_len], name) { ret i }
+    }
+    ret -1
+}
+
+// Register a channel. Call once at startup before app_listen.
+fn forge_channel_register(name: []i8, on_sub: i64, on_msg: i64, on_unsub: i64) {
+    forge_chan_init()
+    if g_forge_chan_count >= FORGE_CHAN_MAX { ret }
+    let e = forge_chan_entry_at(g_forge_chan_count)
+    let nl = name.len
+    if nl > FORGE_CHAN_NAME_CAP { nl = FORGE_CHAN_NAME_CAP }
+    loop i in 0..nl { e.name[i] = name[i] }
+    e.name_len = nl
+    e.on_sub   = on_sub
+    e.on_msg   = on_msg
+    e.on_unsub = on_unsub
+    g_forge_chan_count = g_forge_chan_count + 1
+}
+
+// Subscribe fd to a named stream/channel.
+fn forge_channel_subscribe(name: []i8, fd: i32) {
+    forge_chan_init()
+    let ci = forge_chan_find_idx(name)
+    if ci < 0 { ret }
+    let base = ci * FORGE_CHAN_FD_MAX
+    // Find an empty slot
+    loop i in 0..FORGE_CHAN_FD_MAX {
+        if g_forge_chan_fds[base + i] == -1 {
+            g_forge_chan_fds[base + i] = fd as i64
+            g_forge_chan_fd_counts[ci] = g_forge_chan_fd_counts[ci] + 1
+            ret
+        }
+    }
+}
+
+// Unsubscribe fd from a named stream/channel.
+fn forge_channel_unsubscribe(name: []i8, fd: i32) {
+    forge_chan_init()
+    let ci = forge_chan_find_idx(name)
+    if ci < 0 { ret }
+    let base = ci * FORGE_CHAN_FD_MAX
+    loop i in 0..FORGE_CHAN_FD_MAX {
+        if g_forge_chan_fds[base + i] == fd as i64 {
+            g_forge_chan_fds[base + i] = -1
+            g_forge_chan_fd_counts[ci] = g_forge_chan_fd_counts[ci] - 1
+            ret
+        }
+    }
+}
+
+// Remove fd from ALL channels — call on WebSocket disconnect.
+fn forge_channel_unsubscribe_fd(fd: i32) {
+    forge_chan_init()
+    loop ci in 0..g_forge_chan_count {
+        let base = ci * FORGE_CHAN_FD_MAX
+        loop i in 0..FORGE_CHAN_FD_MAX {
+            if g_forge_chan_fds[base + i] == fd as i64 {
+                g_forge_chan_fds[base + i] = -1
+                g_forge_chan_fd_counts[ci] = g_forge_chan_fd_counts[ci] - 1
+            }
+        }
+    }
+}
+
+// Broadcast a message to all subscribers of a named stream/channel.
+fn forge_channel_broadcast(name: []i8, data: []i8) {
+    forge_chan_init()
+    let ci = forge_chan_find_idx(name)
+    if ci < 0 { ret }
+    // Build envelope: {"type":"message","channel":"<name>","message":<data>}
+    let env: &i8 = alloc_pages(2)
+    let ep = 0i64
+    let p1 = "{\"type\":\"message\",\"channel\":\""
+    let p2 = "\",\"message\":"
+    let p3 = "}"
+    loop i in 0..p1.len   { env[ep] = p1[i]    ep = ep + 1 }
+    loop i in 0..name.len { env[ep] = name[i]   ep = ep + 1 }
+    loop i in 0..p2.len   { env[ep] = p2[i]    ep = ep + 1 }
+    loop i in 0..data.len { env[ep] = data[i]   ep = ep + 1 }
+    loop i in 0..p3.len   { env[ep] = p3[i]    ep = ep + 1 }
+    let msg = env[0..ep]
+    let base = ci * FORGE_CHAN_FD_MAX
+    loop i in 0..FORGE_CHAN_FD_MAX {
+        let sfd = g_forge_chan_fds[base + i]
+        if sfd != -1 { forge_ws_send_text(sfd as i32, msg) }
+    }
+}
+
+// Extract a quoted string value for key in a flat JSON object.
+// Writes result into out; returns length written.
+fn forge_chan_json_get(json: []i8, key: []i8, out: &i8) -> i64 {
+    // Build needle: `"key":"`
+    let needle = [128]i8
+    let np = 0i64
+    needle[np] = '"'   np = np + 1
+    loop i in 0..key.len { needle[np] = key[i]  np = np + 1 }
+    needle[np] = '"'   np = np + 1
+    needle[np] = ':'   np = np + 1
+    needle[np] = '"'   np = np + 1
+    let nlen = np
+
+    // Search for needle in json
+    let found = -1i64
+    let lim = json.len - nlen
+    loop i in 0..lim {
+        let ok = true
+        loop j in 0..nlen {
+            if json[i + j] != needle[j] { ok = false  break }
+        }
+        if ok { found = i + nlen  break }
+    }
+    if found < 0 { ret 0 }
+
+    // Copy until closing quote, handling \\" escape
+    let n = 0i64
+    let i = found
+    loop i < json.len {
+        let ch = json[i]
+        if ch == '"' { break }
+        if ch == '\\' and (i + 1) < json.len {
+            out[n] = json[i + 1]  n = n + 1  i = i + 2
+        } else {
+            out[n] = ch  n = n + 1  i = i + 1
+        }
+    }
+    ret n
+}
+
+// Main channel event loop. Upgrade to WebSocket, dispatch commands until disconnect.
+fn forge_channel_handle(ctx_ptr: i64) {
+    if not ctx_upgrade_ws(ctx_ptr) { ret }
+    let c: &ForgeCtx = ctx_ptr
+    let fd = c.fd
+
+    let buf:      &i8 = alloc_pages(4)    // 16 KB receive buffer
+    let cmd_buf:  &i8 = alloc_pages(1)
+    let chan_buf: &i8 = alloc_pages(1)
+    let data_buf: &i8 = alloc_pages(2)
+
+    loop {
+        let n = forge_ws_recv(fd, buf, 16384)
+        if n <= 0 { break }
+        let msg = buf[0..n]
+
+        let cmd_len  = forge_chan_json_get(msg, "command", cmd_buf)
+        let chan_len  = forge_chan_json_get(msg, "channel", chan_buf)
+        let cmd  = cmd_buf[0..cmd_len]
+        let chan = chan_buf[0..chan_len]
+
+        let ci = forge_chan_find_idx(chan)
+
+        if forge_slice_eq(cmd, "subscribe") {
+            if ci < 0 {
+                // Unknown channel — send rejection
+                let rej: &i8 = alloc_pages(1)
+                let rp = 0i64
+                let rp1 = "{\"type\":\"rejection\",\"channel\":\""
+                let rp2 = "\"}"
+                loop i in 0..rp1.len  { rej[rp] = rp1[i]   rp = rp + 1 }
+                loop i in 0..chan.len  { rej[rp] = chan[i]   rp = rp + 1 }
+                loop i in 0..rp2.len  { rej[rp] = rp2[i]   rp = rp + 1 }
+                forge_ws_send_text(fd, rej[0..rp])
+            } else {
+                forge_channel_subscribe(chan, fd)
+                // Confirm subscription
+                let conf: &i8 = alloc_pages(1)
+                let cp = 0i64
+                let cp1 = "{\"type\":\"confirm_subscription\",\"channel\":\""
+                let cp2 = "\"}"
+                loop i in 0..cp1.len  { conf[cp] = cp1[i]   cp = cp + 1 }
+                loop i in 0..chan.len  { conf[cp] = chan[i]   cp = cp + 1 }
+                loop i in 0..cp2.len  { conf[cp] = cp2[i]   cp = cp + 1 }
+                forge_ws_send_text(fd, conf[0..cp])
+                // Fire on_sub callback
+                let entry = forge_chan_entry_at(ci)
+                if entry.on_sub != 0 {
+                    let arg: &ForgeChanCbArg = alloc_pages(1)
+                    arg.fd = fd as i64  arg.data = 0  arg.data_len = 0
+                    call_fn(entry.on_sub, arg as i64)
+                }
+            }
+        } else if forge_slice_eq(cmd, "message") {
+            if ci >= 0 {
+                let data_len = forge_chan_json_get(msg, "data", data_buf)
+                let entry = forge_chan_entry_at(ci)
+                if entry.on_msg != 0 {
+                    let arg: &ForgeChanCbArg = alloc_pages(1)
+                    arg.fd       = fd as i64
+                    arg.data     = data_buf as i64
+                    arg.data_len = data_len
+                    call_fn(entry.on_msg, arg as i64)
+                }
+            }
+        } else if forge_slice_eq(cmd, "unsubscribe") {
+            if ci >= 0 {
+                let entry = forge_chan_entry_at(ci)
+                if entry.on_unsub != 0 {
+                    let arg: &ForgeChanCbArg = alloc_pages(1)
+                    arg.fd = fd as i64  arg.data = 0  arg.data_len = 0
+                    call_fn(entry.on_unsub, arg as i64)
+                }
+                forge_channel_unsubscribe(chan, fd)
+            }
+        }
+    }
+
+    forge_channel_unsubscribe_fd(fd)
+    forge_ws_close(fd)
+}
+
+// =============================================================================
 // Built-in middleware
 // =============================================================================
 
