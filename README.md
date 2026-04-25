@@ -126,6 +126,8 @@ fn post_model_init() {
 
 **View helpers** — `forge_time_ago`, `forge_distance_of_time`, `forge_number_to_currency`, `forge_number_with_delimiter`, `forge_word_wrap` for formatting in templates.
 
+**Asset pipeline** — Rails-style fingerprinting for CSS/JS. `forge compile-assets` copies files to `public/assets/`, fingerprints them in production (`application-abc123def4567890.css`), and generates `_build/assets.jda` with `forge_stylesheet_tag`, `forge_javascript_tag`, `forge_image_tag`, and `forge_asset_path` baked in at compile time — zero runtime overhead.
+
 **Caching** — `forge_cache_fetch(key, ttl, fn_ptr)` for memoized caching. File uploads, i18n, serializers all built in.
 
 ---
@@ -158,6 +160,8 @@ forge generate migration add_slug_to_posts slug:string
 
 forge compile-routes                         # regenerate _build/routes.jda + _build/controllers.jda
 forge compile-models                         # regenerate _build/models.jda from db/migrate/
+forge compile-assets                         # copy assets to public/assets/ (dev, no fingerprint)
+forge assets:precompile                      # fingerprint CSS/JS for production deploy
 
 forge release v3.1.0                         # tag + push + GitHub release
 forge self-update [--version v3.1.0]         # update the CLI itself
@@ -171,7 +175,7 @@ forge self-update [--version v3.1.0]         # update the CLI itself
 
 **Core:** [Routing](docs/routing.md) · [Models](docs/models.md) · [Views](docs/views.md) · [Security](docs/security.md) · [Testing](docs/testing.md) · [Configuration](docs/configuration.md)
 
-**Features:** [Mailer](docs/mailer.md) · [Background Jobs](docs/background-jobs.md) · [WebSocket & Channels](docs/websocket.md) · [SSE](docs/sse.md) · [Caching](docs/caching.md) · [File Uploads](docs/file-uploads.md) · [i18n](docs/i18n.md)
+**Features:** [Assets](docs/assets.md) · [Mailer](docs/mailer.md) · [Background Jobs](docs/background-jobs.md) · [WebSocket & Channels](docs/websocket.md) · [SSE](docs/sse.md) · [Caching](docs/caching.md) · [File Uploads](docs/file-uploads.md) · [i18n](docs/i18n.md)
 
 **Reference:** [Libraries](docs/libraries.md) · [Overriding](docs/overriding.md)
 

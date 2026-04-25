@@ -1,194 +1,43 @@
-# JDA Forge — Full Documentation
-
-Generated from docs/ for LLM consumption. Source: https://github.com/jdalang/jda-forge
-
----
-
-<!-- FILE: README.md -->
-
-# JDA Forge
-
-A full-stack web framework for the [Jda language](https://github.com/jdalang/jda). Ships as a single `--include` file; everything from routing and ORM to mailer, WebSocket, testing, and background jobs is built in.
-
----
-
-## Installation
-
-```bash
-# Latest
-curl -fsSL https://raw.githubusercontent.com/jdalang/jda-forge/main/install.sh | sh
-
-# Specific version
-curl -fsSL https://raw.githubusercontent.com/jdalang/jda-forge/main/install.sh | sh -s -- --version v3.0.0
-```
-
-Installs to `~/.jda/forge/`, links `forge` CLI to `~/.jda/bin/`.
-
-```bash
-forge version          # JDA Forge CLI v3.0.0
-forge self-update      # upgrade to latest
-```
-
-**Manual install:** clone to `~/.jda/forge`, add `~/.jda/bin` to `$PATH`, symlink `bin/forge`.
-
----
-
-## Quick Start
-
-```bash
-forge new myapp
-cd myapp
-forge install
-cp .env.example .env.development   # set DATABASE_URL and APP_SECRET
-forge server                        # build + start on :8080  (alias: forge s)
-forge console                       # open database console   (alias: forge c)
-```
-
-Minimal app:
-
-```jda
-fn handle_root(ctx: i64) {
-    ctx_html(ctx, 200, "<h1>Hello from Forge</h1>")
-}
-
-fn main() {
-    load_env()
-    let app = app_new_config(app_config())
-    app_use(app, fn_addr(forge_logger))
-    app_get(app, "/", fn_addr(handle_root))
-    app_listen(app, 8080)
-}
-```
-
----
-
-## Example App
-
-[`examples/blog/`](examples/blog/) — complete Posts + Comments CRUD with sessions, CSRF, declarative validations, callbacks, soft delete, multi-environment config, and request tests.
-
-```bash
-cd examples/blog
-forge install
-cp .env.example .env.development
-forge server
-```
-
-Walkthrough: [docs/blog-example.md](docs/blog-example.md)
-
----
-
-## What's built in
-
-**Routing** — resources DSL, namespaces, middleware, path helpers, before/after filters.
-
-**Multiple databases** — register named connections by URL (`forge_db_add("analytics", url)`), query any of them with `forge_q_on("analytics", "events")`, mix PostgreSQL and MySQL/MariaDB in one app.
-
-**ORM** — Rails-style query builder (`where_eq`, `order`, `limit`, `joins`, `group`, `having`, aggregates, scopes, batch processing). Tables with `deleted_at` get automatic soft-delete scoping — `post_all()` excludes deleted rows; `post_with_deleted()` and `post_only_deleted()` opt back in. Auto-generates typed CRUD per table including `post_reload`, `post_toggle`, `post_increment`, `post_decrement`, plus `forge_q_pick`, `forge_q_reorder`, `forge_q_reverse_order`, `forge_q_find_each`.
-
-**Model init** — associations, callbacks, and validations declared together in one `*_model_init` function so the full shape of a model is visible in one place:
-
-```jda
-fn post_model_init() {
-    forge_model("posts")
-    forge_assoc_belongs_to      ("user",     "users",    "user_id")
-    forge_assoc_has_many        ("comments", "comments", "post_id")
-    forge_assoc_has_many_through("tags",     "tags",     "post_tags", "post_id", "tag_id")
-    forge_assoc_poly_has_many   ("likes",    "likes",    "likeable_id", "likeable_type", "Post")
-    forge_callback(FORGE_CB_BEFORE_SAVE, fn_addr(post_before_save))
-    forge_field       ("title, body, author", FORGE_V_PRESENCE)
-    forge_field_length("title",               2, 255)
-}
-```
-
-**Associations** — `forge_assoc_belongs_to`, `forge_assoc_has_many`, `forge_assoc_has_one`, `forge_assoc_has_many_through` (HABTM), `forge_assoc_poly_belongs_to` / `forge_assoc_poly_has_many` (polymorphic), self-referential (parent/child). Typed accessor functions (`post_comments`, `post_user`, etc.) are auto-generated into `_build/models.jda` by `forge compile-models` — declare once in `*_model_init`, use everywhere.
-
-**Declarative validations** — fire automatically on every save with full lifecycle (`FORGE_CB_BEFORE_VALIDATION` / `FORGE_CB_AFTER_VALIDATION`). Supports create-only or update-only rules via `forge_field_on_create` / `forge_field_on_update`.
-
-**Strong parameters** — `ctx_permit(ctx, "title, body, author")` whitelists and extracts form fields.
-
-**Callbacks** — `FORGE_CB_BEFORE_VALIDATION`, `AFTER_VALIDATION`, `BEFORE_SAVE`, `AFTER_SAVE`, `BEFORE_CREATE`, `AFTER_CREATE`, `BEFORE_UPDATE`, `AFTER_UPDATE`, `BEFORE_DELETE`, `AFTER_DELETE`, `AFTER_COMMIT`, `AFTER_ROLLBACK`.
-
-**Transactions** — `forge_begin/commit/rollback()` or `forge_transaction(fn_ptr)`.
-
-**Controllers** — thin action functions, `ctx_render`, `ctx_redirect`, `ctx_redirect_back`, flash (`ctx_flash_now`, `ctx_flash_keep`), strong params, format-aware `ctx_respond_to`. HTTP caching via `ctx_etag`, `ctx_last_modified`, `ctx_stale`.
-
-**Before actions** — `forge_ctrl_before(ctrl, fn_ptr, "show, edit")` and `forge_ctrl_before_except(ctrl, fn_ptr, "index, new")` for Rails-style controller filters.
-
-**JSON API** — `ctx_json_ok`, `ctx_json_created`, `ctx_json_errors` (422 with validation body), `forge_result_to_json`, `ForgeJson` builder for selective fields.
-
-**Sessions & CSRF** — cookie sessions, automatic CSRF token generation and validation.
-
-**Security** — bcrypt password hashing (`forge_secure_password_set/verify`), SQL-injection-safe escaping, HTML escaping, secure headers middleware, JWT auth helpers, `forge_token_generate` (cryptographically random tokens), `forge_token_eq_timing` (constant-time comparison), per-key rate limiting (`forge_rate_limit_key`).
-
-**Background jobs** — worker pool, `forge_job_enqueue(fn_addr(job_fn), arg)`, `forge_job_enqueue_retry(fn_ptr, arg, max_retries)` for automatic retry on failure.
-
-**Mailer** — SMTP, HTML/text bodies, async delivery.
-
-**WebSocket & SSE** — upgrade, broadcast, Server-Sent Events.
-
-**Channels** — Action Cable style pub/sub over WebSocket. Register named channels (`forge_channel_register`), broadcast from anywhere (`forge_channel_broadcast`), and handle the full subscribe/message/unsubscribe lifecycle with typed callbacks.
-
-**Migrations** — numbered SQL files with `-- migrate:up` / `-- migrate:down` sections, auto-run at startup, tracked in database. Run independently with `forge db:migrate` / `forge db:status`; roll back with `forge db:rollback [--step N | --version NNN]`.
-
-**Testing** — in-process request tests, no sockets, chainable assertions. `forge_test_fixture` inserts test records, `forge_test_rollback` / `forge_test_setup` wrap each test in a transaction, `forge_test_res_json` asserts JSON response keys.
-
-**View helpers** — `forge_time_ago`, `forge_distance_of_time`, `forge_number_to_currency`, `forge_number_with_delimiter`, `forge_word_wrap` for formatting in templates.
-
-**Caching** — `forge_cache_fetch(key, ttl, fn_ptr)` for memoized caching. File uploads, i18n, serializers all built in.
-
----
-
-## CLI
-
-```bash
-forge server                                 # build + start dev server  (alias: forge s)
-forge server --port 3000                     # custom port
-forge server --environment production        # different environment
-forge console                                # open database console  (alias: forge c)
-forge console --environment staging          # connect to staging DB
-forge db:migrate                             # run pending migrations
-forge db:migrate --environment production    # run migrations on a specific environment
-forge db:rollback                            # roll back last migration
-forge db:rollback --step 3                   # roll back last 3 migrations
-forge db:rollback --version 002              # rollback to version 002
-forge db:status                              # show ran vs. pending migrations
-
-forge new <name>                             # scaffold a new project
-forge install                                # install deps from Forgefile
-forge install --locked                       # exact versions (use in CI)
-forge add <lib> [--version v1.2.0]          # add a library
-forge update [<lib>]                         # update all or one library
-forge list                                   # show installed libraries
-
-forge generate scaffold Post title:string body:text   # model + routes + views + test
-forge generate model    Post title:string             # model only
-forge generate migration add_slug_to_posts slug:string
-
-forge compile-routes                         # regenerate _build/routes.jda + _build/controllers.jda
-forge compile-models                         # regenerate _build/models.jda from db/migrate/
-
-forge release v3.1.0                         # tag + push + GitHub release
-forge self-update [--version v3.1.0]         # update the CLI itself
-```
-
----
-
-## Documentation
-
-**Start here:** [Getting Started](docs/getting-started.md) · [Blog Example](docs/blog-example.md)
-
-**Core:** [Routing](docs/routing.md) · [Models](docs/models.md) · [Views](docs/views.md) · [Security](docs/security.md) · [Testing](docs/testing.md) · [Configuration](docs/configuration.md)
-
-**Features:** [Mailer](docs/mailer.md) · [Background Jobs](docs/background-jobs.md) · [WebSocket & Channels](docs/websocket.md) · [SSE](docs/sse.md) · [Caching](docs/caching.md) · [File Uploads](docs/file-uploads.md) · [i18n](docs/i18n.md)
-
-**Reference:** [Libraries](docs/libraries.md) · [Overriding](docs/overriding.md)
-
-Full index: [docs/README.md](docs/README.md)
-
----
-
-<!-- FILE: docs/getting-started.md -->
-
+# JDA Forge — Documentation
+
+## Start here
+
+| Guide | Description |
+|---|---|
+| [getting-started.md](getting-started.md) | Installation, project structure, first app, build pipeline |
+| [blog-example.md](blog-example.md) | Full walkthrough of the example app |
+
+## Core
+
+| Guide | Description |
+|---|---|
+| [routing.md](routing.md) | Routes, request/response API, middleware, before/after filters |
+| [models.md](models.md) | Query builder, declarative validations, callbacks, transactions, associations, migrations, multiple databases, migration rollback |
+| [serializers.md](serializers.md) | JSON serializers — auto-render, selective fields, computed fields, conditions |
+| [views.md](views.md) | HTML helpers, forms, layout, partials, escaping |
+| [security.md](security.md) | SQL injection, XSS, CSRF, authentication, bcrypt passwords, secure headers |
+| [testing.md](testing.md) | Request tests, assertions, database fixtures |
+| [configuration.md](configuration.md) | Environments, .env files, app_config, log levels |
+
+## Features
+
+| Guide | Description |
+|---|---|
+| [mailer.md](mailer.md) | Sending email (SMTP), async mail, ForgeMail struct |
+| [background-jobs.md](background-jobs.md) | Worker pool, job functions, async processing |
+| [websocket.md](websocket.md) | WebSocket upgrade, send/receive, broadcast patterns, channels (pub/sub) |
+| [sse.md](sse.md) | Server-Sent Events — live feeds, notifications |
+| [assets.md](assets.md) | Asset pipeline — CSS/JS fingerprinting, `forge_stylesheet_tag`, `forge_javascript_tag` |
+| [caching.md](caching.md) | In-process cache, response caching middleware |
+| [file-uploads.md](file-uploads.md) | Multipart parsing, validation, saving uploads |
+| [i18n.md](i18n.md) | Locale files, translation, per-request locale |
+
+## Reference
+
+| Guide | Description |
+|---|---|
+| [libraries.md](libraries.md) | Forgefile, version pinning, Forgefile.lock, writing libraries |
+| [overriding.md](overriding.md) | Monkey patching, patch files, middleware override |
 # Getting Started with JDA Forge
 
 JDA Forge is a web framework for the Jda language. Jda compiles to native x86-64 binaries, calls the kernel directly (no libc), and manages memory without a garbage collector. Forge brings database access, HTTP routing, sessions, CSRF protection, and migrations to that environment — without changing what Jda is.
@@ -969,11 +818,6 @@ Once your project is running and you have a feel for the request cycle, these gu
 **Channels (WebSocket pub/sub)** — broadcast to named channels with `forge_channel_broadcast`, register channels with `forge_channel_register`, and handle the full subscribe/message/unsubscribe lifecycle. See [websocket.md](websocket.md).
 
 **Migration rollback** — roll back the last migration with `forge db:rollback`, multiple steps with `forge db:rollback --step 3`, or to a specific version with `forge db:rollback --version 002`. Requires `-- migrate:down` sections in your migration files.
-
----
-
-<!-- FILE: docs/blog-example.md -->
-
 # Blog Example App
 
 **Location:** [`examples/blog/`](../examples/blog/)
@@ -1298,11 +1142,6 @@ build: _gen $(OUT)
 ```
 
 Order matters: `config/application.jda` first (constants and `load_env`), then helpers, models, views, controllers, generated init + routes (from `_build/`), and finally `main.jda` which calls `forge_controllers_init()`, `routes(app)`, and starts the server. The `_gen` target runs `forge compile-routes` before every build to regenerate those `_build/` files.
-
----
-
-<!-- FILE: docs/routing.md -->
-
 # Routing and Request/Response Reference
 
 This document covers everything you need to handle HTTP in JDA Forge: registering routes, reading request data, sending responses, middleware, WebSockets, Server-Sent Events, and static files.
@@ -2281,11 +2120,6 @@ fn test_post_show() {
     forge_get(post_path(post.id())).ok(200).has("Hello World")
 }
 ```
-
----
-
-<!-- FILE: docs/models.md -->
-
 # Models
 
 The Forge model layer provides database access, querying, validation, associations, callbacks, and migrations for JDA applications. It follows an Active Record style: each database table has a corresponding set of generated functions that handle common operations, and a chainable query builder handles everything else.
@@ -4146,11 +3980,157 @@ Forge does not automatically generate down migrations. If you need to reverse a 
 -- db/migrations/006_remove_slug_from_posts.sql
 ALTER TABLE posts DROP COLUMN slug;
 ```
+# JSON Serializers
+
+Forge has two levels of JSON rendering:
+
+- **Auto-serialize** — one line, all columns, no configuration
+- **Serializer functions** — declare exactly what to expose, add computed fields, apply conditions
 
 ---
 
-<!-- FILE: docs/views.md -->
+## Auto-serialize (all columns)
 
+```jda
+fn api_posts_index(ctx: i64) {
+    ctx_json_result(ctx, post_all())      // array of all rows, all columns
+}
+
+fn api_post_show(ctx: i64) {
+    ctx_json_row(ctx, post_find(ctx_param(ctx, "id")))  // single object
+}
+```
+
+`ctx_json_result` and `ctx_json_row` serialize every column the query returned. Use this for internal APIs or when you control the consumer.
+
+---
+
+## Serializer functions
+
+For public APIs, create `app/serializers/post_serializer.jda`. The convention is:
+- `post_serialize(res, r)` — single row at index `r`
+- `posts_serialize(res)` — full collection
+
+```jda
+// app/serializers/post_serializer.jda
+
+fn post_serialize(res: &ForgeResult, r: i64) -> []i8 {
+    ret forge_json_new()
+        .field("id",         forge_result_col(res, r, "id"))
+        .field("title",      forge_result_col(res, r, "title"))
+        .field("body",       forge_result_col(res, r, "body"))
+        .field("created_at", forge_result_col(res, r, "created_at"))
+        .done()
+        // deleted_at, internal_notes — not included
+}
+
+fn posts_serialize(res: &ForgeResult) -> []i8 {
+    let a = forge_json_array_new()
+    loop r in 0..res.count {
+        a.push(post_serialize(res, r))
+    }
+    ret a.done()
+}
+```
+
+Use in a controller:
+
+```jda
+fn api_posts_index(ctx: i64) {
+    ctx_json(ctx, 200, posts_serialize(post_all()))
+}
+
+fn api_post_show(ctx: i64) {
+    let post = post_find(ctx_param(ctx, "id"))
+    if post.count == 0 { ctx_not_found(ctx)  ret }
+    ctx_json(ctx, 200, post_serialize(post, 0))
+}
+```
+
+---
+
+## Computed fields
+
+Add any derived value with `.field()` — it does not have to come from the database:
+
+```jda
+fn post_serialize(res: &ForgeResult, r: i64) -> []i8 {
+    let title  = forge_result_col(res, r, "title")
+    let author = forge_result_col(res, r, "author")
+
+    ret forge_json_new()
+        .field("id",          forge_result_col(res, r, "id"))
+        .field("title",       title)
+        .field("author",      author)
+        .field("display",     str_concat(title, " — ") + author)
+        .field("url",         post_path(forge_result_col(res, r, "id")))
+        .done()
+}
+```
+
+---
+
+## Conditional fields
+
+Pass `ctx` to include fields based on the request:
+
+```jda
+fn post_serialize_for(res: &ForgeResult, r: i64, ctx: i64) -> []i8 {
+    let j = forge_json_new()
+    j.field("id",    forge_result_col(res, r, "id"))
+     .field("title", forge_result_col(res, r, "title"))
+
+    // only expose author email to admins
+    if is_admin(ctx) {
+        j.field("author_email", forge_result_col(res, r, "author_email"))
+    }
+
+    // only include draft body if the post is not published
+    let published = forge_result_col(res, r, "published")
+    if !str_eq(published, "true") {
+        j.field("draft_body", forge_result_col(res, r, "body"))
+    }
+
+    ret j.done()
+}
+```
+
+---
+
+## Nested objects
+
+Serialize related records as nested JSON using `.field_raw()`:
+
+```jda
+fn post_serialize_with_comments(res: &ForgeResult, r: i64) -> []i8 {
+    let post_id  = forge_result_col(res, r, "id")
+    let comments = comment_where_post(post_id)
+
+    ret forge_json_new()
+        .field("id",       post_id)
+        .field("title",    forge_result_col(res, r, "title"))
+        .field_raw("comments", comments_serialize(comments))
+        .done()
+}
+```
+
+`.field_raw(key, val)` inserts the value as-is — use it for numbers, booleans, and nested JSON arrays or objects.
+
+---
+
+## Reference
+
+| Function | Description |
+|---|---|
+| `ctx_json_result(ctx, res)` | Render all rows + all columns as JSON array (status 200) |
+| `ctx_json_row(ctx, res)` | Render first row as JSON object (status 200) |
+| `forge_json_new()` | Start a JSON object builder |
+| `j.field(key, val)` | Add a string field (auto-escaped) |
+| `j.field_raw(key, val)` | Add a raw field (number, bool, nested JSON) |
+| `j.done()` | Close and return the JSON `[]i8` |
+| `forge_json_array_new()` | Start a JSON array builder |
+| `a.push(obj)` | Append a JSON object string |
+| `a.done()` | Close and return the JSON array `[]i8` |
 # Views
 
 JDA Forge does not have a template engine or a separate file format for views. Views are plain Jda functions that return `[]i8` HTML strings. This means the full language — loops, conditionals, function calls, helper functions — is available wherever you need it.
@@ -4502,11 +4482,6 @@ Failing to escape user-supplied values is the most common source of XSS vulnerab
 | Value read from the database | Still escape — the database does not sanitize on write |
 
 Forge's form helpers (`forge_input_tag`, `forge_textarea_tag`, `forge_select_tag`) escape values internally. Values produced by `forge_result_col` are raw strings from the database and must be escaped before use in HTML.
-
----
-
-<!-- FILE: docs/security.md -->
-
 # Security Guide
 
 This guide covers every security concern a Forge developer needs to handle. It is organized by threat, explains what Forge handles automatically, what you must do yourself, and provides working code for every recommendation.
@@ -5260,11 +5235,6 @@ Use this before every production deployment.
 | [ ] | No `forge_cors` in production | The permissive built-in CORS middleware is not registered in production |
 | [ ] | Origin whitelist | Custom CORS middleware checks `Origin` against an explicit whitelist before reflecting it |
 | [ ] | Credentials | `Access-Control-Allow-Credentials: true` is only set for whitelisted origins |
-
----
-
-<!-- FILE: docs/testing.md -->
-
 # Testing
 
 JDA Forge includes an in-memory test driver. Tests fire real HTTP requests through the router without opening a socket — the same handler code runs, the same middleware executes, and the real database is hit (a test database, not your development one).
@@ -5482,11 +5452,6 @@ Fill in create, update, delete, and validation cases to match your handler logic
 | `edit_post_path(id)` | `/posts/<id>/edit` |
 
 Run tests: `forge test` or `FORGE_ENV=test jda run test/test_posts.jda`
-
----
-
-<!-- FILE: docs/configuration.md -->
-
 # Configuration
 
 JDA Forge applications are configured through environment variables loaded from `.env` files. The active environment is determined by `FORGE_ENV`. Configuration is assembled once at startup in `app_config()` and passed to the framework.
@@ -5705,11 +5670,6 @@ let is_set = forge_env_get("MY_VAR").len > 0  // check presence
 **Files to commit:** `.env`, `.env.test`, `Forgefile`, `Forgefile.lock`
 
 **Files to gitignore:** `.env.development`, `.env.staging`, `.env.production`
-
----
-
-<!-- FILE: docs/mailer.md -->
-
 # Mailer
 
 JDA Forge includes a built-in SMTP mailer. Mail is sent using the `ForgeMail` struct and either `forge_mail_send` (blocking) or `forge_mail_async` (non-blocking via the background job queue).
@@ -5956,11 +5916,6 @@ fn test_welcome_email_subject() {
     assert_eq(captured_mail[0].subject, "Welcome to MyApp, Alice!")
 }
 ```
-
----
-
-<!-- FILE: docs/background-jobs.md -->
-
 # Background Jobs
 
 Forge includes a worker pool for running tasks outside the HTTP request cycle. Common uses: sending email, processing uploads, cleaning up expired records, or any work that would otherwise block a response.
@@ -6103,11 +6058,6 @@ A crashed job does not affect other workers or the HTTP server, but the job is n
 | High-volume mail or processing | 8–16 |
 
 Each job runs to completion before the worker picks up the next one. I/O-bound jobs (mail, DB writes) tolerate higher worker counts than CPU-bound jobs.
-
----
-
-<!-- FILE: docs/websocket.md -->
-
 # WebSockets
 
 Forge implements RFC 6455. Each accepted WebSocket connection runs in its own goroutine for the lifetime of the connection.
@@ -6371,11 +6321,6 @@ forge_channel_unsubscribe_fd(fd)             // remove fd from all channels
 ```
 
 Limits: up to 64 registered channels, 256 subscribers per channel.
-
----
-
-<!-- FILE: docs/sse.md -->
-
 # Server-Sent Events (SSE)
 
 ## What is SSE?
@@ -6520,11 +6465,6 @@ loop {
 | `forge_sse_send(ctx, event, data)` | Send a named event |
 | `forge_sse_ping(ctx)` | Send a keepalive comment |
 | `forge_sse_close(ctx)` | Send close event |
-
----
-
-<!-- FILE: docs/caching.md -->
-
 # Caching
 
 Forge includes an in-process, TTL-based key/value cache backed by a fixed-size array. It requires no external infrastructure and has no network round-trip overhead.
@@ -6662,11 +6602,6 @@ The default store holds up to `FORGE_CACHE_MAX` entries (default: 512). When the
 2. If no expired entries exist, the oldest entry is replaced.
 
 For workloads that need more than 512 live entries, either increase `FORGE_CACHE_MAX` at compile time or move to PostgreSQL or an external Redis server.
-
----
-
-<!-- FILE: docs/file-uploads.md -->
-
 # File Uploads
 
 ## ForgeUpload struct
@@ -6796,11 +6731,6 @@ forge_multipart_parse(ctx, "photo2", &photo2)
 - Content-type is reported by the browser and can be spoofed. For high-security use cases, inspect the first few bytes of `upload.data` to verify the file signature (magic bytes).
 - Never save uploads inside the source tree (`models/`, `routes/`, etc.).
 - Set appropriate permissions on the upload directory.
-
----
-
-<!-- FILE: docs/i18n.md -->
-
 # Internationalization (i18n)
 
 ## Overview
@@ -6938,167 +6868,133 @@ fn posts_new_page(ctx: i64) -> []i8 {
 | Maximum entries per locale | 512 (`FORGE_I18N_MAX_ENTRIES`) |
 | Maximum key length | 63 characters |
 | Maximum value length | 255 characters |
+# Asset Pipeline
+
+Forge ships a Rails-style asset pipeline: CSS and JS files are fingerprinted in production so browsers cache them forever, and stale assets are busted automatically on deploy.
 
 ---
 
-<!-- FILE: docs/serializers.md -->
+## Directory layout
 
-# JSON Serializers
-
-Forge has two levels of JSON rendering:
-
-- **Auto-serialize** — one line, all columns, no configuration
-- **Serializer functions** — declare exactly what to expose, add computed fields, apply conditions
-
----
-
-## Auto-serialize (all columns)
-
-```jda
-fn api_posts_index(ctx: i64) {
-    ctx_json_result(ctx, post_all())      // array of all rows, all columns
-}
-
-fn api_post_show(ctx: i64) {
-    ctx_json_row(ctx, post_find(ctx_param(ctx, "id")))  // single object
-}
+```
+app/assets/
+  stylesheets/
+    application.css        # compiled as a standalone asset
+    _variables.css         # _ prefix → partial, not compiled standalone
+  javascripts/
+    application.js
+    _utils.js              # partial, not compiled standalone
+  images/
+    logo.png               # copied as-is, no fingerprinting
+public/assets/             # output directory (gitignore this)
+_build/assets.jda          # generated code — do not edit
 ```
 
-`ctx_json_result` and `ctx_json_row` serialize every column the query returned. Use this for internal APIs or when you control the consumer.
+Files starting with `_` are treated as partials and are **not** compiled as independent assets. Reference them via `@import` (CSS) or by concatenating them manually.
 
 ---
 
-## Serializer functions
+## Helper functions
 
-For public APIs, create `app/serializers/post_serializer.jda`. The convention is:
-- `post_serialize(res, r)` — single row at index `r`
-- `posts_serialize(res)` — full collection
+After `forge compile-assets` runs, `_build/assets.jda` provides four functions:
 
 ```jda
-// app/serializers/post_serializer.jda
+forge_asset_path("application.css")
+// dev:  "/assets/application.css"
+// prod: "/assets/application-abc123def4567890.css"
 
-fn post_serialize(res: &ForgeResult, r: i64) -> []i8 {
-    ret forge_json_new()
-        .field("id",         forge_result_col(res, r, "id"))
-        .field("title",      forge_result_col(res, r, "title"))
-        .field("body",       forge_result_col(res, r, "body"))
-        .field("created_at", forge_result_col(res, r, "created_at"))
-        .done()
-        // deleted_at, internal_notes — not included
-}
+forge_stylesheet_tag("application.css")
+// → <link rel="stylesheet" href="/assets/application-abc123def4567890.css">
 
-fn posts_serialize(res: &ForgeResult) -> []i8 {
-    let a = forge_json_array_new()
-    loop r in 0..res.count {
-        a.push(post_serialize(res, r))
-    }
-    ret a.done()
-}
+forge_javascript_tag("application.js")
+// → <script src="/assets/application-xyz789abc0123456.js"></script>
+
+forge_image_tag("logo.png", "Site logo")
+// → <img src="/assets/logo.png" alt="Site logo">
 ```
 
-Use in a controller:
+Use these in view functions and layouts — never hard-code asset paths.
+
+---
+
+## Usage in a layout
 
 ```jda
-fn api_posts_index(ctx: i64) {
-    ctx_json(ctx, 200, posts_serialize(post_all()))
-}
-
-fn api_post_show(ctx: i64) {
-    let post = post_find(ctx_param(ctx, "id"))
-    if post.count == 0 { ctx_not_found(ctx)  ret }
-    ctx_json(ctx, 200, post_serialize(post, 0))
+fn tmpl_layout(title: []i8, body: []i8) -> []i8 {
+    let buf = forge_buf_new(4)
+    buf.write("<!DOCTYPE html><html><head><meta charset=utf-8>")
+    buf.write("<title>")  buf.write(title)  buf.write("</title>")
+    buf.write(forge_stylesheet_tag("application.css"))
+    buf.write("</head><body>")
+    buf.write(body)
+    buf.write(forge_javascript_tag("application.js"))
+    buf.write("</body></html>")
+    ret buf.done()
 }
 ```
 
 ---
 
-## Computed fields
+## Development vs production
 
-Add any derived value with `.field()` — it does not have to come from the database:
+| Mode | Fingerprinting | Source copied to `public/assets/`? |
+|---|---|---|
+| development (default) | No | Yes (original filename) |
+| production | Yes (SHA-256, 16 chars) | Yes (fingerprinted filename) |
 
-```jda
-fn post_serialize(res: &ForgeResult, r: i64) -> []i8 {
-    let title  = forge_result_col(res, r, "title")
-    let author = forge_result_col(res, r, "author")
+In development the files are always up to date — no browser cache busting needed. In production the fingerprinted filename changes whenever the file content changes, so you can set a far-future `Cache-Control: max-age` on `/assets/*`.
 
-    ret forge_json_new()
-        .field("id",          forge_result_col(res, r, "id"))
-        .field("title",       title)
-        .field("author",      author)
-        .field("display",     str_concat(title, " — ") + author)
-        .field("url",         post_path(forge_result_col(res, r, "id")))
-        .done()
-}
+---
+
+## CLI commands
+
+```bash
+forge compile-assets                   # dev (no fingerprint)
+forge assets:precompile                # production (fingerprinted)
+forge assets:precompile --environment staging
 ```
 
+`forge build` and `forge server` call `compile-assets` automatically. `forge assets:precompile` is for CI/deploy pipelines.
+
 ---
 
-## Conditional fields
+## Build pipeline integration
 
-Pass `ctx` to include fields based on the request:
+The generated Makefile includes assets in the build:
 
-```jda
-fn post_serialize_for(res: &ForgeResult, r: i64, ctx: i64) -> []i8 {
-    let j = forge_json_new()
-    j.field("id",    forge_result_col(res, r, "id"))
-     .field("title", forge_result_col(res, r, "title"))
+```makefile
+ASSETS_GEN = _build/assets.jda
 
-    // only expose author email to admins
-    if is_admin(ctx) {
-        j.field("author_email", forge_result_col(res, r, "author_email"))
-    }
+SRC = $(CONFIG) $(HELPERS) $(MODELS_GEN) $(ASSETS_GEN) $(MODELS) $(VIEWS) \
+      $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) $(MAIN)
 
-    // only include draft body if the post is not published
-    let published = forge_result_col(res, r, "published")
-    if !str_eq(published, "true") {
-        j.field("draft_body", forge_result_col(res, r, "body"))
-    }
-
-    ret j.done()
-}
+_gen:
+    @forge compile-routes
+    @forge compile-models
+    @forge compile-assets
 ```
 
+`ASSETS_GEN` must come before models and views in `SRC` so view functions can call `forge_stylesheet_tag` / `forge_javascript_tag` without forward-reference errors.
+
 ---
 
-## Nested objects
+## Serving assets
 
-Serialize related records as nested JSON using `.field_raw()`:
+`forge server` mounts `public/` as a static file root. Requests to `/assets/application-abc123.css` are served directly from `public/assets/`.
 
-```jda
-fn post_serialize_with_comments(res: &ForgeResult, r: i64) -> []i8 {
-    let post_id  = forge_result_col(res, r, "id")
-    let comments = comment_where_post(post_id)
+In production, put a CDN or reverse proxy in front and point it at `public/assets/`. Set `Cache-Control: public, max-age=31536000, immutable` on all fingerprinted files — the filename hash guarantees cache safety.
 
-    ret forge_json_new()
-        .field("id",       post_id)
-        .field("title",    forge_result_col(res, r, "title"))
-        .field_raw("comments", comments_serialize(comments))
-        .done()
-}
+---
+
+## Gitignore
+
+Add `public/assets/` to `.gitignore` and check in only the source files under `app/assets/`. Generate `public/assets/` and `_build/assets.jda` as part of the deploy/build step.
+
 ```
-
-`.field_raw(key, val)` inserts the value as-is — use it for numbers, booleans, and nested JSON arrays or objects.
-
----
-
-## Reference
-
-| Function | Description |
-|---|---|
-| `ctx_json_result(ctx, res)` | Render all rows + all columns as JSON array (status 200) |
-| `ctx_json_row(ctx, res)` | Render first row as JSON object (status 200) |
-| `forge_json_new()` | Start a JSON object builder |
-| `j.field(key, val)` | Add a string field (auto-escaped) |
-| `j.field_raw(key, val)` | Add a raw field (number, bool, nested JSON) |
-| `j.done()` | Close and return the JSON `[]i8` |
-| `forge_json_array_new()` | Start a JSON array builder |
-| `a.push(obj)` | Append a JSON object string |
-| `a.done()` | Close and return the JSON array `[]i8` |
-
----
-
-<!-- FILE: docs/libraries.md -->
-
+# .gitignore
+public/assets/
+_build/
+```
 # Library Management
 
 JDA Forge uses a `Forgefile` to declare dependencies — similar to a Gemfile or package.json. Libraries are plain `.jda` files fetched from git repositories and placed in `libs/`.
@@ -7295,11 +7191,6 @@ Forgefile.lock:
   lib     forge-markdown v1.2.0   def5678
   lib     forge-slugify  v1.0.0   9a8b7c6
 ```
-
----
-
-<!-- FILE: docs/overriding.md -->
-
 # Overriding Library Behavior (Monkey Patching)
 
 Forge libraries are compiled into your binary via `--include`. Because Jda processes `--include` files before your app source, your app code is always the last definition the compiler sees. This means you can override any library function by redefining it in your own source files — no special syntax needed.
@@ -7449,6 +7340,3 @@ When writing a patch, document why it exists so future maintainers understand it
 | Write a test that exercises the patch | Assuming the patch works silently |
 | Note which library version the patch was written against | Leaving version context unstated |
 | Remove patches when the library itself is updated with the fix | Accumulating stale patches |
-
----
-

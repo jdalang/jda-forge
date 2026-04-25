@@ -10,9 +10,10 @@ CONTROLLERS = $(shell find app/controllers -name "*.jda"      2>/dev/null | sort
 ROUTES      = _build/routes.jda
 CTRL_INIT   = _build/controllers.jda
 MODELS_GEN  = _build/models.jda
+ASSETS_GEN  = _build/assets.jda
 MAIN        = main.jda
 
-SRC = $(CONFIG) $(HELPERS) $(MODELS_GEN) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) $(MAIN)
+SRC = $(CONFIG) $(HELPERS) $(MODELS_GEN) $(ASSETS_GEN) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) $(MAIN)
 
 TEST_SRC = $(CONFIG) $(HELPERS) $(MODELS_GEN) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) \
            $(shell find test -name "*.jda" 2>/dev/null | sort)
@@ -25,6 +26,7 @@ all: build
 _gen:
 	@forge compile-routes
 	@forge compile-models
+	@forge compile-assets
 
 build: _gen $(OUT)
 	jda build --include $(FORGE) $(OUT) -o $(APP)
@@ -38,8 +40,9 @@ run: build
 	./$(APP)
 
 watch:
-	@{ find app config db -name "*.jda" -o -name "*.html.jda" -o -name "*.sql"; } \
-	    | entr -rn sh -c 'forge compile-routes 2>/dev/null; forge compile-models 2>/dev/null; make run'
+	@{ find app config db -name "*.jda" -o -name "*.html.jda" -o -name "*.sql" \
+	       -o -name "*.css" -o -name "*.js"; } \
+	    | entr -rn sh -c 'forge compile-routes 2>/dev/null; forge compile-models 2>/dev/null; forge compile-assets 2>/dev/null; make run'
 
 test: _gen $(TEST_OUT)
 	jda build --include $(FORGE) $(TEST_OUT) -o test_runner

@@ -27,6 +27,7 @@
 | [background-jobs.md](background-jobs.md) | Worker pool, job functions, async processing |
 | [websocket.md](websocket.md) | WebSocket upgrade, send/receive, broadcast patterns, channels (pub/sub) |
 | [sse.md](sse.md) | Server-Sent Events — live feeds, notifications |
+| [assets.md](assets.md) | Asset pipeline — CSS/JS fingerprinting, `forge_stylesheet_tag`, `forge_javascript_tag` |
 | [caching.md](caching.md) | In-process cache, response caching middleware |
 | [file-uploads.md](file-uploads.md) | Multipart parsing, validation, saving uploads |
 | [i18n.md](i18n.md) | Locale files, translation, per-request locale |
