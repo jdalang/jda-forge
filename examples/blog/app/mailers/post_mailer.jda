@@ -1,0 +1,28 @@
+// app/mailers/post_mailer.jda
+
+// Sent when a post is created. The subscriber is wired up in main.jda via
+// forge_subscribe("post.created", ...) so the mailer is decoupled from the
+// controller and model.
+fn post_mailer_new_post(post_id_raw: i64) {
+    let post_id: []i8 = post_id_raw as []i8
+    let post = post_find(post_id)
+    if forge_result_empty(post) { ret }
+    let p = post_row(post, 0)
+
+    let mail: ForgeMail
+    mail.to      = forge_env_get("NOTIFY_EMAIL")
+    mail.from    = forge_env_get("MAIL_FROM")
+    mail.subject = forge_str_concat("New post: ", p.title)
+    mail.body    = forge_str_concat("A new post has been published by ", p.author)
+    forge_mail_send_async(mail)
+}
+
+// Preview — visible at /_forge/mailers/new_post in development.
+fn post_mailer_preview_new_post() -> ForgeMail {
+    let mail: ForgeMail
+    mail.to      = "preview@example.com"
+    mail.from    = "blog@example.com"
+    mail.subject = "New post: Hello World"
+    mail.body    = "A new post has been published by Alice"
+    ret mail
+}

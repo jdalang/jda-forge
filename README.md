@@ -77,7 +77,7 @@ Walkthrough: [docs/blog-example.md](docs/blog-example.md)
 
 **Multiple databases** — register named connections by URL (`forge_db_add("analytics", url)`), query any of them with `forge_q_on("analytics", "events")`, mix PostgreSQL and MySQL/MariaDB in one app.
 
-**ORM** — Rails-style query builder (`where_eq`, `order`, `limit`, `joins`, `group`, `having`, aggregates, scopes, batch processing). Tables with `deleted_at` get automatic soft-delete scoping — `post_all()` excludes deleted rows; `post_with_deleted()` and `post_only_deleted()` opt back in. Auto-generates typed CRUD per table including `post_reload`, `post_toggle`, `post_increment`, `post_decrement`, plus `forge_q_pick`, `forge_q_reorder`, `forge_q_reverse_order`, `forge_q_find_each`. Also generates a typed row struct (`PostRow`) and converter (`post_row(result, r)`) per table so templates can use `post.title`, `post.id` instead of `forge_result_col` calls.
+**ORM** — Rails-style query builder (`where_eq`, `order`, `limit`, `joins`, `group`, `having`, aggregates, scopes, batch processing). Tables with `deleted_at` get automatic soft-delete scoping — `post_all()` excludes deleted rows; `post_with_deleted()` and `post_only_deleted()` opt back in. Auto-generates typed CRUD per table including `post_reload`, `post_toggle`, `post_increment`, `post_decrement`, plus `forge_q_pick`, `forge_q_reorder`, `forge_q_reverse_order`, `forge_q_find_each`. Also generates a typed row struct (`PostRow`) and converter (`post_row(result, r)`) per table so templates can use `post.title`, `post.id` instead of `forge_result_col` calls. Pessimistic locking via `.lock()`, `forge_find_or_init_by`, and `forge_insert_all` for bulk inserts. **Single Table Inheritance** — declare `forge_sti_subtype("parent_table", "type", "Car")` in a model init file; `forge compile-models` generates fully-scoped `car_all`, `car_find`, `car_create_from`, etc. with the type discriminator applied automatically.
 
 **Model init** — associations, callbacks, and validations declared together in one `*_model_init` function so the full shape of a model is visible in one place:
 
@@ -104,7 +104,7 @@ fn post_model_init() {
 
 **Transactions** — `forge_begin/commit/rollback()` or `forge_transaction(fn_ptr)`.
 
-**Controllers** — thin action functions, `ctx_render`, `ctx_redirect`, `ctx_redirect_back`, flash (`ctx_flash_now`, `ctx_flash_keep`), strong params, format-aware `ctx_respond_to`. HTTP caching via `ctx_etag`, `ctx_last_modified`, `ctx_stale`.
+**Controllers** — thin action functions, `ctx_render`, `ctx_redirect`, `ctx_redirect_back`, `ctx_head` (status-only response), flash (`ctx_flash_now`, `ctx_flash_keep`), strong params, format-aware `ctx_respond_to`. HTTP caching via `ctx_etag`, `ctx_last_modified`, `ctx_stale`. Request-scoped store via `forge_current_set/get`. Rescue handler via `forge_ctrl_rescue`.
 
 **Before actions** — `forge_ctrl_before(ctrl, fn_ptr, "show, edit")` and `forge_ctrl_before_except(ctrl, fn_ptr, "index, new")` for Rails-style controller filters.
 
@@ -112,9 +112,9 @@ fn post_model_init() {
 
 **Sessions & CSRF** — cookie sessions, automatic CSRF token generation and validation.
 
-**Security** — bcrypt password hashing (`forge_secure_password_set/verify`), SQL-injection-safe escaping, HTML escaping, secure headers middleware, JWT auth helpers, `forge_token_generate` (cryptographically random tokens), `forge_token_eq_timing` (constant-time comparison), per-key rate limiting (`forge_rate_limit_key`).
+**Security** — bcrypt password hashing (`forge_secure_password_set/verify`), SQL-injection-safe escaping, HTML escaping, secure headers middleware, JWT auth helpers, `forge_token_generate` (cryptographically random tokens), `forge_token_eq_timing` (constant-time comparison), per-key rate limiting (`forge_rate_limit_key`), signed cookies (`ctx_cookie_signed_set/get`).
 
-**Background jobs** — worker pool, `forge_job_enqueue(fn_addr(job_fn), arg)`, `forge_job_enqueue_retry(fn_ptr, arg, max_retries)` for automatic retry on failure.
+**Background jobs** — worker pool, `forge_job_enqueue(fn_addr(job_fn), arg)`, `forge_job_enqueue_retry(fn_ptr, arg, max_retries)` for automatic retry on failure, `forge_job_enqueue_in(fn_ptr, arg, delay_ms)` for delayed execution, `forge_job_enqueue_retry_backoff` for exponential backoff retry.
 
 **Mailer** — SMTP, HTML/text bodies, async delivery.
 
@@ -179,6 +179,6 @@ forge self-update [--version v3.1.0]         # update the CLI itself
 
 **Features:** [Assets](docs/assets.md) · [Mailer](docs/mailer.md) · [Background Jobs](docs/background-jobs.md) · [WebSocket & Channels](docs/websocket.md) · [SSE](docs/sse.md) · [Caching](docs/caching.md) · [File Uploads](docs/file-uploads.md) · [i18n](docs/i18n.md)
 
-**Reference:** [Libraries](docs/libraries.md) · [Overriding](docs/overriding.md)
+**Reference:** [Advanced](docs/advanced.md) · [Libraries](docs/libraries.md) · [Overriding](docs/overriding.md)
 
 Full index: [docs/README.md](docs/README.md)

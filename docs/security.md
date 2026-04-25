@@ -15,7 +15,8 @@ This guide covers every security concern a Forge developer needs to handle. It i
 7. [Password Hashing](#password-hashing)
 8. [Secrets Management](#secrets-management)
 9. [CORS](#cors)
-10. [Security Checklist](#security-checklist)
+10. [Signed Cookies](#signed-cookies)
+11. [Security Checklist](#security-checklist)
 
 ---
 
@@ -671,6 +672,43 @@ ctx_set_header(ctx, "Access-Control-Allow-Credentials", "true")
 ```
 
 Reflecting `Access-Control-Allow-Origin` with `Allow-Credentials: true` without checking the origin defeats CORS entirely.
+
+---
+
+## Signed Cookies
+
+Regular cookies can be read and modified by the client. Signed cookies attach a tamper-proof signature so you can detect any modification. The signature is computed over the cookie value using `APP_SECRET` — without the secret, an attacker cannot produce a valid signature.
+
+### Setting a signed cookie
+
+```jda
+ctx_cookie_signed_set(ctx, "remember_token", token, 2592000) // 30 days
+```
+
+Arguments: `(ctx, name, value, max_age_secs)`
+
+The cookie is stored as `value.SIGNATURE` where `SIGNATURE` is 8 hex characters. If `APP_SECRET` is not set the cookie is stored unsigned.
+
+### Reading a signed cookie
+
+```jda
+let token = ctx_cookie_signed_get(ctx, "remember_token")
+// returns "" if the cookie is absent or the signature does not match
+```
+
+`ctx_cookie_signed_get` verifies the signature before returning the value. A missing or tampered cookie returns an empty string — treat it as "not signed in".
+
+### Use cases
+
+| Use case | Why signed over session? |
+|---|---|
+| "Remember me" tokens | Persists across browser close; no server-side session store needed |
+| Prefilled form values | Safe to round-trip through the client |
+| Tracking opt-out flags | Readable by JS but tamper-proof |
+
+### Difference from session cookies
+
+Session cookies (`ctx_session_*`) store data server-side and send only an opaque session ID. Signed cookies store data **client-side** (visible but not modifiable). Use sessions for sensitive data (user ID, CSRF token); use signed cookies for data that is safe to expose but must not be forged.
 
 ---
 

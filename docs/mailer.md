@@ -15,6 +15,8 @@ JDA Forge includes a built-in SMTP mailer. Mail is sent using the `ForgeMail` st
 7. [SMTP protocol notes](#7-smtp-protocol-notes)
 8. [Environment setup](#8-environment-setup)
 9. [Testing mail](#9-testing-mail)
+10. [Delayed delivery](#10-delayed-delivery)
+11. [Mailer previews in development](#11-mailer-previews-in-development)
 
 ---
 
@@ -244,3 +246,53 @@ fn test_welcome_email_subject() {
     assert_eq(captured_mail[0].subject, "Welcome to MyApp, Alice!")
 }
 ```
+
+---
+
+## 10. Delayed delivery
+
+`forge_mail_send_in` schedules a mail to be sent after a delay. Internally it enqueues a background job that sleeps for `delay_ms` milliseconds and then sends:
+
+```jda
+// Send a follow-up nudge 24 hours after sign-up (24 * 60 * 60 * 1000 ms)
+let delay_ms: i64 = 86400000
+forge_mail_send_in(mail, delay_ms)
+```
+
+The calling goroutine returns immediately. Use this for timed sequences (onboarding drips, expiry warnings) without a separate scheduler.
+
+---
+
+## 11. Mailer previews in development
+
+Mailer previews let you see a rendered mail in the browser without sending it. They are only active when `FORGE_ENV=development` — the preview routes return 404 in all other environments.
+
+### Registering a preview
+
+```jda
+fn post_mailer_preview_new_post() -> ForgeMail {
+    let mail: ForgeMail
+    mail.to      = "preview@example.com"
+    mail.from    = "blog@example.com"
+    mail.subject = "New post: Hello World"
+    mail.body    = "A new post has been published by Alice"
+    ret mail
+}
+```
+
+### Wiring up in main.jda
+
+```jda
+forge_mail_preview_register("new_post", fn_addr(post_mailer_preview_new_post))
+app_get(app, "/_forge/mailers",       fn_addr(forge_mail_preview_handler))
+app_get(app, "/_forge/mailers/:name", fn_addr(forge_mail_preview_handler))
+```
+
+### Browsing previews
+
+| URL | What it shows |
+|---|---|
+| `/_forge/mailers` | Index listing all registered preview names |
+| `/_forge/mailers/new_post` | Rendered preview for `new_post` |
+
+The index page links to each preview so you can click through without remembering the names.

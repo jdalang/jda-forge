@@ -5,6 +5,7 @@ OUT   = _build/$(APP).jda
 CONFIG      = config/application.jda
 HELPERS     = $(shell find app/helpers     -name "*.jda"      2>/dev/null | sort)
 MODELS      = $(shell find app/models      -name "*.jda"      2>/dev/null | sort)
+MAILERS     = $(shell find app/mailers     -name "*.jda"      2>/dev/null | sort)
 CONTROLLERS = $(shell find app/controllers -name "*.jda"      2>/dev/null | sort)
 ROUTES      = _build/routes.jda
 CTRL_INIT   = _build/controllers.jda
@@ -13,9 +14,9 @@ VIEWS_GEN   = _build/views.jda
 ASSETS_GEN  = _build/assets.jda
 MAIN        = main.jda
 
-SRC = $(CONFIG) $(HELPERS) $(MODELS_GEN) $(VIEWS_GEN) $(ASSETS_GEN) $(MODELS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) $(MAIN)
+SRC = $(CONFIG) $(HELPERS) $(MODELS_GEN) $(VIEWS_GEN) $(ASSETS_GEN) $(MODELS) $(MAILERS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) $(MAIN)
 
-TEST_SRC = $(CONFIG) $(HELPERS) $(MODELS_GEN) $(VIEWS_GEN) $(ASSETS_GEN) $(MODELS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) \
+TEST_SRC = $(CONFIG) $(HELPERS) $(MODELS_GEN) $(VIEWS_GEN) $(ASSETS_GEN) $(MODELS) $(MAILERS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) \
            $(shell find test -name "*.jda" 2>/dev/null | sort)
 TEST_OUT = _build/test.jda
 

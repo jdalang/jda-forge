@@ -1,5 +1,6 @@
 <% fn tmpl_post_row(post: &PostRow) %>
 <div class="post">
   <h2><a href="<%== post_path(post.id) %>"><%= post.title %></a></h2>
-  <p class="meta">by <%= post.author %> on <%== post.created_at %></p>
+  <p class="meta">by <%= post.author %> on <%== post.created_at %> &mdash; <%== post.comments_count %> comment(s)</p>
+  <p class="excerpt"><%== forge_excerpt(post.body, post.body, 120) %></p>
 </div>

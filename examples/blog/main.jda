@@ -1,8 +1,18 @@
 // main.jda
 
+// Job lifecycle hook — log every job start/finish.
+fn on_job_before(arg: i64) {
+    forge_log(FORGE_LOG_DEBUG, "job starting")
+}
+fn on_job_after(arg: i64) {
+    forge_log(FORGE_LOG_DEBUG, "job finished")
+}
+
 fn main() {
     load_env()
     forge_jobs_start(4)
+    forge_job_before_perform(fn_addr(on_job_before))
+    forge_job_after_perform (fn_addr(on_job_after))
     forge_migration_run("db/migrate")
 
     let app = app_new_config(app_config())
@@ -16,6 +26,16 @@ fn main() {
 
     post_model_init()
     comment_model_init()
+
+    // Subscribe to the post.created instrumentation event — fires the mailer
+    // after the HTTP response has already been sent (async, in a job).
+    forge_subscribe("post.created", fn_addr(post_mailer_new_post))
+
+    // Register mailer previews (only active in development via /_forge/mailers).
+    forge_mail_preview_register("new_post", fn_addr(post_mailer_preview_new_post))
+    app_get(app, "/_forge/mailers", fn_addr(forge_mail_preview_handler))
+    app_get(app, "/_forge/mailers/:name", fn_addr(forge_mail_preview_handler))
+
     posts_before_actions()
 
     forge_controllers_init()

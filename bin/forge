@@ -332,6 +332,12 @@ compile_models() {
     local tbl_cols=()    # space-separated "col:skip" pairs per table
     local ntbls=0
 
+    # STI subtype registry — populated during Phase 2 model scan
+    local sti_subtype_names=()
+    local sti_parent_tables=()
+    local sti_type_cols=()
+    local sti_type_vals=()
+
     local f tbl in_create tbl_idx j tn
     local at ac dt dc new_list c cv
 
@@ -559,6 +565,18 @@ compile_models() {
                     cur_table="${BASH_REMATCH[1]}"
                     continue
                 fi
+                # forge_sti_subtype("parent_table", "type_col", "TypeValue")
+                if [[ "$mline" =~ forge_sti_subtype\(\"([^\"]+)\",[[:space:]]*\"([^\"]+)\",[[:space:]]*\"([^\"]+)\"\) ]]; then
+                    local sti_par="${BASH_REMATCH[1]}"
+                    local sti_tc="${BASH_REMATCH[2]}"
+                    local sti_tv="${BASH_REMATCH[3]}"
+                    sti_subtype_names+=("$msnek")
+                    sti_parent_tables+=("$sti_par")
+                    sti_type_cols+=("$sti_tc")
+                    sti_type_vals+=("$sti_tv")
+                    cur_table="$sti_par"   # bind callbacks/validations to parent table
+                    continue
+                fi
                 [ -z "$cur_table" ] && continue
 
                 # forge_assoc_belongs_to("name", "target", "fk")
@@ -599,6 +617,82 @@ compile_models() {
                 fi
             done < "$mf"
             printf '\n' >> "$tmp"
+        done
+    fi
+
+    # Phase 2.5: emit STI subtype query helpers
+    if [ ${#sti_subtype_names[@]} -gt 0 ]; then
+        printf '// --- STI subtype query helpers ---\n\n' >> "$tmp"
+        local si_idx=0
+        while [ $si_idx -lt ${#sti_subtype_names[@]} ]; do
+            local sub_name="${sti_subtype_names[$si_idx]}"
+            local par_tbl="${sti_parent_tables[$si_idx]}"
+            local t_col="${sti_type_cols[$si_idx]}"
+            local t_val="${sti_type_vals[$si_idx]}"
+            si_idx=$((si_idx+1))
+
+            local par_sing; par_sing=$(singularize "$par_tbl")
+            local par_pascal; par_pascal=$(to_pascal "$par_sing")
+
+            # Check if parent table has soft-delete
+            local sti_has_sd=0
+            local pk=0
+            while [ $pk -lt $ntbls ]; do
+                if [ "${tbl_names[$pk]}" = "$par_tbl" ]; then
+                    [[ "${tbl_cols[$pk]}" == *"deleted_at:sd"* ]] && sti_has_sd=1
+                    break
+                fi
+                pk=$((pk+1))
+            done
+
+            {
+                printf '// === STI: %s on %s ===\n' "$sub_name" "$par_tbl"
+                if [ $sti_has_sd -eq 1 ]; then
+                    printf 'fn %s_q() -> &ForgeQuery { ret forge_q_where_not_deleted(forge_q("%s")).where_eq("%s", "%s") }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                    printf 'fn %s_all() -> &ForgeResult { ret forge_q_where_not_deleted(forge_q("%s")).where_eq("%s", "%s").order_desc("created_at").exec() }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                    printf 'fn %s_find(id: []i8) -> &ForgeResult { ret forge_q_where_not_deleted(forge_q("%s")).where_eq("id", id).where_eq("%s", "%s").first() }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                    printf 'fn %s_find_by(col: []i8, val: []i8) -> &ForgeResult { ret forge_q_where_not_deleted(forge_q("%s")).where_eq(col, val).where_eq("%s", "%s").first() }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                    printf 'fn %s_where(col: []i8, val: []i8) -> &ForgeQuery { ret forge_q_where_not_deleted(forge_q("%s")).where_eq(col, val).where_eq("%s", "%s") }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                    printf 'fn %s_count() -> i64 { ret forge_q_where_not_deleted(forge_q("%s")).where_eq("%s", "%s").count() }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                    printf 'fn %s_exists(id: []i8) -> bool { ret forge_q_where_not_deleted(forge_q("%s")).where_eq("id", id).where_eq("%s", "%s").exists() }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                    printf 'fn %s_with_deleted() -> &ForgeQuery { ret forge_q_with_deleted(forge_q("%s")).where_eq("%s", "%s") }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                    printf 'fn %s_only_deleted() -> &ForgeQuery { ret forge_q_only_deleted(forge_q("%s")).where_eq("%s", "%s") }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                else
+                    printf 'fn %s_q() -> &ForgeQuery { ret forge_q("%s").where_eq("%s", "%s") }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                    printf 'fn %s_all() -> &ForgeResult { ret forge_q("%s").where_eq("%s", "%s").order_desc("created_at").exec() }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                    printf 'fn %s_find(id: []i8) -> &ForgeResult { ret forge_q("%s").where_eq("id", id).where_eq("%s", "%s").first() }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                    printf 'fn %s_find_by(col: []i8, val: []i8) -> &ForgeResult { ret forge_q("%s").where_eq(col, val).where_eq("%s", "%s").first() }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                    printf 'fn %s_where(col: []i8, val: []i8) -> &ForgeQuery { ret forge_q("%s").where_eq(col, val).where_eq("%s", "%s") }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                    printf 'fn %s_count() -> i64 { ret forge_q("%s").where_eq("%s", "%s").count() }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                    printf 'fn %s_exists(id: []i8) -> bool { ret forge_q("%s").where_eq("id", id).where_eq("%s", "%s").exists() }\n' \
+                        "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                fi
+                printf 'fn %s_delete(id: []i8) -> bool { ret forge_soft_delete("%s", id) }\n' "$sub_name" "$par_tbl"
+                printf 'fn %s_destroy(id: []i8) -> bool { ret forge_hard_delete("%s", id) }\n' "$sub_name" "$par_tbl"
+                printf 'fn %s_touch(id: []i8) -> bool { ret forge_touch("%s", id) }\n' "$sub_name" "$par_tbl"
+                printf 'fn %s_update_column(id: []i8, col: []i8, val: []i8) -> bool { ret forge_update_column("%s", id, col, val) }\n' \
+                    "$sub_name" "$par_tbl"
+                printf 'fn %s_create_from(attrs: &ForgeAttrs) -> bool { ret forge_sti_create_from(attrs, "%s", "%s", "%s") }\n' \
+                    "$sub_name" "$par_tbl" "$t_col" "$t_val"
+                printf 'fn %s_row(result: &ForgeResult, r: i64) -> &%sRow { ret %s_row(result, r) }\n' \
+                    "$sub_name" "$par_pascal" "$par_sing"
+                printf '\n'
+            } >> "$tmp"
         done
     fi
 

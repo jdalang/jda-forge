@@ -140,3 +140,89 @@ A crashed job does not affect other workers or the HTTP server, but the job is n
 | High-volume mail or processing | 8–16 |
 
 Each job runs to completion before the worker picks up the next one. I/O-bound jobs (mail, DB writes) tolerate higher worker counts than CPU-bound jobs.
+
+---
+
+## Retry on failure
+
+### Automatic retry with a fixed attempt count
+
+`forge_job_enqueue_retry` retries a failed job up to `max_retries` times:
+
+```jda
+forge_job_enqueue_retry(fn_addr(my_job), payload as i64, 3)
+```
+
+If the job function returns without error it is considered successful. If it panics or the function itself calls retry logic, the retry counter ticks down until exhausted.
+
+### Exponential backoff retry
+
+`forge_job_enqueue_retry_backoff` doubles the delay between each attempt:
+
+```jda
+// up to 5 retries, starting with a 500 ms delay (then 1s, 2s, 4s, 8s)
+forge_job_enqueue_retry_backoff(fn_addr(send_webhook), payload as i64, 5, 500)
+```
+
+Arguments: `(fn_ptr, arg, max_retries, base_delay_ms)`
+
+### discard_on — stop retrying on a known error
+
+`forge_job_enqueue_retry_discard` pairs a retry policy with a discard predicate. If the discard function returns `true`, further retries are skipped and the job is silently dropped:
+
+```jda
+fn should_discard(arg: i64) -> bool {
+    // Discard if the user no longer exists.
+    let p = arg as &WelcomePayload
+    let res = user_find(p.user_id)
+    ret forge_result_empty(res)
+}
+
+forge_job_enqueue_retry_discard(fn_addr(welcome_job), payload as i64, 3, fn_addr(should_discard))
+```
+
+Arguments: `(fn_ptr, arg, max_retries, discard_fn_ptr)`
+
+---
+
+## Delayed execution
+
+`forge_job_enqueue_in` schedules a job to run after a wall-clock delay:
+
+```jda
+// Send a follow-up email 30 minutes after sign-up (30 * 60 * 1000 ms)
+forge_job_enqueue_in(fn_addr(followup_email_job), payload as i64, 1800000)
+```
+
+The calling goroutine is not blocked. Internally, a short-lived wrapper job sleeps for the delay and then calls the target job on a worker.
+
+---
+
+## Job lifecycle callbacks
+
+Register hooks that run around every job execution in the process. Useful for logging, APM traces, or resetting request-scoped state between jobs.
+
+```jda
+fn on_job_before(arg: i64) {
+    forge_log(FORGE_LOG_DEBUG, "job starting")
+}
+fn on_job_after(arg: i64) {
+    forge_log(FORGE_LOG_DEBUG, "job finished")
+}
+
+fn main() {
+    forge_jobs_start(4)
+    forge_job_before_perform(fn_addr(on_job_before))
+    forge_job_after_perform (fn_addr(on_job_after))
+    // ...
+}
+```
+
+`arg` in the hook functions receives the same `i64` payload as the job itself.
+
+| Function | Description |
+|---|---|
+| `forge_job_before_perform(fn_ptr)` | Called before every job runs |
+| `forge_job_after_perform(fn_ptr)` | Called after every job completes |
+
+Up to 8 before hooks and 8 after hooks can be registered.

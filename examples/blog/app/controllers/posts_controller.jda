@@ -2,11 +2,26 @@
 // Controller: Posts
 // =============================================================================
 
-// before_action equivalent — loads post and stores on context.
+// Rescue handler — called when an action completes without sending a response.
+// Renders a plain 500 page instead of leaving the connection hanging.
+fn posts_rescue(ctx: i64) {
+    forge_log_ctx_error(ctx, "unhandled error in posts controller")
+    ctx_html(ctx, 500, "<h1>Something went wrong</h1>")
+}
+
+// After filter — logs the completed action for every request in this controller.
+fn posts_log_action(ctx: i64) {
+    forge_log_ctx_info(ctx, "posts action completed")
+}
+
+// Before filter — loads post by :id and stores it on the request context.
 // Registered for show, edit, update, delete in posts_before_actions().
 fn posts_set_post(ctx: i64) {
-    let post = post_find(ctx_param(ctx, "id"))
-    if post.count == 0 { ctx_not_found(ctx)  ret }
+    let id   = ctx_param(ctx, "id")
+    let post = post_find(id)
+    if forge_result_empty(post) { ctx_not_found(ctx)  ret }
+    // Snapshot original title so dirty tracking works in the update action.
+    forge_dirty_load_result("posts", id, post, "title")
     ctx_set(ctx, "post", post as i64)
 }
 
@@ -19,7 +34,9 @@ fn posts_new(ctx: i64) {
 }
 
 fn posts_create(ctx: i64) {
-    if post_create_from(ctx_permit(ctx, "title, body, author")) {
+    let attrs = ctx_permit(ctx, "title, body, author")
+    if post_create_from(attrs) {
+        forge_log_ctx_info(ctx, "post created")
         ctx_flash_set(ctx, "notice", "Post created.")
         ctx_redirect(ctx, posts_path)
         ret
@@ -29,8 +46,9 @@ fn posts_create(ctx: i64) {
 }
 
 fn posts_show(ctx: i64) {
-    let post: &ForgeResult = ctx_get(ctx, "post") as &ForgeResult
-    ctx_render(ctx, view_posts_show(ctx, post, comment_for_post(ctx_param(ctx, "id"))))
+    let post:     &ForgeResult = ctx_get(ctx, "post") as &ForgeResult
+    let comments: &ForgeResult = comment_for_post(ctx_param(ctx, "id"))
+    ctx_render(ctx, view_posts_show(ctx, post, comments))
 }
 
 fn posts_edit(ctx: i64) {
@@ -41,6 +59,10 @@ fn posts_edit(ctx: i64) {
 fn posts_update(ctx: i64) {
     let id = ctx_param(ctx, "id")
     if post_update_from(id, ctx_permit(ctx, "title, body, author")) {
+        // Dirty tracking — log only if the title actually changed.
+        if forge_dirty_changed("posts", id, "title", ctx_param(ctx, "title")) {
+            forge_log_ctx_info(ctx, "post title was changed")
+        }
         ctx_flash_set(ctx, "notice", "Post updated.")
         ctx_redirect(ctx, post_path(id))
         ret
@@ -51,13 +73,17 @@ fn posts_update(ctx: i64) {
 
 fn posts_delete(ctx: i64) {
     post_delete(ctx_param(ctx, "id"))
+    forge_log_ctx_info(ctx, "post deleted")
     ctx_flash_set(ctx, "notice", "Post deleted.")
     ctx_redirect(ctx, posts_path)
 }
 
-// Register before actions — call from main() before forge_controllers_init().
+// Register before/after actions and rescue handler.
+// Call from main() before forge_controllers_init().
 fn posts_before_actions() {
     let ctrl = forge_ctrl_new()
-    forge_ctrl_before(ctrl, fn_addr(posts_set_post), "show, edit, update, delete")
-    forge_ctrl_register("posts", ctrl)
+    forge_ctrl_before      (ctrl, fn_addr(posts_set_post),   "show, edit, update, delete")
+    forge_ctrl_after       (ctrl, fn_addr(posts_log_action), "")
+    forge_ctrl_rescue      (ctrl, fn_addr(posts_rescue))
+    forge_ctrl_register    ("posts", ctrl)
 }

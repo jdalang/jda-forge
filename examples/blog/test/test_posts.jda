@@ -1,8 +1,10 @@
 fn test_setup() {
     forge_exec_sql("DELETE FROM comments")
     forge_exec_sql("DELETE FROM posts")
-    forge_exec_sql("INSERT INTO posts (id, title, body, author) VALUES (1, 'Hello World', 'This is the body text here', 'Alice')")
+    forge_exec_sql("INSERT INTO posts (id, title, body, author, published) VALUES (1, 'Hello World', 'This is the body text here', 'Alice', true)")
 }
+
+// --- Posts ---
 
 fn test_posts_index() {
     test_setup()
@@ -36,6 +38,15 @@ fn test_post_delete() {
     forge_delete(post_path("1")).redirect()
 }
 
+// After delete, post is gone (soft-deleted).
+fn test_post_soft_deleted_not_in_index() {
+    test_setup()
+    forge_delete(post_path("1")).redirect()
+    forge_get(posts_path).ok(200).not_has("Hello World")
+}
+
+// --- Comments ---
+
 fn test_comment_create_valid() {
     test_setup()
     forge_post(post_comments_path("1"), "author=Bob&body=Great+post+thanks").redirect()
@@ -44,4 +55,24 @@ fn test_comment_create_valid() {
 fn test_comment_create_missing_body() {
     test_setup()
     forge_post(post_comments_path("1"), "author=Bob&body=").redirect()
+}
+
+// Counter cache — comments_count increments on create.
+fn test_comment_counter_cache() {
+    test_setup()
+    forge_post(post_comments_path("1"), "author=Bob&body=Great+post+thanks").redirect()
+    let post = post_find("1")
+    let p = post_row(post, 0)
+    forge_test_assert_eq(p.comments_count, "1")
+}
+
+// --- Update / dirty tracking ---
+
+fn test_post_update_preserves_author() {
+    test_setup()
+    let body = "title=Updated+Title&body=Updated+body+here+long+enough&author=Alice"
+    forge_put(post_path("1"), body).redirect()
+    let post = post_find("1")
+    let p = post_row(post, 0)
+    forge_test_assert_eq(p.author, "Alice")
 }

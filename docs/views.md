@@ -78,6 +78,8 @@ Use `post_row(result, 0)` in show/edit views to get a single row object:
 7. [JSON serialization](#7-json-serialization)
 8. [Flash messages](#8-flash-messages)
 9. [Security: always escape user content](#9-security-always-escape-user-content)
+10. [Form builder with model binding](#10-form-builder-with-model-binding)
+11. [Text helpers: highlight and excerpt](#11-text-helpers-highlight-and-excerpt)
 
 ---
 
@@ -404,3 +406,115 @@ Failing to escape user-supplied values is the most common source of XSS vulnerab
 | Value read from the database | Still escape — the database does not sanitize on write |
 
 Forge's form helpers (`forge_input_tag`, `forge_textarea_tag`, `forge_select_tag`) escape values internally. Values produced by `forge_result_col` are raw strings from the database and must be escaped before use in HTML.
+
+---
+
+## 10. Form builder with model binding
+
+The form builder helpers emit a complete `<label>` + `<input>` (or `<textarea>`, `<select>`) block in one call, pre-populated with a current value. They escape all values automatically.
+
+### forge_field_tag
+
+Renders a labelled text input:
+
+```jda
+<%== forge_field_tag("title", "Title", post.title) %>
+```
+
+Output:
+
+```html
+<div class="field">
+  <label for="title">Title</label>
+  <input type="text" id="title" name="title" value="Hello World">
+</div>
+```
+
+### forge_field_tag_type
+
+Same as `forge_field_tag` but lets you specify the `<input type>`:
+
+```jda
+<%== forge_field_tag_type("email", "Email address", "email", user.email) %>
+<%== forge_field_tag_type("password", "Password", "password", "") %>
+```
+
+### forge_textarea_field_tag
+
+Renders a labelled `<textarea>`:
+
+```jda
+<%== forge_textarea_field_tag("body", "Body", post.body, 10, 60) %>
+```
+
+Arguments: `(col, label, current_val, rows, cols)`
+
+### forge_select_field_tag
+
+Renders a labelled `<select>` dropdown. The options string is a CSV of `value:Label` pairs (or bare `value` if the label matches):
+
+```jda
+<%== forge_select_field_tag("status", "Status", "draft:Draft, published:Published, archived:Archived", post.status) %>
+```
+
+The option whose value matches `current_val` gets `selected`.
+
+### Full form example
+
+```jda
+<% fn view_posts_edit(ctx: i64, post: &ForgeResult) %>
+<% let p = post_row(post, 0) %>
+<%layout "Edit Post" %>
+<h1>Edit Post</h1>
+<form method="POST" action="<%== post_path(p.id) %>">
+  <input type="hidden" name="_method" value="PUT">
+  <%== forge_field_tag("title", "Title", p.title) %>
+  <%== forge_textarea_field_tag("body", "Body", p.body, 10, 60) %>
+  <%== forge_field_tag("author", "Author", p.author) %>
+  <input type="hidden" name="_csrf" value="<%= forge_csrf_token(ctx) %>">
+  <button>Update</button>
+</form>
+```
+
+### API
+
+| Function | Description |
+|---|---|
+| `forge_field_tag(col, label, val)` | Labelled text input |
+| `forge_field_tag_type(col, label, type, val)` | Labelled input with custom type |
+| `forge_textarea_field_tag(col, label, val, rows, cols)` | Labelled textarea |
+| `forge_select_field_tag(col, label, options_csv, val)` | Labelled select dropdown |
+
+---
+
+## 11. Text helpers: highlight and excerpt
+
+### forge_excerpt
+
+Returns a short window of text around a phrase, suitable for search result snippets or post previews. Appends `...` when truncated.
+
+```jda
+let preview = forge_excerpt(post.body, "search term", 100)
+// Returns up to 100 chars on each side of "search term", or just the first 200 chars
+// if the phrase is not found.
+```
+
+Arguments: `(source, phrase, radius)` where `radius` is the number of characters to include on each side.
+
+### forge_highlight
+
+Wraps every occurrence of a phrase in an HTML tag. Useful for search result highlighting.
+
+```jda
+let highlighted = forge_highlight(post.title, query, "mark")
+// <mark>Rails</mark>-style routing
+```
+
+Arguments: `(source, phrase, tag_name)`
+
+### In templates
+
+```jda
+<p class="excerpt"><%== forge_excerpt(post.body, "", 150) %></p>
+<h2><%== forge_highlight(post.title, search_query, "strong") %></h2>
+```

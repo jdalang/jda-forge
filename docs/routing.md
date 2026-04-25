@@ -27,6 +27,10 @@ This document covers everything you need to handle HTTP in JDA Forge: registerin
 10. [Server-Sent Events (SSE)](#10-server-sent-events-sse)
 11. [Static files](#11-static-files)
 12. [Generating routes with scaffold](#12-generating-routes-with-scaffold)
+13. [Scopes — raw prefix groups](#13-scopes--raw-prefix-groups)
+14. [Passing a model object to a path helper](#14-passing-a-model-object-to-a-path-helper)
+15. [Before and after action filters](#15-before-and-after-action-filters)
+16. [Controller rescue handler](#16-controller-rescue-handler)
 
 ---
 
@@ -976,3 +980,81 @@ fn test_post_show() {
     forge_get(post_path(post.id())).ok(200).has("Hello World")
 }
 ```
+
+---
+
+## 15. Before and after action filters
+
+Controller filters run before or after the action function. They are registered per controller in a setup function called from `main()`.
+
+### Before filters
+
+`forge_ctrl_before(ctrl, fn_ptr, only)` — run before the listed actions. Pass an empty string for `only` to run before every action.
+
+```jda
+fn require_login(ctx: i64) {
+    if ctx_session_get(ctx, "user_id").len == 0 {
+        ctx_redirect(ctx, "/login")
+    }
+}
+
+fn posts_before_actions() {
+    let ctrl = forge_ctrl_new()
+    // Load post for show/edit/update/delete; skip for index and new.
+    forge_ctrl_before(ctrl, fn_addr(posts_set_post),  "show, edit, update, delete")
+    // Require login for every action except index and show.
+    forge_ctrl_before_except(ctrl, fn_addr(require_login), "index, show")
+    forge_ctrl_register("posts", ctrl)
+}
+```
+
+`forge_ctrl_before_except(ctrl, fn_ptr, except)` — run before every action **except** the listed ones. Useful for "require login everywhere but the public pages".
+
+### After filters
+
+`forge_ctrl_after(ctrl, fn_ptr, only)` — run after the action completes (regardless of whether it sent a response). Pass an empty string for `only` to run after every action.
+
+```jda
+fn log_action(ctx: i64) {
+    forge_log_ctx_info(ctx, "action completed")
+}
+
+fn posts_before_actions() {
+    let ctrl = forge_ctrl_new()
+    forge_ctrl_before(ctrl, fn_addr(posts_set_post), "show, edit, update, delete")
+    forge_ctrl_after (ctrl, fn_addr(log_action),     "")
+    forge_ctrl_register("posts", ctrl)
+}
+```
+
+### Filter API
+
+| Function | When it runs |
+|---|---|
+| `forge_ctrl_before(ctrl, fn_ptr, only)` | Before the action; `only` is comma-separated list, empty = all |
+| `forge_ctrl_before_except(ctrl, fn_ptr, except)` | Before the action for all actions not in `except` |
+| `forge_ctrl_after(ctrl, fn_ptr, only)` | After the action; `only` is comma-separated list, empty = all |
+
+---
+
+## 16. Controller rescue handler
+
+`forge_ctrl_rescue(ctrl, fn_ptr)` registers a fallback that runs when the action exits without sending a response — the JDA equivalent of Rails `rescue_from`. Use it for a consistent error page across a whole controller without repeating error-handling logic in every action.
+
+```jda
+fn posts_rescue(ctx: i64) {
+    forge_log_ctx_error(ctx, "unhandled error in posts controller")
+    ctx_html(ctx, 500, "<h1>Something went wrong</h1>")
+}
+
+fn posts_before_actions() {
+    let ctrl = forge_ctrl_new()
+    forge_ctrl_before (ctrl, fn_addr(posts_set_post), "show, edit, update, delete")
+    forge_ctrl_rescue (ctrl, fn_addr(posts_rescue))
+    forge_ctrl_register("posts", ctrl)
+}
+```
+
+The rescue handler is called **after** all after-filters. It receives the same `ctx` as the action, so you can inspect request state (method, path, headers) to decide on the response.
+
+If the action already sent a response (via `ctx_render`, `ctx_redirect`, etc.) the rescue handler is **not** called — it only fires on the no-response path.

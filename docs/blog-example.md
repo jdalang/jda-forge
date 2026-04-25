@@ -27,11 +27,13 @@ examples/blog/
   app/
     controllers/
       application_controller.jda   # require_login, current_user_id
-      posts_controller.jda         # 7 thin action functions
+      posts_controller.jda         # 7 thin action functions + rescue + after filter
       comments_controller.jda      # create + delete actions
+    mailers/
+      post_mailer.jda              # new-post notification + development preview
     models/
-      post.jda                     # validations + custom scopes (CRUD auto-generated)
-      comment.jda                  # validations + custom scopes (CRUD auto-generated)
+      post.jda                     # validations, callbacks, counter cache, instrumentation
+      comment.jda                  # validations + counter cache declaration
     views/
       layouts/
         application.html.jda       # tmpl_layout
@@ -60,6 +62,7 @@ examples/blog/
     migrate/
       001_create_posts.sql         # posts table with indexes
       002_create_comments.sql      # comments table with FK to posts
+      003_add_comments_count_to_posts.sql  # counter cache column
     seeds.jda                      # db_seed()
   test/
     test_posts.jda                 # chainable request tests
@@ -161,27 +164,30 @@ post_comment_path(post_id, id)          // "/posts/42/comments/7"
 
 ---
 
-## app/models/post.jda — associations, validations, custom scopes
+## app/models/post.jda — associations, callbacks, counter cache, instrumentation
 
 `post_q`, `post_all`, `post_find`, `post_create`, `post_update`, `post_delete`, `post_comments`, etc. are all auto-generated into `_build/models.jda` — CRUD from the migration schema, association accessors from the `forge_assoc_*` declarations. The model file only contains what you write:
 
 ```jda
+fn post_before_save(id: []i8) {
+    if forge_dirty_changed("posts", id, "title", forge_fa_get("title")) {
+        forge_log_tagged("post", FORGE_LOG_INFO, "title changed")
+    }
+}
+
+fn post_after_create(id: []i8) {
+    forge_instrument("post.created", id as i64)
+}
+
 fn post_model_init() {
     forge_model("posts")
     forge_assoc_has_many("comments", "comments", "post_id")
+    forge_counter_cache ("comments", "post_id", "posts", "comments_count")
+    forge_callback(FORGE_CB_BEFORE_SAVE,  fn_addr(post_before_save))
+    forge_callback(FORGE_CB_AFTER_CREATE, fn_addr(post_after_create))
     forge_field       ("title, body, author", FORGE_V_PRESENCE)
     forge_field_length("title",               2, 255)
     forge_field_min   ("body",                10)
-}
-
-// Custom scopes
-fn post_published() -> &ForgeResult {
-    ret forge_q("posts").where_eq("published", "true").order_desc("created_at").exec()
-}
-
-// Custom action
-fn post_publish(id: []i8) -> bool {
-    ret forge_q("posts").where_eq("id", id).update_all("published = true, updated_at = NOW()")
 }
 ```
 
@@ -202,11 +208,9 @@ let res = post_q()
 
 ```jda
 fn posts_create(ctx: i64) {
-    let title  = ctx_form(ctx, "title")
-    let body   = ctx_form(ctx, "body")
-    let author = ctx_form(ctx, "author")
-
-    if post_create_from(ctx_permit(ctx, "title, body, author")) {
+    let attrs = ctx_permit(ctx, "title, body, author")
+    if post_create_from(attrs) {
+        forge_log_ctx_info(ctx, "post created")
         ctx_flash_set(ctx, "notice", "Post created.")
         ctx_redirect(ctx, posts_path)
         ret
@@ -218,7 +222,9 @@ fn posts_create(ctx: i64) {
 
 Validations are declared once in `post_model_init` and fire automatically inside `post_create_from`. If they fail, `ctx_save_errors` stores the error details in the flash so the next request can display them.
 
-Controllers use path helper constants (`posts_path`, `new_post_path`) rather than hard-coded strings.
+After a successful create, `FORGE_CB_AFTER_CREATE` fires `post_after_create` which calls `forge_instrument("post.created", id)`. The subscriber registered in `main.jda` picks this up and sends the notification email asynchronously.
+
+Controllers use path helper constants (`posts_path`, `new_post_path`) rather than hard-coded strings. Structured logging with `forge_log_ctx_info` prefixes every line with the request ID.
 
 ---
 
@@ -318,14 +324,26 @@ In test mode (`FORGE_ENV=test`):
 
 ---
 
-## Middleware stack (main.jda)
+## Middleware stack and startup (main.jda)
 
 ```jda
+forge_jobs_start(4)
+forge_job_before_perform(fn_addr(on_job_before))  // job lifecycle hooks
+forge_job_after_perform (fn_addr(on_job_after))
+
+forge_migration_run("db/migrate")   // apply pending migrations at startup
+
 app_use(app, fn_addr(forge_logger))         // request log
 app_use(app, fn_addr(forge_request_id))     // X-Request-Id header
 app_use(app, fn_addr(forge_secure_headers)) // HSTS, X-Frame-Options, CSP
 app_use(app, fn_addr(forge_session_start))  // cookie session (required for flash + CSRF)
 app_use(app, fn_addr(forge_csrf))           // block forged POST/PUT/DELETE
+
+// Subscribe the mailer to the post.created instrumentation event.
+forge_subscribe("post.created", fn_addr(post_mailer_new_post))
+
+// Register mailer previews (dev-only: /_forge/mailers).
+forge_mail_preview_register("new_post", fn_addr(post_mailer_preview_new_post))
 ```
 
 ---
@@ -338,19 +356,175 @@ The Makefile uses `find` to recursively discover all `.jda` files under `app/`, 
 CONFIG      = config/application.jda
 HELPERS     = $(shell find app/helpers     -name "*.jda"      2>/dev/null | sort)
 MODELS      = $(shell find app/models      -name "*.jda"      2>/dev/null | sort)
-VIEWS       = $(shell find app/views       -name "*.html.jda" 2>/dev/null | sort)
+MAILERS     = $(shell find app/mailers     -name "*.jda"      2>/dev/null | sort)
 CONTROLLERS = $(shell find app/controllers -name "*.jda"      2>/dev/null | sort)
 ROUTES      = _build/routes.jda       # compiled from config/routes.jda
 CTRL_INIT   = _build/controllers.jda  # scanned from app/controllers/
+MODELS_GEN  = _build/models.jda       # typed structs + CRUD (from compile-models)
+VIEWS_GEN   = _build/views.jda        # compiled .html.jda templates
 MAIN        = main.jda
 
-SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) $(MAIN)
+SRC = $(CONFIG) $(HELPERS) $(MODELS_GEN) $(VIEWS_GEN) $(MODELS) $(MAILERS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) $(MAIN)
 
 _gen:
     @forge compile-routes
+    @forge compile-models
+    @forge compile-views
 
 build: _gen $(OUT)
     jda build --include libs/forge.jda $(OUT) -o blog
 ```
 
 Order matters: `config/application.jda` first (constants and `load_env`), then helpers, models, views, controllers, generated init + routes (from `_build/`), and finally `main.jda` which calls `forge_controllers_init()`, `routes(app)`, and starts the server. The `_gen` target runs `forge compile-routes` before every build to regenerate those `_build/` files.
+
+---
+
+## Counter cache — comments_count
+
+Migration `003_add_comments_count_to_posts.sql` adds a `comments_count` column:
+
+```sql
+ALTER TABLE posts ADD COLUMN comments_count INTEGER NOT NULL DEFAULT 0;
+```
+
+The `comment_model_init` declares the counter cache:
+
+```jda
+forge_counter_cache("comments", "post_id", "posts", "comments_count")
+```
+
+Forge now increments/decrements `comments_count` automatically on every comment create and soft-delete. The post partial uses it directly — no extra query:
+
+```jda
+<p class="meta">... <%== post.comments_count %> comment(s)</p>
+```
+
+---
+
+## Dirty tracking in the update action
+
+`posts_controller.jda` snapshots the original title before the update and logs only when it actually changes:
+
+```jda
+fn posts_set_post(ctx: i64) {
+    let post = post_find(ctx_param(ctx, "id"))
+    forge_dirty_load_result("posts", id, post, "title")  // snapshot
+    ctx_set(ctx, "post", post as i64)
+}
+
+fn posts_update(ctx: i64) {
+    let id = ctx_param(ctx, "id")
+    if post_update_from(id, ctx_permit(ctx, "title, body, author")) {
+        if forge_dirty_changed("posts", id, "title", ctx_param(ctx, "title")) {
+            forge_log_ctx_info(ctx, "post title was changed")
+        }
+        // ...
+    }
+}
+```
+
+---
+
+## Instrumentation — post.created event
+
+`post_after_create` fires an instrumentation event with the new post's id:
+
+```jda
+fn post_after_create(id: []i8) {
+    forge_instrument("post.created", id as i64)
+}
+```
+
+`main.jda` subscribes the mailer to that event:
+
+```jda
+forge_subscribe("post.created", fn_addr(post_mailer_new_post))
+```
+
+This decouples the mailer from the controller and the model — either can be changed or replaced without touching the other.
+
+---
+
+## Mailer — post_mailer.jda
+
+`app/mailers/post_mailer.jda` defines a notification mailer and a preview:
+
+```jda
+fn post_mailer_new_post(post_id_raw: i64) {
+    let post = post_find(post_id_raw as []i8)
+    let p    = post_row(post, 0)
+    let mail: ForgeMail
+    mail.to      = forge_env_get("NOTIFY_EMAIL")
+    mail.from    = forge_env_get("MAIL_FROM")
+    mail.subject = forge_str_concat("New post: ", p.title)
+    mail.body    = forge_str_concat("A new post has been published by ", p.author)
+    forge_mail_send_async(mail)
+}
+
+fn post_mailer_preview_new_post() -> ForgeMail { ... }
+```
+
+Browse the preview at `/_forge/mailers/new_post` in development.
+
+---
+
+## After action filter + rescue handler
+
+`posts_controller.jda` wires up a per-controller after filter and rescue handler:
+
+```jda
+fn posts_before_actions() {
+    let ctrl = forge_ctrl_new()
+    forge_ctrl_before (ctrl, fn_addr(posts_set_post),   "show, edit, update, delete")
+    forge_ctrl_after  (ctrl, fn_addr(posts_log_action), "")
+    forge_ctrl_rescue (ctrl, fn_addr(posts_rescue))
+    forge_ctrl_register("posts", ctrl)
+}
+```
+
+`posts_log_action` logs every completed request; `posts_rescue` renders a 500 page if an action exits without sending a response.
+
+---
+
+## Form builder
+
+`_form.html.jda` now uses the `forge_field_tag` / `forge_textarea_field_tag` helpers instead of raw `<input>` and `<label>` HTML:
+
+```jda
+<%== forge_field_tag("title", "Title", title_val) %>
+<%== forge_textarea_field_tag("body", "Body", body_val, 10, 60) %>
+<%== forge_field_tag("author", "Author", "") %>
+```
+
+Each helper emits a `<div class="field">` wrapping a `<label>` and the input, with values HTML-escaped automatically.
+
+---
+
+## Structured logging
+
+Controllers use `forge_log_ctx_info` / `forge_log_ctx_error` so every log line carries the request ID and method/path prefix:
+
+```
+[req-abc123] POST /posts  post created
+[req-abc123] DELETE /posts/1  post deleted
+```
+
+`forge_log_tagged` is used in the model for context-free log lines:
+
+```jda
+forge_log_tagged("post", FORGE_LOG_INFO, "title changed")
+// → [post] title changed
+```
+
+---
+
+## Job lifecycle hooks (main.jda)
+
+Two hooks log around every background job execution:
+
+```jda
+forge_job_before_perform(fn_addr(on_job_before))
+forge_job_after_perform (fn_addr(on_job_after))
+```
+
+This makes it easy to add APM tracing or request-scoped state resets without modifying individual job functions.
