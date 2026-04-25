@@ -5,8 +5,8 @@
 // =============================================================================
 
 // Path helpers
-fn posts_path() -> []i8             { ret forge_path("posts") }
-fn new_post_path() -> []i8          { ret forge_path_new("posts") }
+let posts_path: []i8    = "/posts"
+let new_post_path: []i8 = "/posts/new"
 fn post_path(id: []i8) -> []i8      { ret forge_path_id("posts", id) }
 fn edit_post_path(id: []i8) -> []i8 { ret forge_path_edit("posts", id) }
 
@@ -58,18 +58,18 @@ fn handle_posts_create(ctx: i64) {
     let errs = post_validate(title, body, author)
     if forge_errors_any(errs) {
         ctx_flash_set(ctx, "alert", forge_errors_json(errs))
-        ctx_redirect(ctx, new_post_path())
+        ctx_redirect(ctx, new_post_path)
         ret
     }
 
     if !post_create(title, body, author) {
         ctx_flash_set(ctx, "alert", "Could not save post.")
-        ctx_redirect(ctx, new_post_path())
+        ctx_redirect(ctx, new_post_path)
         ret
     }
 
     ctx_flash_set(ctx, "notice", "Post created.")
-    ctx_redirect(ctx, posts_path())
+    ctx_redirect(ctx, posts_path)
 }
 
 fn handle_posts_show(ctx: i64) {
@@ -207,7 +207,7 @@ fn handle_posts_delete(ctx: i64) {
     let id = ctx_param(ctx, "id")
     post_delete(id)
     ctx_flash_set(ctx, "notice", "Post deleted.")
-    ctx_redirect(ctx, posts_path())
+    ctx_redirect(ctx, posts_path)
 }
 
 fn register_post_routes(app: &ForgeApp) {

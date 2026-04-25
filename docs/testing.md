@@ -22,12 +22,12 @@ let res = forge_test_delete("/posts/1")
 Scaffold-generated routes files include path helpers. Use them in tests instead of hard-coded strings so that renaming a resource only requires changing the route definition, not every test:
 
 ```jda
-let res = forge_test_get   (posts_path())
-let res = forge_test_post  (posts_path(), "title=Hello&body=World&author=Alice")
+let res = forge_test_get   (posts_path)
+let res = forge_test_post  (posts_path, "title=Hello&body=World&author=Alice")
 let res = forge_test_get   (post_path("1"))
 let res = forge_test_put   (post_path("1"), "title=Updated")
 let res = forge_test_delete(post_path("1"))
-let res = forge_test_get   (new_post_path())
+let res = forge_test_get   (new_post_path)
 let res = forge_test_get   (edit_post_path("1"))
 ```
 
@@ -121,18 +121,18 @@ Test files live in `test/` and are named after the resource or feature they cove
 // test/test_posts.jda
 
 fn test_posts_index() {
-    let res = forge_test_get(posts_path())
+    let res = forge_test_get(posts_path)
     forge_assert_status(res, 200)
 }
 
 fn test_post_create_valid() {
-    let res = forge_test_post(posts_path(), "title=Hello&body=Long+enough+body&author=Alice")
+    let res = forge_test_post(posts_path, "title=Hello&body=Long+enough+body&author=Alice")
     forge_assert_redirect(res)
 }
 
 fn test_post_create_missing_title() {
-    let res = forge_test_post(posts_path(), "title=&body=Some+body&author=Alice")
-    forge_assert_redirect(res)   // redirects to new_post_path() with flash
+    let res = forge_test_post(posts_path, "title=&body=Some+body&author=Alice")
+    forge_assert_redirect(res)   // redirects to new_post_path with flash
 }
 
 fn test_post_not_found() {
@@ -215,7 +215,7 @@ fn test_api_user_fields() {
 
 ```jda
 fn test_posts_index() {
-    forge_assert_status(forge_test_get(posts_path()), 200)
+    forge_assert_status(forge_test_get(posts_path), 200)
 }
 
 fn test_post_not_found() {
@@ -249,8 +249,8 @@ Fill in the remaining cases (create, update, delete, validation errors) to match
 
 | Helper | Returns |
 |---|---|
-| `posts_path()` | `/posts` |
-| `new_post_path()` | `/posts/new` |
+| `posts_path` | `/posts` |
+| `new_post_path` | `/posts/new` |
 | `post_path(id)` | `/posts/<id>` |
 | `edit_post_path(id)` | `/posts/<id>/edit` |
 

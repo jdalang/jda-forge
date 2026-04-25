@@ -817,8 +817,8 @@ gen_controller() {
 // Controller: ${name}s
 
 // Path helpers
-fn ${table}_path() -> []i8              { ret forge_path("${table}") }
-fn new_${snake}_path() -> []i8          { ret forge_path_new("${table}") }
+let ${table}_path: []i8    = "/${table}"
+let new_${snake}_path: []i8 = "/${table}/new"
 fn ${snake}_path(id: []i8) -> []i8      { ret forge_path_id("${table}", id) }
 fn edit_${snake}_path(id: []i8) -> []i8 { ret forge_path_edit("${table}", id) }
 
@@ -844,17 +844,17 @@ fn ${snake}_show_action(ctx: i64) {
     else { ctx_html(ctx, 200, "<h1>${name}</h1>") }
 }
 fn ${snake}_new_action(ctx: i64)    { ctx_html(ctx, 200, "<h1>New ${name}</h1>") }
-fn ${snake}_create_action(ctx: i64) { ctx_flash_set(ctx, "notice", "Created.")  ctx_redirect(ctx, ${table}_path()) }
+fn ${snake}_create_action(ctx: i64) { ctx_flash_set(ctx, "notice", "Created.")  ctx_redirect(ctx, ${table}_path) }
 fn ${snake}_edit_action(ctx: i64) {
     let res = forge_find("${table}", ctx_param(ctx, "id"))
     if res.count == 0 { ctx_not_found(ctx)  ret }
     ctx_html(ctx, 200, "<h1>Edit ${name}</h1>")
 }
-fn ${snake}_update_action(ctx: i64) { ctx_flash_set(ctx, "notice", "Updated.")  ctx_redirect(ctx, ${table}_path()) }
+fn ${snake}_update_action(ctx: i64) { ctx_flash_set(ctx, "notice", "Updated.")  ctx_redirect(ctx, ${table}_path) }
 fn ${snake}_delete_action(ctx: i64) {
     forge_soft_delete("${table}", ctx_param(ctx, "id"))
     ctx_flash_set(ctx, "notice", "Deleted.")
-    ctx_redirect(ctx, ${table}_path())
+    ctx_redirect(ctx, ${table}_path)
 }
 
 fn handle_${snake}_index(ctx: i64)  { ${snake}_ctrl_init()  forge_ctrl_dispatch(g_${snake}_ctrl, ctx, fn_addr(${snake}_index_action),  "index")  }
@@ -890,7 +890,7 @@ gen_scaffold() {
     mkdir -p test
     cat > "test/test_${snake}s.jda" <<JDA
 fn test_${snake}s_index() {
-    forge_assert_status(forge_test_get(${table}_path()), 200)
+    forge_assert_status(forge_test_get(${table}_path), 200)
 }
 fn test_${snake}_not_found() {
     forge_assert_status(forge_test_get(${snake}_path("99999")), 404)
