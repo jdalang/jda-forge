@@ -1,0 +1,14 @@
+// ApplicationController — shared helpers for all controllers
+
+fn require_login(ctx: i64) -> bool {
+    if ctx_session_get(ctx, "user_id").len == 0 {
+        ctx_flash_set(ctx, "alert", "Please sign in.")
+        ctx_redirect(ctx, "/login")
+        ret false
+    }
+    ret true
+}
+
+fn current_user_id(ctx: i64) -> []i8 {
+    ret ctx_session_get(ctx, "user_id")
+}

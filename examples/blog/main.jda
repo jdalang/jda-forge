@@ -1,24 +1,11 @@
-// =============================================================================
-// Blog — entry point
-// =============================================================================
-//
-// Build:  make
-// Run:    forge server
-// Test:   forge test
-
-fn handle_root(ctx: i64) {
-    ctx_redirect(ctx, "/posts")
-}
+// main.jda
 
 fn main() {
     load_env()
-
-    forge_set_jwt_secret(forge_env_get("APP_SECRET"))
     forge_jobs_start(4)
-    forge_migration_run("db/migrations")
+    forge_migration_run("db/migrate")
 
     let app = app_new_config(app_config())
-
     app_use(app, fn_addr(forge_logger))
     app_use(app, fn_addr(forge_request_id))
     app_use(app, fn_addr(forge_secure_headers))
@@ -27,9 +14,7 @@ fn main() {
 
     app_static(app, "/static", "./public")
 
-    app_get(app, "/", fn_addr(handle_root))
-    register_post_routes(app)
-    register_comment_routes(app)
+    routes(app)
 
     app_listen(app, str_to_i32(forge_env_get("APP_PORT")))
 }

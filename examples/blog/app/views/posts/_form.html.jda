@@ -1,0 +1,23 @@
+// Partial: post form (shared by new and edit)
+
+fn render_post_form(action: []i8, title_val: []i8, body_val: []i8, tok: []i8, submit_label: []i8) -> []i8 {
+    let buf = forge_buf_new(2)
+    buf.write("<form method=POST action=")
+    buf.write(action)
+    buf.write(">")
+    buf.write("<label>Title<br><input name=title value=\"")
+    buf.write(forge_h(title_val))
+    buf.write("\" style='width:100%'></label><br><br>")
+    buf.write("<label>Body<br><textarea name=body rows=10 style='width:100%'>")
+    buf.write(forge_h(body_val))
+    buf.write("</textarea></label><br><br>")
+    buf.write("<label>Author<br><input name=author></label><br><br>")
+    buf.write("<input type=hidden name=_csrf value=\"")
+    buf.write(tok)
+    buf.write("\"><button>")
+    buf.write(submit_label)
+    buf.write("</button> <a href=")
+    buf.write(posts_path)
+    buf.write(">Cancel</a></form>")
+    ret buf.done()
+}

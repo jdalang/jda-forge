@@ -2,16 +2,18 @@ APP   = blog
 FORGE = ../../forge.jda
 OUT   = _build/$(APP).jda
 
-CONFIG      = config.jda
-MODELS      = $(shell find models      -name "*.jda"      | sort)
-VIEWS       = $(shell find views       -name "*.html.jda" | sort)
-CONTROLLERS = $(shell find controllers -name "*_controller.jda" | sort)
-ROUTES      = $(shell find routes      -name "*.jda"      | sort)
+CONFIG      = config/application.jda
+HELPERS     = $(shell find app/helpers     -name "*.jda"      2>/dev/null | sort)
+MODELS      = $(shell find app/models      -name "*.jda"      2>/dev/null | sort)
+VIEWS       = $(shell find app/views       -name "*.html.jda" 2>/dev/null | sort)
+CONTROLLERS = $(shell find app/controllers -name "*.jda"      2>/dev/null | sort)
+ROUTES      = config/routes.jda
 MAIN        = main.jda
 
-SRC = $(CONFIG) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) $(MAIN)
+SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) $(MAIN)
 
-TEST_SRC = $(CONFIG) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) $(shell find test -name "*.jda" | sort)
+TEST_SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) \
+           $(shell find test -name "*.jda" 2>/dev/null | sort)
 TEST_OUT = _build/test.jda
 
 .PHONY: all build run watch test clean
@@ -30,7 +32,7 @@ run: build
 	./$(APP)
 
 watch:
-	@ls $(SRC) | entr -r make run
+	@find app config -name "*.jda" -o -name "*.html.jda" | entr -r make run
 
 test: $(TEST_OUT)
 	jda build --include $(FORGE) $(TEST_OUT) -o test_runner

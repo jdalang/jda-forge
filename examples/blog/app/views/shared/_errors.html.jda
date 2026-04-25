@@ -1,0 +1,13 @@
+// Partial: validation error summary
+
+fn render_errors(errs: &ForgeErrors) -> []i8 {
+    if !forge_errors_any(errs) { ret "" }
+    let buf = forge_buf_new(2)
+    buf.write("<div class=errors><ul>")
+    // iterate errors — forge_errors_each not yet in framework, use json for now
+    buf.write("<li>")
+    buf.write(forge_errors_json(errs))
+    buf.write("</li>")
+    buf.write("</ul></div>")
+    ret buf.done()
+}

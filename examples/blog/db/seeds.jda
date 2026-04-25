@@ -1,0 +1,6 @@
+// db/seeds.jda — seed data
+// Run: FORGE_ENV=development forge db:seed  (or forge_exec_sql directly)
+
+fn db_seed() {
+    forge_exec_sql("INSERT INTO posts (title, body, author) VALUES ('Welcome', 'This is the first post.', 'Admin') ON CONFLICT DO NOTHING")
+}

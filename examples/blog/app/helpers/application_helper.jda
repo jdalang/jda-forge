@@ -1,0 +1,18 @@
+// ApplicationHelper — shared view helpers
+
+fn h(s: []i8) -> []i8 { ret forge_h(s) }
+
+fn link_to(label: []i8, path: []i8) -> []i8 {
+    let buf = forge_buf_new(1)
+    buf.write("<a href=")
+    buf.write(path)
+    buf.write(">")
+    buf.write(h(label))
+    buf.write("</a>")
+    ret buf.done()
+}
+
+fn pluralize(count: i64, singular: []i8, plural: []i8) -> []i8 {
+    if count == 1 { ret singular }
+    ret plural
+}

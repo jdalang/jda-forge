@@ -308,6 +308,8 @@ fn app_put   (app: &ForgeApp, p: []i8, h: i64) { app_route(app, "PUT",    p, h) 
 fn app_delete(app: &ForgeApp, p: []i8, h: i64) { app_route(app, "DELETE", p, h) }
 fn app_patch (app: &ForgeApp, p: []i8, h: i64) { app_route(app, "PATCH",  p, h) }
 
+fn app_root(app: &ForgeApp, h: i64) { app_get(app, "/", h) }
+
 // ctx_render — send 200 HTML response (convenience alias for ctx_html)
 fn ctx_render(ctx: i64, html: []i8) { ctx_html(ctx, 200, html) }
 
@@ -396,6 +398,19 @@ fn forge_scope_post  (s: &ForgeScope, p: []i8, h: i64) { app_post  (s.app, forge
 fn forge_scope_put   (s: &ForgeScope, p: []i8, h: i64) { app_put   (s.app, forge__scope_join(s.prefix, p), h) }
 fn forge_scope_delete(s: &ForgeScope, p: []i8, h: i64) { app_delete(s.app, forge__scope_join(s.prefix, p), h) }
 fn forge_scope_patch (s: &ForgeScope, p: []i8, h: i64) { app_patch (s.app, forge__scope_join(s.prefix, p), h) }
+
+fn forge_resources(app: &ForgeApp, res: []i8,
+                   index_h: i64, new_h: i64,  create_h: i64,
+                   show_h:  i64, edit_h: i64,  update_h: i64, delete_h: i64) {
+    let base = forge__scope_join("/", res)
+    app_get   (app, base,                                   index_h)
+    app_get   (app, forge__scope_join(base, "/new"),        new_h)
+    app_post  (app, base,                                   create_h)
+    app_get   (app, forge__scope_join(base, "/:id"),        show_h)
+    app_get   (app, forge__scope_join(base, "/:id/edit"),   edit_h)
+    app_put   (app, forge__scope_join(base, "/:id"),        update_h)
+    app_delete(app, forge__scope_join(base, "/:id"),        delete_h)
+}
 
 fn app_ws(app: &ForgeApp, pattern: []i8, handler: i64) {
     let n = app.route_count

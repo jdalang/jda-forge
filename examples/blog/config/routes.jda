@@ -1,0 +1,31 @@
+// Routes — config/routes.jda
+
+let posts_path: []i8    = "/posts"
+let new_post_path: []i8 = "/posts/new"
+fn post_path(id: []i8) -> []i8      { ret forge_path_id("posts", id) }
+fn edit_post_path(id: []i8) -> []i8 { ret forge_path_edit("posts", id) }
+
+fn post_comments_path(post_id: []i8) -> []i8 {
+    let buf = forge_buf_new(1)
+    buf.write("/posts/")
+    buf.write(post_id)
+    buf.write("/comments")
+    ret buf.done()
+}
+
+fn routes(app: &ForgeApp) {
+    app_root(app, fn_addr(posts_index))
+
+    forge_resources(app, "posts",
+        fn_addr(posts_index),
+        fn_addr(posts_new),
+        fn_addr(posts_create),
+        fn_addr(posts_show),
+        fn_addr(posts_edit),
+        fn_addr(posts_update),
+        fn_addr(posts_delete))
+
+    let post_scope = forge_scope(app, "/posts/:post_id")
+    post_scope.post("/comments",     fn_addr(comments_create))
+    post_scope.delete("/comments/:id", fn_addr(comments_delete))
+}

@@ -101,7 +101,7 @@ sql_type() {
     esac
 }
 next_migration_number() {
-    local dir="db/migrations"
+    local dir="db/migrate"
     mkdir -p "$dir"
     local max=0
     for f in "$dir"/*.sql 2>/dev/null; do
@@ -522,7 +522,7 @@ cmd_new() {
     [ -d "$name" ] && err "Directory '$name' already exists"
 
     info "Creating new Forge application: $name"
-    mkdir -p "$name"/{models,controllers,views,routes,middleware,concerns,db/migrations,test,libs,public}
+    mkdir -p "$name"/{app/{controllers,models,views/{layouts,shared},helpers},config/environments,db/migrate,test,libs,public}
 
     cat > "$name/$FORGEFILE" <<EOF
 # Forgefile
@@ -565,7 +565,7 @@ EOF
     touch "$name/libs/.gitkeep"
     ok "created .gitignore"
 
-    cat > "$name/config.jda" <<'JDA'
+    cat > "$name/config/application.jda" <<'JDA'
 fn load_env() {
     let env = forge_env_get("FORGE_ENV")
     if env.len == 0 { env = "development" }
@@ -590,7 +590,101 @@ fn app_config() -> ForgeConfig {
     ret cfg
 }
 JDA
-    ok "created config.jda"
+    ok "created config/application.jda"
+
+    cat > "$name/config/routes.jda" <<'JDA'
+// Routes — config/routes.jda
+
+fn routes(app: &ForgeApp) {
+    app_root(app, fn_addr(handle_root))
+
+    // forge_resources(app, "posts",
+    //     fn_addr(posts_index), fn_addr(posts_new),   fn_addr(posts_create),
+    //     fn_addr(posts_show),  fn_addr(posts_edit),  fn_addr(posts_update), fn_addr(posts_delete))
+}
+JDA
+    ok "created config/routes.jda"
+
+    cat > "$name/app/controllers/application_controller.jda" <<'JDA'
+// ApplicationController — shared helpers for all controllers
+
+fn require_login(ctx: i64) -> bool {
+    if ctx_session_get(ctx, "user_id").len == 0 {
+        ctx_flash_set(ctx, "alert", "Please sign in.")
+        ctx_redirect(ctx, "/login")
+        ret false
+    }
+    ret true
+}
+
+fn current_user_id(ctx: i64) -> []i8 {
+    ret ctx_session_get(ctx, "user_id")
+}
+JDA
+    ok "created app/controllers/application_controller.jda"
+
+    cat > "$name/app/helpers/application_helper.jda" <<'JDA'
+// ApplicationHelper — shared view helpers
+
+fn h(s: []i8) -> []i8 { ret forge_h(s) }
+
+fn link_to(label: []i8, path: []i8) -> []i8 {
+    let buf = forge_buf_new(1)
+    buf.write("<a href=")
+    buf.write(path)
+    buf.write(">")
+    buf.write(h(label))
+    buf.write("</a>")
+    ret buf.done()
+}
+
+fn pluralize(count: i64, singular: []i8, plural: []i8) -> []i8 {
+    if count == 1 { ret singular }
+    ret plural
+}
+JDA
+    ok "created app/helpers/application_helper.jda"
+
+    cat > "$name/app/views/layouts/application.html.jda" <<'JDA'
+// Layout: application
+
+fn tmpl_layout(title: []i8, body: []i8) -> []i8 {
+    let buf = forge_buf_new(4)
+    buf.write("<!DOCTYPE html><html><head><meta charset=utf-8><title>")
+    buf.write(title)
+    buf.write("</title></head><body>")
+    buf.write("<nav><a href=/>Home</a></nav>")
+    buf.write(body)
+    buf.write("</body></html>")
+    ret buf.done()
+}
+
+fn tmpl_flash(ctx: i64) -> []i8 {
+    let buf    = forge_buf_new(1)
+    let notice = ctx_flash_get(ctx, "notice")
+    let alert  = ctx_flash_get(ctx, "alert")
+    if notice.len > 0 { buf.write("<div class=flash-notice>")  buf.write(notice)  buf.write("</div>") }
+    if alert.len  > 0 { buf.write("<div class=flash-alert>")   buf.write(alert)   buf.write("</div>") }
+    ret buf.done()
+}
+JDA
+    ok "created app/views/layouts/application.html.jda"
+
+    cat > "$name/app/views/shared/_errors.html.jda" <<'JDA'
+// Partial: validation error summary
+
+fn render_errors(errs: &ForgeErrors) -> []i8 {
+    if !forge_errors_any(errs) { ret "" }
+    let buf = forge_buf_new(2)
+    buf.write("<div class=errors><ul>")
+    buf.write("<li>")
+    buf.write(forge_errors_json(errs))
+    buf.write("</li>")
+    buf.write("</ul></div>")
+    ret buf.done()
+}
+JDA
+    ok "created app/views/shared/_errors.html.jda"
 
     cat > "$name/main.jda" <<'JDA'
 fn handle_root(ctx: i64) {
@@ -600,7 +694,7 @@ fn handle_root(ctx: i64) {
 fn main() {
     load_env()
     forge_jobs_start(4)
-    forge_migration_run("db/migrations")
+    forge_migration_run("db/migrate")
 
     let app = app_new_config(app_config())
     app_use(app, fn_addr(forge_logger))
@@ -610,9 +704,8 @@ fn main() {
     app_use(app, fn_addr(forge_csrf))
 
     app_static(app, "/static", "./public")
-    app_get(app, "/", fn_addr(handle_root))
 
-    // register_<resource>_routes(app)
+    routes(app)
 
     app_listen(app, str_to_i32(forge_env_get("APP_PORT")))
 }
@@ -630,15 +723,18 @@ FORGE = libs/forge.jda
 LIBS  = $(filter-out $(FORGE), $(wildcard libs/*.jda))
 LINCS = $(addprefix --include ,$(LIBS))
 
-CONFIG  = config.jda
-MW      = $(wildcard middleware/*.jda)
-MODELS  = $(wildcard models/*.jda)
-VIEWS   = $(wildcard views/*.jda)
-ROUTES  = $(wildcard routes/*.jda)
-MAIN    = main.jda
-SRC     = $(CONFIG) $(MW) $(MODELS) $(VIEWS) $(ROUTES) $(MAIN)
+CONFIG      = config/application.jda
+HELPERS     = $(shell find app/helpers     -name "*.jda"      2>/dev/null | sort)
+MODELS      = $(shell find app/models      -name "*.jda"      2>/dev/null | sort)
+VIEWS       = $(shell find app/views       -name "*.html.jda" 2>/dev/null | sort)
+CONTROLLERS = $(shell find app/controllers -name "*.jda"      2>/dev/null | sort)
+ROUTES      = config/routes.jda
+MAIN        = main.jda
 
-TEST_SRC = $(CONFIG) $(MW) $(MODELS) $(VIEWS) $(ROUTES) $(wildcard test/*.jda)
+SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) $(MAIN)
+
+TEST_SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) \
+           $(shell find test -name "*.jda" 2>/dev/null | sort)
 TEST_OUT = _build/test.jda
 
 .PHONY: all build run watch test clean
@@ -657,7 +753,7 @@ run: build
 	./$(APP)
 
 watch:
-	@ls $(SRC) | entr -r make run
+	@find app config -name "*.jda" -o -name "*.html.jda" | entr -r make run
 
 test: $(TEST_OUT)
 	jda build --include $(FORGE) $(LINCS) $(TEST_OUT) -o test_runner
@@ -690,8 +786,8 @@ gen_model() {
     local name="$1"; shift; local fields=("$@")
     local snake; snake=$(snake_case "$name")
     local table; table=$(plural "$snake")
-    mkdir -p models
-    local out="models/${snake}.jda"
+    mkdir -p app/models
+    local out="app/models/${snake}.jda"
     {
         echo "// Model: ${name} — table: ${table}"
         echo ""
@@ -757,8 +853,8 @@ gen_migration() {
     local name="$1"; shift; local fields=("$@")
     local num; num=$(next_migration_number)
     local snake; snake=$(snake_case "$name")
-    mkdir -p db/migrations
-    local out="db/migrations/${num}_${snake}.sql"
+    mkdir -p db/migrate
+    local out="db/migrate/${num}_${snake}.sql"
     {
         echo "-- Migration: ${num}_${snake}"
         echo ""
@@ -814,13 +910,13 @@ gen_migration() {
 check_naming_conventions() {
     local errors=0
     # controllers must be *_controller.jda
-    for f in controllers/*.jda 2>/dev/null; do
+    for f in app/controllers/*.jda 2>/dev/null; do
         [[ "$f" == *_controller.jda ]] || { warn "Bad name: $f — must be <resource>_controller.jda"; errors=$((errors+1)); }
     done
-    # views must live in views/<resource>/ and be *.html.jda
-    find views -name "*.jda" 2>/dev/null | while read -r f; do
+    # views must live in app/views/<resource>/ and be *.html.jda
+    find app/views -name "*.jda" 2>/dev/null | while read -r f; do
         [[ "$f" == *.html.jda ]] || echo "WARN: $f — view files must be named *.html.jda"
-        [[ "$(dirname "$f")" == "views" ]] && echo "WARN: $f — view files must live in views/<resource>/, not views/ directly"
+        [[ "$(dirname "$f")" == "app/views" ]] && echo "WARN: $f — view files must live in app/views/<resource>/, not app/views/ directly"
     done
     [ $errors -gt 0 ] && err "Fix naming convention errors before continuing."
 }
@@ -829,11 +925,11 @@ gen_views() {
     local name="$1"
     local snake; snake=$(snake_case "$name")
     local table; table=$(plural "$snake")
-    mkdir -p "views/${table}" "views/layouts"
+    mkdir -p "app/views/${table}" "app/views/layouts" "app/views/shared"
 
     # Ensure application layout exists
-    if [ ! -f "views/layouts/application.html.jda" ]; then
-        cat > "views/layouts/application.html.jda" <<JDA
+    if [ ! -f "app/views/layouts/application.html.jda" ]; then
+        cat > "app/views/layouts/application.html.jda" <<JDA
 // Layout: application
 
 fn tmpl_layout(title: []i8, body: []i8) -> []i8 {
@@ -856,10 +952,10 @@ fn tmpl_flash(ctx: i64) -> []i8 {
     ret buf.done()
 }
 JDA
-        ok "created views/layouts/application.html.jda"
+        ok "created app/views/layouts/application.html.jda"
     fi
 
-    cat > "views/${table}/index.html.jda" <<JDA
+    cat > "app/views/${table}/index.html.jda" <<JDA
 // View: ${snake}s#index
 
 fn view_${table}_index(ctx: i64, rows: &ForgeResult) -> []i8 {
@@ -877,7 +973,7 @@ fn view_${table}_index(ctx: i64, rows: &ForgeResult) -> []i8 {
 }
 JDA
 
-    cat > "views/${table}/show.html.jda" <<JDA
+    cat > "app/views/${table}/show.html.jda" <<JDA
 // View: ${snake}s#show
 
 fn view_${snake}_show(ctx: i64, row: &ForgeResult) -> []i8 {
@@ -892,7 +988,7 @@ fn view_${snake}_show(ctx: i64, row: &ForgeResult) -> []i8 {
 }
 JDA
 
-    cat > "views/${table}/new.html.jda" <<JDA
+    cat > "app/views/${table}/new.html.jda" <<JDA
 // View: ${snake}s#new
 
 fn view_${snake}_new(ctx: i64) -> []i8 {
@@ -906,7 +1002,7 @@ fn view_${snake}_new(ctx: i64) -> []i8 {
 }
 JDA
 
-    cat > "views/${table}/edit.html.jda" <<JDA
+    cat > "app/views/${table}/edit.html.jda" <<JDA
 // View: ${snake}s#edit
 
 fn view_${snake}_edit(ctx: i64, row: &ForgeResult) -> []i8 {
@@ -921,16 +1017,16 @@ fn view_${snake}_edit(ctx: i64, row: &ForgeResult) -> []i8 {
 }
 JDA
 
-    ok "created views/${table}/{index,show,new,edit}.html.jda"
+    ok "created app/views/${table}/{index,show,new,edit}.html.jda"
 }
 
 gen_controller() {
     local name="$1"
     local snake; snake=$(snake_case "$name")
     local table; table=$(plural "$snake")
-    mkdir -p controllers
-    # Rails convention: controllers/<resource>_controller.jda
-    local out="controllers/${snake}_controller.jda"
+    mkdir -p app/controllers
+    # Rails convention: app/controllers/<resource>_controller.jda
+    local out="app/controllers/${snake}_controller.jda"
     cat > "$out" <<JDA
 // Controller: ${name}sController
 
@@ -986,26 +1082,48 @@ gen_scaffold() {
     gen_model "$name" "${fields[@]:-}"
     gen_views "$name"
     gen_controller "$name"
-    mkdir -p routes
-    cat > "routes/${snake}.jda" <<JDA
-// Routes: ${name}s
 
+    # Append route helpers + forge_resources call to config/routes.jda
+    mkdir -p config
+    if [ ! -f "config/routes.jda" ]; then
+        cat > "config/routes.jda" <<JDA
+// Routes — config/routes.jda
+
+fn routes(app: &ForgeApp) {
+    app_root(app, fn_addr(handle_root))
+}
+JDA
+        ok "created config/routes.jda"
+    fi
+
+    # Append path helpers and forge_resources call before the closing brace of routes()
+    cat >> "config/routes.jda" <<JDA
+
+// --- ${name} routes ---
 let ${table}_path: []i8     = "/${table}"
 let new_${snake}_path: []i8 = "/${table}/new"
 fn ${snake}_path(id: []i8) -> []i8      { ret forge_path_id("${table}", id) }
 fn edit_${snake}_path(id: []i8) -> []i8 { ret forge_path_edit("${table}", id) }
+JDA
+    ok "appended ${name} path helpers to config/routes.jda"
+
+    # Add forge_resources call inside routes() — patch the closing brace
+    # Append a separate registration function instead to keep routes() clean
+    cat >> "config/routes.jda" <<JDA
 
 fn register_${snake}_routes(app: &ForgeApp) {
-    app_get   (app, "/${table}",          fn_addr(${table}_index))
-    app_get   (app, "/${table}/new",      fn_addr(${table}_new))
-    app_post  (app, "/${table}",          fn_addr(${table}_create))
-    app_get   (app, "/${table}/:id",      fn_addr(${table}_show))
-    app_get   (app, "/${table}/:id/edit", fn_addr(${table}_edit))
-    app_put   (app, "/${table}/:id",      fn_addr(${table}_update))
-    app_delete(app, "/${table}/:id",      fn_addr(${table}_delete))
+    forge_resources(app, "${table}",
+        fn_addr(${table}_index),
+        fn_addr(${table}_new),
+        fn_addr(${table}_create),
+        fn_addr(${table}_show),
+        fn_addr(${table}_edit),
+        fn_addr(${table}_update),
+        fn_addr(${table}_delete))
 }
 JDA
-    ok "created routes/${snake}.jda"
+    ok "appended register_${snake}_routes to config/routes.jda"
+
     mkdir -p test
     cat > "test/test_${snake}s.jda" <<JDA
 fn test_${table}_index() {
@@ -1018,16 +1136,16 @@ JDA
     ok "created test/test_${snake}s.jda"
     echo ""
     info "Generated files:"
-    echo "  models/${snake}.jda"
-    echo "  controllers/${snake}_controller.jda"
-    echo "  views/${table}/index.html.jda"
-    echo "  views/${table}/show.html.jda"
-    echo "  views/${table}/new.html.jda"
-    echo "  views/${table}/edit.html.jda"
-    echo "  routes/${snake}.jda"
+    echo "  app/models/${snake}.jda"
+    echo "  app/controllers/${snake}_controller.jda"
+    echo "  app/views/${table}/index.html.jda"
+    echo "  app/views/${table}/show.html.jda"
+    echo "  app/views/${table}/new.html.jda"
+    echo "  app/views/${table}/edit.html.jda"
+    echo "  config/routes.jda  (appended)"
     echo "  test/test_${snake}s.jda"
     echo ""
-    echo "  Add to main.jda:  register_${snake}_routes(app)"
+    echo "  Add to routes() in config/routes.jda:  register_${snake}_routes(app)"
 }
 
 # ---------------------------------------------------------------------------
