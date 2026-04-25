@@ -848,3 +848,127 @@ Scaffold follows these conventions consistently:
 - Path helpers: `<plural>_path` (constant), `new_<singular>_path` (constant), `<singular>_path(id)` (function), `edit_<singular>_path(id)` (function)
 
 For a resource named `Comment` the generated file is `routes/comments.jda` with handlers `handle_comments_index`, `handle_comments_show`, path constants `comments_path`, `new_comment_path`, and path functions `comment_path(id)`, `edit_comment_path(id)`.
+
+---
+
+## 13. Scopes — namespaces and nested resources
+
+`forge_scope` wraps an app with a path prefix. Every route registered on the scope gets that prefix prepended. This replaces manually writing the full path on every `app_get` call and is the standard way to build admin namespaces and nested resource routes.
+
+### Admin namespace
+
+```jda
+fn register_admin_routes(app: &ForgeApp) {
+    let admin = forge_scope(app, "/admin")
+    admin.get("/dashboard",  fn_addr(handle_admin_dashboard))
+    admin.get("/users",      fn_addr(handle_admin_users_index))
+    admin.get("/users/:id",  fn_addr(handle_admin_users_show))
+    admin.post("/users",     fn_addr(handle_admin_users_create))
+    admin.delete("/users/:id", fn_addr(handle_admin_users_delete))
+    admin.get("/posts",      fn_addr(handle_admin_posts_index))
+}
+```
+
+The registered paths are `/admin/dashboard`, `/admin/users`, etc. No prefix duplication in source.
+
+### Nested resources
+
+```jda
+fn register_post_comment_routes(app: &ForgeApp) {
+    let posts = forge_scope(app, "/posts/:post_id")
+    posts.get("/comments",      fn_addr(handle_comments_index))
+    posts.post("/comments",     fn_addr(handle_comments_create))
+    posts.delete("/comments/:id", fn_addr(handle_comments_delete))
+}
+```
+
+### Deeply nested scopes with `forge_scope_nested`
+
+For multi-level nesting, build scopes from scopes:
+
+```jda
+fn register_routes(app: &ForgeApp) {
+    let users   = forge_scope(app, "/users/:user_id")
+    let posts   = forge_scope_nested(users,  "/posts/:post_id")
+    let comments = forge_scope_nested(posts, "/comments/:comment_id")
+
+    users.get("/posts",     fn_addr(handle_user_posts_index))
+    users.post("/posts",    fn_addr(handle_user_posts_create))
+
+    posts.get("/comments",  fn_addr(handle_post_comments_index))
+    posts.post("/comments", fn_addr(handle_post_comments_create))
+
+    comments.post("/likes", fn_addr(handle_comment_likes_create))
+    comments.delete("/likes/:id", fn_addr(handle_comment_likes_delete))
+}
+```
+
+This registers routes like `GET /users/:user_id/posts`, `POST /users/:user_id/posts/:post_id/comments/`, `POST /users/:user_id/posts/:post_id/comments/:comment_id/likes`, etc.
+
+### Path helpers for scoped routes
+
+Scoped path helpers are plain functions — write them at the top of the routes file alongside the handlers:
+
+```jda
+// routes/admin/users.jda
+let admin_users_path: []i8 = "/admin/users"
+fn admin_user_path(id: []i8) -> []i8 { ret forge_path_id("admin/users", id) }
+
+// routes/post_comments.jda
+fn post_comments_path(post_id: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p = "/posts/"
+    let s = "/comments"
+    loop i in 0..p.len       { buf[pos] = p[i]       pos = pos + 1 }
+    loop i in 0..post_id.len { buf[pos] = post_id[i] pos = pos + 1 }
+    loop i in 0..s.len       { buf[pos] = s[i]       pos = pos + 1 }
+    ret buf[0..pos]
+}
+fn post_comment_path(post_id: []i8, id: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p  = "/posts/"
+    let m  = "/comments/"
+    loop i in 0..p.len       { buf[pos] = p[i]       pos = pos + 1 }
+    loop i in 0..post_id.len { buf[pos] = post_id[i] pos = pos + 1 }
+    loop i in 0..m.len       { buf[pos] = m[i]       pos = pos + 1 }
+    loop i in 0..id.len      { buf[pos] = id[i]      pos = pos + 1 }
+    ret buf[0..pos]
+}
+```
+
+### How many route files?
+
+One file per resource is a convention, not a rule. Good groupings:
+
+- **One file per resource** — `routes/posts.jda`, `routes/comments.jda` (default scaffold output)
+- **One file per namespace** — `routes/admin.jda` contains all admin routes and their handlers
+- **One file per feature area** — `routes/billing.jda` groups subscriptions, invoices, payments
+
+There is no technical constraint. The Makefile concatenates all `routes/*.jda` files before compilation. Subdirectories work too — add `$(wildcard routes/**/*.jda)` to the `SRC` variable.
+
+---
+
+## 14. Passing a model object to a path helper
+
+`post_path` takes a `[]i8` id. When you have a `&ForgeResult` from a query, use `.id()` via UFCS to extract the id column value:
+
+```jda
+let post = post_find(id)
+let url  = post_path(post.id())      // post.id() = forge_result_id(post) = forge_result_col(post, 0, "id")
+
+ctx_redirect(ctx, post_path(post.id()))
+```
+
+`forge_result_id` is the underlying function; `.id()` is the UFCS shorthand. Works on any `&ForgeResult` — the column looked up is always `"id"`.
+
+For tests, `post_path(post.id())` reads naturally alongside the rest of the test DSL:
+
+```jda
+fn test_post_show() {
+    test_setup()
+    let post = post_find("1")
+    forge_get(post_path(post.id())).ok(200)
+}
+```

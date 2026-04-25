@@ -308,6 +308,50 @@ fn app_put   (app: &ForgeApp, p: []i8, h: i64) { app_route(app, "PUT",    p, h) 
 fn app_delete(app: &ForgeApp, p: []i8, h: i64) { app_route(app, "DELETE", p, h) }
 fn app_patch (app: &ForgeApp, p: []i8, h: i64) { app_route(app, "PATCH",  p, h) }
 
+// =============================================================================
+// Route scopes — namespace and nested resource grouping
+//
+// let admin = forge_scope(app, "/admin")
+// admin.get("/users",     fn_addr(handle_admin_users_index))
+// admin.get("/users/:id", fn_addr(handle_admin_users_show))
+//
+// Scopes can be nested:
+// let user_scope = forge_scope(app, "/users/:user_id")
+// let posts      = forge_scope_nested(user_scope, "/posts")
+// posts.get("",     fn_addr(handle_user_posts_index))
+// posts.get("/:id", fn_addr(handle_user_posts_show))
+// =============================================================================
+
+struct ForgeScope {
+    app:    &ForgeApp
+    prefix: []i8
+}
+
+fn forge__scope_join(prefix: []i8, path: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    loop i in 0..prefix.len { buf[pos] = prefix[i]  pos = pos + 1 }
+    loop i in 0..path.len   { buf[pos] = path[i]    pos = pos + 1 }
+    ret buf[0..pos]
+}
+
+fn forge_scope(app: &ForgeApp, prefix: []i8) -> &ForgeScope {
+    let s: &ForgeScope = alloc_pages(1)
+    s.app    = app
+    s.prefix = prefix
+    ret s
+}
+
+fn forge_scope_nested(parent: &ForgeScope, suffix: []i8) -> &ForgeScope {
+    ret forge_scope(parent.app, forge__scope_join(parent.prefix, suffix))
+}
+
+fn forge_scope_get   (s: &ForgeScope, p: []i8, h: i64) { app_get   (s.app, forge__scope_join(s.prefix, p), h) }
+fn forge_scope_post  (s: &ForgeScope, p: []i8, h: i64) { app_post  (s.app, forge__scope_join(s.prefix, p), h) }
+fn forge_scope_put   (s: &ForgeScope, p: []i8, h: i64) { app_put   (s.app, forge__scope_join(s.prefix, p), h) }
+fn forge_scope_delete(s: &ForgeScope, p: []i8, h: i64) { app_delete(s.app, forge__scope_join(s.prefix, p), h) }
+fn forge_scope_patch (s: &ForgeScope, p: []i8, h: i64) { app_patch (s.app, forge__scope_join(s.prefix, p), h) }
+
 fn app_ws(app: &ForgeApp, pattern: []i8, handler: i64) {
     let n = app.route_count
     if n < FORGE_MAX_ROUTES {
@@ -2163,6 +2207,24 @@ fn forge_row_col(res: &ForgeResult, row_i: i64, col_i: i64) -> []i8 {
     let cell: &ForgeDbCell = (row.cols as i64 + col_i * FORGE_DB_COL_STRIDE) as &ForgeDbCell
     ret cell.data[0..cell.len]
 }
+
+// Named-column accessor  (UFCS prefix: forge_result)
+fn forge_result_col(res: &ForgeResult, row_i: i64, col: []i8) -> []i8 {
+    loop ci in 0..res.col_count {
+        let cn: &ForgeColName = (res.col_names as i64 + ci * 72) as &ForgeColName
+        if cn.nlen == col.len {
+            let match = true
+            loop j in 0..col.len {
+                if cn.name[j] != col[j] { match = false  break }
+            }
+            if match { ret forge_row_col(res, row_i, ci) }
+        }
+    }
+    ret ""
+}
+
+// Shortcut for the "id" column — enables post_obj.id() via UFCS
+fn forge_result_id(res: &ForgeResult) -> []i8 { ret forge_result_col(res, 0, "id") }
 
 // =============================================================================
 // Migrations — run SQL migration files in order
