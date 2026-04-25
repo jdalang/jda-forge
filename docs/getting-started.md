@@ -63,7 +63,7 @@ sudo mv jda /usr/local/bin/
 jda --version
 ```
 
-**PostgreSQL 14+** — Forge's database layer targets PostgreSQL. A local install or a Docker container both work:
+**Database** — Forge supports PostgreSQL 12+ and MySQL 5.7+ / MariaDB 10.3+. PostgreSQL is used throughout this guide. A local install or a Docker container both works:
 
 ```bash
 # Docker — quick local database
@@ -171,7 +171,7 @@ Additional libraries are added with `lib` lines. See [libraries.md](libraries.md
 
 **`config/application.jda`** defines two functions that `main.jda` calls first:
 - `load_env()` — reads `.env` then the environment-specific file (`.env.development`, `.env.production`, etc.) based on `$FORGE_ENV`.
-- `app_config()` — reads environment variables into a `ForgeConfig` struct and sets the log level.
+- `app_config()` — reads environment variables into a `ForgeConfig` struct, registers database connections with `forge_db_add`, and sets the log level.
 
 **`config/routes.jda`** is the routes DSL you edit — declare resources, namespaces, scopes, and custom routes here. `forge build` compiles it into `_build/routes.jda` (path helpers + `routes()` function) and auto-generates `_build/controllers.jda` by scanning your controllers. You never edit the `_build/` files.
 
@@ -253,7 +253,7 @@ forge server
 
 `forge server` concatenates all source files, compiles, and starts the app. The Makefile is the internal build pipeline — you never run `make` directly.
 
-Forge runs migrations automatically on startup (`forge_migration_run("db/migrate")`), so your tables are created on first launch.
+Forge runs migrations automatically on startup (`forge_migration_run("db/migrate")`), so your tables are created on first launch. You can also run migrations independently with `forge db:migrate` or check their status with `forge db:status` without restarting the server. Migration files use `-- migrate:up` / `-- migrate:down` sections to support `forge db:rollback`.
 
 Visit `http://localhost:8080` in a browser. You should get a 404 — that is correct; no routes are registered yet.
 
@@ -415,7 +415,7 @@ Run `forge server`. The full CRUD interface for posts is now live:
 
 `forge generate scaffold Post title:string body:text author:string` creates two files:
 
-**`db/migrate/001_create_posts.sql`** — the schema. Runs automatically on `forge server`.
+**`db/migrate/001_create_posts.sql`** — the schema. Runs automatically on `forge server`. Generated migrations include `-- migrate:up` and `-- migrate:down` sections so `forge db:rollback` can reverse them.
 
 **`app/models/post.jda`** — only what you write: validations and custom scopes.
 
@@ -760,3 +760,9 @@ Once your project is running and you have a feel for the request cycle, these gu
 **Deploy** — run `forge build -e production`, copy the `app` binary and `db/migrate/` to the server, set environment variables, and run `./app`. The binary has no runtime dependencies.
 
 **Override a library function** — create a `patches/` directory, write your replacement function, and add `$(wildcard patches/*.jda)` to `SRC` in the Makefile. See [overriding.md](overriding.md) for the full procedure.
+
+**Multiple databases** — register additional connections in `app_config` with `forge_db_add("analytics", url)`, then query them with `forge_q_on("analytics", "events")` or switch the active connection with `forge_db_use("name")`. Supports `postgres://`, `postgresql://`, `mysql://`, and `mariadb://` URLs. See [models.md](models.md) for full details.
+
+**Channels (WebSocket pub/sub)** — broadcast to named channels with `forge_channel_broadcast`, register channels with `forge_channel_register`, and handle the full subscribe/message/unsubscribe lifecycle. See [websocket.md](websocket.md).
+
+**Migration rollback** — roll back the last migration with `forge db:rollback`, multiple steps with `forge db:rollback --step 3`, or to a specific version with `forge db:rollback --version 002`. Requires `-- migrate:down` sections in your migration files.

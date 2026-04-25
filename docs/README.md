@@ -12,7 +12,7 @@
 | Guide | Description |
 |---|---|
 | [routing.md](routing.md) | Routes, request/response API, middleware, before/after filters |
-| [models.md](models.md) | Query builder, declarative validations, callbacks, transactions, associations, migrations |
+| [models.md](models.md) | Query builder, declarative validations, callbacks, transactions, associations, migrations, multiple databases, migration rollback |
 | [serializers.md](serializers.md) | JSON serializers — auto-render, selective fields, computed fields, conditions |
 | [views.md](views.md) | HTML helpers, forms, layout, partials, escaping |
 | [security.md](security.md) | SQL injection, XSS, CSRF, authentication, bcrypt passwords, secure headers |
@@ -25,7 +25,7 @@
 |---|---|
 | [mailer.md](mailer.md) | Sending email (SMTP), async mail, ForgeMail struct |
 | [background-jobs.md](background-jobs.md) | Worker pool, job functions, async processing |
-| [websocket.md](websocket.md) | WebSocket upgrade, send/receive, broadcast patterns |
+| [websocket.md](websocket.md) | WebSocket upgrade, send/receive, broadcast patterns, channels (pub/sub) |
 | [sse.md](sse.md) | Server-Sent Events — live feeds, notifications |
 | [caching.md](caching.md) | In-process cache, response caching middleware |
 | [file-uploads.md](file-uploads.md) | Multipart parsing, validation, saving uploads |

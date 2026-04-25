@@ -112,7 +112,7 @@ fn post_validations_init() {
 
 **Channels** — Action Cable style pub/sub over WebSocket. Register named channels (`forge_channel_register`), broadcast from anywhere (`forge_channel_broadcast`), and handle the full subscribe/message/unsubscribe lifecycle with typed callbacks.
 
-**Migrations** — numbered SQL files, auto-run at startup, tracked in database.
+**Migrations** — numbered SQL files with `-- migrate:up` / `-- migrate:down` sections, auto-run at startup, tracked in database. Run independently with `forge db:migrate` / `forge db:status`; roll back with `forge db:rollback [--step N | --version NNN]`.
 
 **Testing** — in-process request tests, no sockets, chainable assertions. `forge_test_fixture` inserts test records, `forge_test_rollback` / `forge_test_setup` wrap each test in a transaction, `forge_test_res_json` asserts JSON response keys.
 
@@ -163,7 +163,7 @@ forge self-update [--version v3.1.0]         # update the CLI itself
 
 **Core:** [Routing](docs/routing.md) · [Models](docs/models.md) · [Views](docs/views.md) · [Security](docs/security.md) · [Testing](docs/testing.md) · [Configuration](docs/configuration.md)
 
-**Features:** [Mailer](docs/mailer.md) · [Background Jobs](docs/background-jobs.md) · [WebSocket](docs/websocket.md) · [SSE](docs/sse.md) · [Caching](docs/caching.md) · [File Uploads](docs/file-uploads.md) · [i18n](docs/i18n.md)
+**Features:** [Mailer](docs/mailer.md) · [Background Jobs](docs/background-jobs.md) · [WebSocket & Channels](docs/websocket.md) · [SSE](docs/sse.md) · [Caching](docs/caching.md) · [File Uploads](docs/file-uploads.md) · [i18n](docs/i18n.md)
 
 **Reference:** [Libraries](docs/libraries.md) · [Overriding](docs/overriding.md)
 

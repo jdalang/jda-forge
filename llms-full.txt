@@ -4,7 +4,6 @@ Generated from docs/ for LLM consumption. Source: https://github.com/jdalang/jda
 
 ---
 
-
 <!-- FILE: README.md -->
 
 # JDA Forge
@@ -121,7 +120,7 @@ fn post_validations_init() {
 
 **Channels** — Action Cable style pub/sub over WebSocket. Register named channels (`forge_channel_register`), broadcast from anywhere (`forge_channel_broadcast`), and handle the full subscribe/message/unsubscribe lifecycle with typed callbacks.
 
-**Migrations** — numbered SQL files, auto-run at startup, tracked in database.
+**Migrations** — numbered SQL files with `-- migrate:up` / `-- migrate:down` sections, auto-run at startup, tracked in database. Run independently with `forge db:migrate` / `forge db:status`; roll back with `forge db:rollback [--step N | --version NNN]`.
 
 **Testing** — in-process request tests, no sockets, chainable assertions. `forge_test_fixture` inserts test records, `forge_test_rollback` / `forge_test_setup` wrap each test in a transaction, `forge_test_res_json` asserts JSON response keys.
 
@@ -172,14 +171,13 @@ forge self-update [--version v3.1.0]         # update the CLI itself
 
 **Core:** [Routing](docs/routing.md) · [Models](docs/models.md) · [Views](docs/views.md) · [Security](docs/security.md) · [Testing](docs/testing.md) · [Configuration](docs/configuration.md)
 
-**Features:** [Mailer](docs/mailer.md) · [Background Jobs](docs/background-jobs.md) · [WebSocket](docs/websocket.md) · [SSE](docs/sse.md) · [Caching](docs/caching.md) · [File Uploads](docs/file-uploads.md) · [i18n](docs/i18n.md)
+**Features:** [Mailer](docs/mailer.md) · [Background Jobs](docs/background-jobs.md) · [WebSocket & Channels](docs/websocket.md) · [SSE](docs/sse.md) · [Caching](docs/caching.md) · [File Uploads](docs/file-uploads.md) · [i18n](docs/i18n.md)
 
 **Reference:** [Libraries](docs/libraries.md) · [Overriding](docs/overriding.md)
 
 Full index: [docs/README.md](docs/README.md)
 
 ---
-
 
 <!-- FILE: docs/getting-started.md -->
 
@@ -248,7 +246,7 @@ sudo mv jda /usr/local/bin/
 jda --version
 ```
 
-**PostgreSQL 14+** — Forge's database layer targets PostgreSQL. A local install or a Docker container both work:
+**Database** — Forge supports PostgreSQL 12+ and MySQL 5.7+ / MariaDB 10.3+. PostgreSQL is used throughout this guide. A local install or a Docker container both works:
 
 ```bash
 # Docker — quick local database
@@ -356,7 +354,7 @@ Additional libraries are added with `lib` lines. See [libraries.md](libraries.md
 
 **`config/application.jda`** defines two functions that `main.jda` calls first:
 - `load_env()` — reads `.env` then the environment-specific file (`.env.development`, `.env.production`, etc.) based on `$FORGE_ENV`.
-- `app_config()` — reads environment variables into a `ForgeConfig` struct and sets the log level.
+- `app_config()` — reads environment variables into a `ForgeConfig` struct, registers database connections with `forge_db_add`, and sets the log level.
 
 **`config/routes.jda`** is the routes DSL you edit — declare resources, namespaces, scopes, and custom routes here. `forge build` compiles it into `_build/routes.jda` (path helpers + `routes()` function) and auto-generates `_build/controllers.jda` by scanning your controllers. You never edit the `_build/` files.
 
@@ -438,7 +436,7 @@ forge server
 
 `forge server` concatenates all source files, compiles, and starts the app. The Makefile is the internal build pipeline — you never run `make` directly.
 
-Forge runs migrations automatically on startup (`forge_migration_run("db/migrate")`), so your tables are created on first launch.
+Forge runs migrations automatically on startup (`forge_migration_run("db/migrate")`), so your tables are created on first launch. You can also run migrations independently with `forge db:migrate` or check their status with `forge db:status` without restarting the server. Migration files use `-- migrate:up` / `-- migrate:down` sections to support `forge db:rollback`.
 
 Visit `http://localhost:8080` in a browser. You should get a 404 — that is correct; no routes are registered yet.
 
@@ -600,7 +598,7 @@ Run `forge server`. The full CRUD interface for posts is now live:
 
 `forge generate scaffold Post title:string body:text author:string` creates two files:
 
-**`db/migrate/001_create_posts.sql`** — the schema. Runs automatically on `forge server`.
+**`db/migrate/001_create_posts.sql`** — the schema. Runs automatically on `forge server`. Generated migrations include `-- migrate:up` and `-- migrate:down` sections so `forge db:rollback` can reverse them.
 
 **`app/models/post.jda`** — only what you write: validations and custom scopes.
 
@@ -946,8 +944,13 @@ Once your project is running and you have a feel for the request cycle, these gu
 
 **Override a library function** — create a `patches/` directory, write your replacement function, and add `$(wildcard patches/*.jda)` to `SRC` in the Makefile. See [overriding.md](overriding.md) for the full procedure.
 
----
+**Multiple databases** — register additional connections in `app_config` with `forge_db_add("analytics", url)`, then query them with `forge_q_on("analytics", "events")` or switch the active connection with `forge_db_use("name")`. Supports `postgres://`, `postgresql://`, `mysql://`, and `mariadb://` URLs. See [models.md](models.md) for full details.
 
+**Channels (WebSocket pub/sub)** — broadcast to named channels with `forge_channel_broadcast`, register channels with `forge_channel_register`, and handle the full subscribe/message/unsubscribe lifecycle. See [websocket.md](websocket.md).
+
+**Migration rollback** — roll back the last migration with `forge db:rollback`, multiple steps with `forge db:rollback --step 3`, or to a specific version with `forge db:rollback --version 002`. Requires `-- migrate:down` sections in your migration files.
+
+---
 
 <!-- FILE: docs/blog-example.md -->
 
@@ -1288,7 +1291,6 @@ build: _gen $(OUT)
 Order matters: `config/application.jda` first (constants and `load_env`), then helpers, models, views, controllers, generated init + routes (from `_build/`), and finally `main.jda` which calls `forge_controllers_init()`, `routes(app)`, and starts the server. The `_gen` target runs `forge compile-routes` before every build to regenerate those `_build/` files.
 
 ---
-
 
 <!-- FILE: docs/routing.md -->
 
@@ -2295,7 +2297,6 @@ fn test_post_show() {
 ```
 
 ---
-
 
 <!-- FILE: docs/models.md -->
 
@@ -4044,7 +4045,6 @@ ALTER TABLE posts DROP COLUMN slug;
 
 ---
 
-
 <!-- FILE: docs/views.md -->
 
 # Views
@@ -4400,7 +4400,6 @@ Failing to escape user-supplied values is the most common source of XSS vulnerab
 Forge's form helpers (`forge_input_tag`, `forge_textarea_tag`, `forge_select_tag`) escape values internally. Values produced by `forge_result_col` are raw strings from the database and must be escaped before use in HTML.
 
 ---
-
 
 <!-- FILE: docs/security.md -->
 
@@ -5160,7 +5159,6 @@ Use this before every production deployment.
 
 ---
 
-
 <!-- FILE: docs/testing.md -->
 
 # Testing
@@ -5382,7 +5380,6 @@ Fill in create, update, delete, and validation cases to match your handler logic
 Run tests: `forge test` or `FORGE_ENV=test jda run test/test_posts.jda`
 
 ---
-
 
 <!-- FILE: docs/configuration.md -->
 
@@ -5606,7 +5603,6 @@ let is_set = forge_env_get("MY_VAR").len > 0  // check presence
 **Files to gitignore:** `.env.development`, `.env.staging`, `.env.production`
 
 ---
-
 
 <!-- FILE: docs/mailer.md -->
 
@@ -5859,7 +5855,6 @@ fn test_welcome_email_subject() {
 
 ---
 
-
 <!-- FILE: docs/background-jobs.md -->
 
 # Background Jobs
@@ -6006,7 +6001,6 @@ A crashed job does not affect other workers or the HTTP server, but the job is n
 Each job runs to completion before the worker picks up the next one. I/O-bound jobs (mail, DB writes) tolerate higher worker counts than CPU-bound jobs.
 
 ---
-
 
 <!-- FILE: docs/websocket.md -->
 
@@ -6276,7 +6270,6 @@ Limits: up to 64 registered channels, 256 subscribers per channel.
 
 ---
 
-
 <!-- FILE: docs/sse.md -->
 
 # Server-Sent Events (SSE)
@@ -6426,7 +6419,6 @@ loop {
 
 ---
 
-
 <!-- FILE: docs/caching.md -->
 
 # Caching
@@ -6569,7 +6561,6 @@ For workloads that need more than 512 live entries, either increase `FORGE_CACHE
 
 ---
 
-
 <!-- FILE: docs/file-uploads.md -->
 
 # File Uploads
@@ -6703,7 +6694,6 @@ forge_multipart_parse(ctx, "photo2", &photo2)
 - Set appropriate permissions on the upload directory.
 
 ---
-
 
 <!-- FILE: docs/i18n.md -->
 
@@ -6846,7 +6836,6 @@ fn posts_new_page(ctx: i64) -> []i8 {
 | Maximum value length | 255 characters |
 
 ---
-
 
 <!-- FILE: docs/serializers.md -->
 
@@ -7003,7 +6992,6 @@ fn post_serialize_with_comments(res: &ForgeResult, r: i64) -> []i8 {
 | `a.done()` | Close and return the JSON array `[]i8` |
 
 ---
-
 
 <!-- FILE: docs/libraries.md -->
 
@@ -7205,7 +7193,6 @@ Forgefile.lock:
 ```
 
 ---
-
 
 <!-- FILE: docs/overriding.md -->
 
