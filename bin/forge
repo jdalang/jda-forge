@@ -129,7 +129,8 @@ compile_routes() {
     local dsl="config/routes"
     [ ! -f "$dsl" ] && return 0
 
-    local out="config/routes.jda"
+    mkdir -p _build
+    local out="_build/routes.jda"
     local fh; fh=$(mktemp)   # path helper declarations
     local fb; fb=$(mktemp)   # routes() body
 
@@ -279,11 +280,11 @@ compile_routes() {
     } > "$out"
 
     rm -f "$fh" "$fb"
-    ok "compiled config/routes → config/routes.jda"
+    ok "compiled config/routes → _build/routes.jda"
 
-    # Auto-generate config/controllers.jda by scanning app/controllers/*.jda
+    # Auto-generate _build/controllers.jda by scanning app/controllers/*.jda
     # Picks up every fn name(ctx: i64) { handler (no return type = it's a route handler)
-    local ctrl_out="config/controllers.jda"
+    local ctrl_out="_build/controllers.jda"
     local ft; ft=$(mktemp)
     printf 'fn forge_controllers_init() {\n' > "$ft"
     for f in app/controllers/*.jda; do
@@ -296,7 +297,7 @@ compile_routes() {
     done >> "$ft"
     printf '}\n' >> "$ft"
     mv "$ft" "$ctrl_out"
-    ok "scanned controllers → config/controllers.jda"
+    ok "scanned controllers → _build/controllers.jda"
 }
 
 # Normalise version tag: "3.0.0" → "v3.0.0"
@@ -914,26 +915,29 @@ FORGE = libs/forge.jda
 LIBS  = $(filter-out $(FORGE), $(wildcard libs/*.jda))
 LINCS = $(addprefix --include ,$(LIBS))
 
-CONFIG           = config/application.jda
-HELPERS          = $(shell find app/helpers     -name "*.jda"      2>/dev/null | sort)
-MODELS           = $(shell find app/models      -name "*.jda"      2>/dev/null | sort)
-VIEWS            = $(shell find app/views       -name "*.html.jda" 2>/dev/null | sort)
-CONTROLLERS      = $(shell find app/controllers -name "*.jda"      2>/dev/null | sort)
-CONTROLLERS_INIT = config/controllers.jda
-ROUTES           = config/routes.jda
-MAIN             = main.jda
+CONFIG      = config/application.jda
+HELPERS     = $(shell find app/helpers     -name "*.jda"      2>/dev/null | sort)
+MODELS      = $(shell find app/models      -name "*.jda"      2>/dev/null | sort)
+VIEWS       = $(shell find app/views       -name "*.html.jda" 2>/dev/null | sort)
+CONTROLLERS = $(shell find app/controllers -name "*.jda"      2>/dev/null | sort)
+ROUTES      = _build/routes.jda
+CTRL_INIT   = _build/controllers.jda
+MAIN        = main.jda
 
-SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CONTROLLERS_INIT) $(ROUTES) $(MAIN)
+SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) $(MAIN)
 
-TEST_SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CONTROLLERS_INIT) $(ROUTES) \
+TEST_SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) \
            $(shell find test -name "*.jda" 2>/dev/null | sort)
 TEST_OUT = _build/test.jda
 
-.PHONY: all build run watch test clean
+.PHONY: all build run watch test clean _gen
 
 all: build
 
-build: $(OUT)
+_gen:
+	@forge compile-routes
+
+build: _gen $(OUT)
 	jda build --include $(FORGE) $(LINCS) $(OUT) -o $(APP)
 
 $(OUT): $(SRC)
@@ -945,9 +949,10 @@ run: build
 	./$(APP)
 
 watch:
-	@find app config -name "*.jda" -o -name "*.html.jda" | entr -r make run
+	@{ find app config -name "*.jda" -o -name "*.html.jda"; [ -f config/routes ] && echo config/routes; } \
+	    | entr -rn sh -c 'forge compile-routes 2>/dev/null; make run'
 
-test: $(TEST_OUT)
+test: _gen $(TEST_OUT)
 	jda build --include $(FORGE) $(LINCS) $(TEST_OUT) -o test_runner
 	FORGE_ENV=test ./test_runner
 

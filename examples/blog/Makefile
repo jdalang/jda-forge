@@ -7,21 +7,24 @@ HELPERS     = $(shell find app/helpers     -name "*.jda"      2>/dev/null | sort
 MODELS      = $(shell find app/models      -name "*.jda"      2>/dev/null | sort)
 VIEWS       = $(shell find app/views       -name "*.html.jda" 2>/dev/null | sort)
 CONTROLLERS = $(shell find app/controllers -name "*.jda"      2>/dev/null | sort)
-CONTROLLERS_INIT = config/controllers.jda
-ROUTES           = config/routes.jda
+ROUTES      = _build/routes.jda
+CTRL_INIT   = _build/controllers.jda
 MAIN        = main.jda
 
-SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CONTROLLERS_INIT) $(ROUTES) $(MAIN)
+SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) $(MAIN)
 
-TEST_SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CONTROLLERS_INIT) $(ROUTES) \
+TEST_SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) \
            $(shell find test -name "*.jda" 2>/dev/null | sort)
 TEST_OUT = _build/test.jda
 
-.PHONY: all build run watch test clean
+.PHONY: all build run watch test clean _gen
 
 all: build
 
-build: $(OUT)
+_gen:
+	@forge compile-routes
+
+build: _gen $(OUT)
 	jda build --include $(FORGE) $(OUT) -o $(APP)
 
 $(OUT): $(SRC)
@@ -33,9 +36,10 @@ run: build
 	./$(APP)
 
 watch:
-	@{ find app config -name "*.jda" -o -name "*.html.jda"; [ -f config/routes ] && echo config/routes; } | entr -rn sh -c 'forge compile-routes 2>/dev/null; make run'
+	@{ find app config -name "*.jda" -o -name "*.html.jda"; echo config/routes; } \
+	    | entr -rn sh -c 'forge compile-routes 2>/dev/null; make run'
 
-test: $(TEST_OUT)
+test: _gen $(TEST_OUT)
 	jda build --include $(FORGE) $(TEST_OUT) -o test_runner
 	FORGE_ENV=test ./test_runner
 
