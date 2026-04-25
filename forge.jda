@@ -4050,6 +4050,43 @@ fn forge_json_done(j: &ForgeJson) -> []i8 {
     ret j.buf[0..j.pos]
 }
 
+// ---------------------------------------------------------------------------
+// ForgeJsonArray — build a JSON array from serialized objects
+//
+//   let a = forge_json_array_new()
+//   loop r in 0..posts.count {
+//       a.push(post_serialize(posts, r))
+//   }
+//   ctx_json(ctx, 200, a.done())
+// ---------------------------------------------------------------------------
+
+struct ForgeJsonArray {
+    buf:   &i8
+    pos:   i64
+    empty: bool
+}
+
+fn forge_json_array_new() -> &ForgeJsonArray {
+    let a: &ForgeJsonArray = alloc_pages(1)
+    a.buf   = alloc_pages(64)
+    a.pos   = 0
+    a.empty = true
+    a.buf[a.pos] = '['  a.pos = a.pos + 1
+    ret a
+}
+
+fn forge_json_array_push(a: &ForgeJsonArray, obj: []i8) -> &ForgeJsonArray {
+    if !a.empty { a.buf[a.pos] = ','  a.pos = a.pos + 1 }
+    a.empty = false
+    loop i in 0..obj.len { a.buf[a.pos] = obj[i]  a.pos = a.pos + 1 }
+    ret a
+}
+
+fn forge_json_array_done(a: &ForgeJsonArray) -> []i8 {
+    a.buf[a.pos] = ']'  a.pos = a.pos + 1
+    ret a.buf[0..a.pos]
+}
+
 // =============================================================================
 // Section H — Controller Layer
 // =============================================================================

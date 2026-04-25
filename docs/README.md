@@ -13,6 +13,7 @@
 |---|---|
 | [routing.md](routing.md) | Routes, request/response API, middleware |
 | [models.md](models.md) | Query builder, validations, associations, callbacks, migrations |
+| [serializers.md](serializers.md) | JSON serializers — auto-render, selective fields, computed fields, conditions |
 | [views.md](views.md) | HTML helpers, forms, layout, partials, escaping |
 | [security.md](security.md) | SQL injection, XSS, CSRF, authentication, secure headers |
 | [testing.md](testing.md) | Request tests, assertions, database fixtures |
