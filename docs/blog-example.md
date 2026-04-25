@@ -50,7 +50,7 @@ examples/blog/
       application_helper.jda       # h(), link_to(), pluralize()
   config/
     application.jda                # load_env() + app_config()
-    routes.jda                     # path helpers + routes(app)
+    routes.jda                     # routes DSL — edit this, never _build/routes.jda
     environments/
       development.jda
       test.jda
@@ -133,27 +133,30 @@ fn app_config() -> ForgeConfig {
 
 ---
 
-## config/routes.jda — path helpers + route table
+## config/routes.jda — routes DSL
 
-```jda
-let posts_path: []i8    = "/posts"
-let new_post_path: []i8 = "/posts/new"
-fn post_path(id: []i8) -> []i8      { ret forge_path_id("posts", id) }
-fn edit_post_path(id: []i8) -> []i8 { ret forge_path_edit("posts", id) }
+The only routing file you edit:
 
-fn routes(app: &ForgeApp) {
-    app_root(app, fn_addr(posts_index))
-    forge_resources(app, "posts",
-        fn_addr(posts_index), fn_addr(posts_new),    fn_addr(posts_create),
-        fn_addr(posts_show),  fn_addr(posts_edit),   fn_addr(posts_update),
-        fn_addr(posts_delete))
-    let post_scope = forge_scope(app, "/posts/:post_id")
-    post_scope.post("/comments",       fn_addr(comments_create))
-    post_scope.delete("/comments/:id", fn_addr(comments_delete))
-}
+```
+root "posts#index"
+
+resources "posts" do
+  resources "comments"
+end
 ```
 
-`forge_resources` registers all 7 RESTful routes (index, new, create, show, edit, update, delete) in one call. Nested routes use `forge_scope` to share a path prefix.
+`forge build` compiles this into `_build/routes.jda` (path helpers + `routes()` function) and scans `app/controllers/*.jda` to produce `_build/controllers.jda`. You never edit either generated file.
+
+Path helpers available everywhere in the app after build:
+
+```jda
+posts_path                              // "/posts"
+new_post_path                           // "/posts/new"
+post_path(id)                           // "/posts/42"
+edit_post_path(id)                      // "/posts/42/edit"
+post_comments_path(post_id)             // "/posts/42/comments"
+post_comment_path(post_id, id)          // "/posts/42/comments/7"
+```
 
 ---
 
@@ -319,16 +322,17 @@ HELPERS     = $(shell find app/helpers     -name "*.jda"      2>/dev/null | sort
 MODELS      = $(shell find app/models      -name "*.jda"      2>/dev/null | sort)
 VIEWS       = $(shell find app/views       -name "*.html.jda" 2>/dev/null | sort)
 CONTROLLERS = $(shell find app/controllers -name "*.jda"      2>/dev/null | sort)
-ROUTES      = config/routes.jda
+ROUTES      = _build/routes.jda       # compiled from config/routes.jda
+CTRL_INIT   = _build/controllers.jda  # scanned from app/controllers/
 MAIN        = main.jda
 
-SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) $(MAIN)
+SRC = $(CONFIG) $(HELPERS) $(MODELS) $(VIEWS) $(CONTROLLERS) $(CTRL_INIT) $(ROUTES) $(MAIN)
 
-$(OUT): $(SRC)
-    cat $(SRC) > $(OUT)
+_gen:
+    @forge compile-routes
 
-build: $(OUT)
+build: _gen $(OUT)
     jda build --include libs/forge.jda $(OUT) -o blog
 ```
 
-Order matters: `config/application.jda` first (constants and `load_env`), then helpers, models, views, controllers, routes, and finally `main.jda` which calls `routes(app)` and starts the server.
+Order matters: `config/application.jda` first (constants and `load_env`), then helpers, models, views, controllers, generated init + routes (from `_build/`), and finally `main.jda` which calls `forge_controllers_init()`, `routes(app)`, and starts the server. The `_gen` target runs `forge compile-routes` before every build to regenerate those `_build/` files.
