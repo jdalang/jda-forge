@@ -424,6 +424,10 @@ compile_models() {
             printf 'fn %s_count() -> i64 { ret forge_q("%s").count() }\n' "$sing" "$tb"
             printf 'fn %s_exists(id: []i8) -> bool { ret forge_q("%s").where_eq("id", id).exists() }\n' "$sing" "$tb"
             printf 'fn %s_delete(id: []i8) -> bool { ret forge_soft_delete("%s", id) }\n' "$sing" "$tb"
+            printf 'fn %s_destroy(id: []i8) -> bool { ret forge_hard_delete("%s", id) }\n' "$sing" "$tb"
+            printf 'fn %s_touch(id: []i8) -> bool { ret forge_touch("%s", id) }\n' "$sing" "$tb"
+            printf 'fn %s_update_column(id: []i8, col: []i8, val: []i8) -> bool { ret forge_update_column("%s", id, col, val) }\n' "$sing" "$tb"
+            printf 'fn %s_find_or_create_by(col: []i8, val: []i8) -> &ForgeResult { ret forge_find_or_create_by("%s", col, val) }\n' "$sing" "$tb"
 
             # Build create/update params (exclude skip=1 columns)
             local params="" chain=""
@@ -439,6 +443,10 @@ compile_models() {
                     "$sing" "$params" "$chain" "$tb"
                 printf 'fn %s_update(id: []i8, %s) -> bool {\n    ret forge_attrs_new()\n%b        .update("%s", id)\n}\n' \
                     "$sing" "$params" "$chain" "$tb"
+                printf 'fn %s_create_from(attrs: &ForgeAttrs) -> bool { ret forge_attrs_insert(attrs, "%s") }\n' \
+                    "$sing" "$tb"
+                printf 'fn %s_update_from(id: []i8, attrs: &ForgeAttrs) -> bool { ret forge_attrs_update(attrs, "%s", id) }\n' \
+                    "$sing" "$tb"
             fi
             printf '\n'
         } >> "$tmp"

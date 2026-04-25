@@ -111,7 +111,7 @@ For the model layer, use the callback system to inject behavior without touching
 
 ```jda
 // Add your own before_save on top of any library callbacks
-forge_callback_add("users", CB_BEFORE_SAVE, fn_addr(my_before_save))
+forge_callback_add("users", FORGE_CB_BEFORE_SAVE, fn_addr(my_before_save))
 
 fn my_before_save(row_ptr: i64) -> bool {
     // normalize email to lowercase

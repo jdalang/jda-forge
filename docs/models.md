@@ -26,9 +26,10 @@ The Forge model layer provides database access, querying, validation, associatio
 7. [Associations](#associations)
 8. [Callbacks](#callbacks)
 9. [Soft Delete](#soft-delete)
-10. [Transactions](#transactions)
-11. [Serialization](#serialization)
-12. [Migrations](#migrations)
+10. [Model Utilities](#model-utilities)
+11. [Transactions](#transactions)
+12. [Serialization](#serialization)
+13. [Migrations](#migrations)
 
 ---
 
@@ -83,22 +84,21 @@ CREATE TABLE IF NOT EXISTS posts (
 
 ### Your model file
 
-The generator creates a minimal file with only your validation logic:
+The generator creates a minimal file with declarative validations and a stub for custom scopes:
 
 ```jda
 // app/models/post.jda
 
-fn post_validate(title: []i8, body: []i8, user_id: []i8) -> &ForgeErrors {
-    let e = forge_errors_new()
-    forge_validate_presence(e, "title",   title)
-    forge_validate_length  (e, "title",   title,   2, 255)
-    forge_validate_presence(e, "body",    body)
-    forge_validate_presence(e, "user_id", user_id)
-    ret e
+fn post_validations_init() {
+    forge_model("posts")
+    forge_field       ("title, body, user_id", FORGE_V_PRESENCE)
+    forge_field_length("title",                2, 255)
 }
 ```
 
-Everything else (`post_q`, `post_all`, `post_find`, `post_create`, `post_update`, `post_delete`, …) is generated automatically into `_build/models.jda` by reading the migration. Add custom scopes and helper functions below the validation.
+Call `post_validations_init()` once in `main.jda` before `routes(app)`. Validations then fire automatically before every insert and update — no explicit call needed in controllers.
+
+Everything else (`post_q`, `post_all`, `post_find`, `post_create`, `post_update`, `post_delete`, …) is generated automatically into `_build/models.jda` by reading the migration. Add custom scopes and helper functions below the validations.
 
 ### Auto-generated CRUD (`_build/models.jda`)
 
@@ -114,6 +114,10 @@ fn post_where(col: []i8, val: []i8)     -> &ForgeQuery  { ret forge_q("posts").w
 fn post_count()                          -> i64          { ret forge_q("posts").count() }
 fn post_exists(id: []i8)                -> bool         { ret forge_q("posts").where_eq("id", id).exists() }
 fn post_delete(id: []i8)                -> bool         { ret forge_soft_delete("posts", id) }
+fn post_destroy(id: []i8)               -> bool         { ret forge_hard_delete("posts", id) }
+fn post_touch(id: []i8)                 -> bool         { ret forge_touch("posts", id) }
+fn post_update_column(id: []i8, col: []i8, val: []i8) -> bool { ret forge_update_column("posts", id, col, val) }
+fn post_find_or_create_by(col: []i8, val: []i8) -> &ForgeResult { ret forge_find_or_create_by("posts", col, val) }
 fn post_create(title: []i8, body: []i8, user_id: []i8) -> bool {
     ret forge_attrs_new()
         .set("title",   title)
@@ -128,9 +132,11 @@ fn post_update(id: []i8, title: []i8, body: []i8, user_id: []i8) -> bool {
         .set("user_id", user_id)
         .update("posts", id)
 }
+fn post_create_from(attrs: &ForgeAttrs) -> bool { ret forge_attrs_insert(attrs, "posts") }
+fn post_update_from(id: []i8, attrs: &ForgeAttrs) -> bool { ret forge_attrs_update(attrs, "posts", id) }
 ```
 
-Column order in `post_create` / `post_update` matches the migration. `BOOLEAN` columns with defaults (e.g. `published`) are excluded from the generated params since the database default handles them — toggle them with a custom function or `.update_all`.
+Column order in `post_create` / `post_update` matches the migration. `BOOLEAN` columns with defaults (e.g. `published`) are excluded from the generated params since the database default handles them — toggle them with `post_update_column` or `.update_all`.
 
 ---
 
@@ -205,16 +211,49 @@ Soft-deletes a row by setting `deleted_at`. Returns `true` on success.
 let ok = post_delete("42")
 ```
 
-### post_validate
+### post_destroy
 
-Defined by you in `app/models/post.jda`. Runs field validations and returns a `&ForgeErrors`. See [Validations](#validations) for full details.
+Hard-deletes a row with `DELETE FROM`, firing `BEFORE_DELETE` / `AFTER_DELETE` / `AFTER_COMMIT` callbacks. Returns `true` on success.
 
 ```jda
-let errs = post_validate(title, body)
-if forge_errors_any(errs) {
-    ctx_unprocessable(ctx, forge_errors_json(errs))
+let ok = post_destroy("42")
+```
+
+### post_touch
+
+Updates only `updated_at = NOW()`, bypassing validations and callbacks.
+
+```jda
+post_touch("42")
+```
+
+### post_update_column
+
+Updates a single column directly, bypassing validations and callbacks.
+
+```jda
+post_update_column("42", "slug", "hello-world")
+```
+
+### post_find_or_create_by
+
+Returns the first row matching `col = val`, or inserts a minimal record if none exists.
+
+```jda
+let res = post_find_or_create_by("slug", "hello-world")
+```
+
+### post_create_from / post_update_from
+
+Insert or update from a `&ForgeAttrs` built by `ctx_permit`. Declarative validations fire automatically.
+
+```jda
+if post_create_from(ctx_permit(ctx, "title, body, author")) {
+    ctx_redirect(ctx, posts_path)
     ret
 }
+ctx_save_errors(ctx)
+ctx_redirect(ctx, new_post_path)
 ```
 
 ### Extending the generated interface
@@ -696,15 +735,148 @@ The second argument is the batch size. `forge_find_in_batches` issues multiple q
 
 ## Validations
 
-Validations check field values before a record is saved. The generated `post_validate` function is the conventional place to put them, but you can call the forge validation helpers anywhere.
+Forge supports two validation styles: **declarative** (Rails-style, fires automatically on save) and **manual** (explicit calls you control). Prefer declarative for standard rules; fall back to manual for complex cross-field logic.
 
-### Creating an error bag
+### Declarative validations
+
+Register rules once at startup. They fire automatically inside every `post_create` and `post_update` call — you never call them in the controller.
+
+Call `forge_model(table)` once at the top of your init function to set the model context, then use the short `forge_field*` helpers — no need to repeat the table name on every line:
+
+```jda
+// app/models/post.jda
+fn post_validations_init() {
+    forge_model("posts")
+    forge_field       ("title, body, author", FORGE_V_PRESENCE)
+    forge_field_length("title",               2, 255)
+    forge_field_min   ("body",                10)
+    forge_field       ("email",               FORGE_V_EMAIL)
+    forge_field_param ("status",              FORGE_V_INCLUSION, "draft,published,archived")
+}
+```
+
+Call the init function once at startup — typically in `main.jda` before `routes(app)`:
+
+```jda
+post_validations_init()
+routes(app)
+```
+
+In the controller, just call the CRUD function. If validation fails it returns `false` and `forge_last_errors()` holds the errors:
+
+```jda
+fn posts_create(ctx: i64) {
+    let ok = post_create(ctx_form(ctx, "title"), ctx_form(ctx, "body"), ctx_form(ctx, "author"))
+    if not ok {
+        let errs = forge_last_errors()
+        if forge_errors_any(errs) {
+            ctx_unprocessable(ctx, forge_errors_json(errs))
+        } else {
+            ctx_unprocessable(ctx, "Could not save post.")
+        }
+        ret
+    }
+    ctx_redirect(ctx, posts_path)
+}
+```
+
+#### Rails → Forge validation reference
+
+| Rails | Forge (declarative) | Notes |
+|---|---|---|
+| `validates :f, presence: true` | `forge_field("f", FORGE_V_PRESENCE)` | |
+| `validates :f, absence: true` | `forge_field("f", FORGE_V_ABSENCE)` | |
+| `validates :f, :g, presence: true` | `forge_field("f, g", FORGE_V_PRESENCE)` | comma-separated |
+| `validates :f, length: { minimum: 2 }` | `forge_field_min("f", 2)` | |
+| `validates :f, length: { maximum: 255 }` | `forge_field_param("f", FORGE_V_MAX_LEN, "255")` | |
+| `validates :f, length: { minimum: 2, maximum: 255 }` | `forge_field_length("f", 2, 255)` | |
+| `validates :f, length: { is: 10 }` | `forge_field_exact("f", 10)` | |
+| `validates :f, numericality: true` | `forge_field("f", FORGE_V_NUMERICALITY)` | digits only |
+| `validates :f, numericality: { greater_than: 0 }` | `forge_field_gt("f", 0)` | |
+| `validates :f, numericality: { greater_than_or_equal_to: 18 }` | `forge_field_gte("f", 18)` | |
+| `validates :f, numericality: { less_than: 100 }` | `forge_field_lt("f", 100)` | |
+| `validates :f, numericality: { less_than_or_equal_to: 65 }` | `forge_field_lte("f", 65)` | |
+| `validates :f, numericality: { equal_to: 42 }` | `forge_field_equal_to("f", 42)` | |
+| `validates :f, format: { with: URI::MailTo::EMAIL_REGEXP }` | `forge_field("f", FORGE_V_EMAIL)` | |
+| `validates :f, format: { with: URI }` | `forge_field("f", FORGE_V_URL)` | http/https + dot |
+| `validates :f, inclusion: { in: %w[a b c] }` | `forge_field_param("f", FORGE_V_INCLUSION, "a,b,c")` | |
+| `validates :f, exclusion: { in: %w[admin root] }` | `forge_field_param("f", FORGE_V_EXCLUSION, "admin,root")` | |
+| `validates :f, acceptance: true` | `forge_field_acceptance("f")` | "1" or "true" |
+| `validates :f, confirmation: true` | `forge_field_confirm("f", "f_confirmation")` | ¹ |
+| `validates :f, uniqueness: true` | `forge_validate_uniqueness(e, table, f, val, id)` | manual only ² |
+
+¹ The confirmation field must be included in `forge_attrs_set` calls — it is not a DB column but must be passed as an attribute.
+
+² Uniqueness requires a DB query and knowledge of the current record's id (to exclude it on update). Use it directly in a `FORGE_CB_BEFORE_SAVE` callback or call it explicitly before saving:
+
+```jda
+fn user_create_handler(ctx: i64) {
+    let email = ctx_form(ctx, "email")
+    let e = forge_errors_new()
+    forge_validate_uniqueness(e, "users", "email", email, "")
+    if forge_errors_any(e) {
+        ctx_unprocessable(ctx, forge_errors_json(e))
+        ret
+    }
+    user_create(email, ctx_form(ctx, "password"))
+    ctx_redirect(ctx, login_path)
+}
+```
+
+#### Context helpers (use after `forge_model`)
+
+```jda
+forge_model          (table)
+forge_field          ("f, g", rule)          // one or more fields, same rule
+forge_field_length   ("f", min, max)
+forge_field_min      ("f", min)
+forge_field_exact    ("f", n)
+forge_field_gt       ("f", n)
+forge_field_gte      ("f", n)
+forge_field_lt       ("f", n)
+forge_field_lte      ("f", n)
+forge_field_equal_to ("f", n)
+forge_field_url      ("f")
+forge_field_absence  ("f")
+forge_field_acceptance("f")
+forge_field_confirm  ("password", "password_confirmation")
+forge_field_param    ("f", rule, param)      // any rule with a string param
+```
+
+#### Low-level helpers (pass table explicitly)
+
+```jda
+forge_validates        (table, field, rule)
+forge_validates_fields (table, "f, g", rule)
+forge_validates_param  (table, field, rule, param)
+forge_validates_length (table, field, min, max)
+forge_validates_min_len(table, field, min)
+```
+
+### Lifecycle order
+
+When `forge_attrs_insert` or `forge_attrs_update` is called, the order is:
+
+1. Declarative validations — abort and set `forge_last_errors()` if any fail
+2. `FORGE_CB_BEFORE_SAVE` callbacks
+3. `FORGE_CB_BEFORE_CREATE` / `FORGE_CB_BEFORE_UPDATE` callbacks
+4. SQL INSERT / UPDATE
+5. On success: `FORGE_CB_AFTER_CREATE` / `FORGE_CB_AFTER_UPDATE` → `FORGE_CB_AFTER_SAVE` → `FORGE_CB_AFTER_COMMIT`
+6. On DB failure: `FORGE_CB_AFTER_ROLLBACK`
+
+For `forge_soft_delete`: `FORGE_CB_BEFORE_DELETE` → SQL → `FORGE_CB_AFTER_DELETE` + `FORGE_CB_AFTER_COMMIT` on success, or `FORGE_CB_AFTER_ROLLBACK` on failure.
+
+---
+
+### Manual validators
+
+For complex or cross-field validation, call the low-level helpers directly and return a `&ForgeErrors` from your own function:
 
 ```jda
 let e = forge_errors_new()
 ```
 
-### Available validators
+#### Available validators
 
 #### forge_validate_presence
 
@@ -762,13 +934,15 @@ Fails if the value is not in the comma-separated `allowed` string.
 forge_validate_inclusion(e, "role", role, "admin,user,guest")
 ```
 
-### Checking and rendering errors
+### Checking and rendering errors (manual validation)
+
+When using manual validation, run your validate function explicitly and check before saving:
 
 ```jda
 fn posts_create(ctx: i64) {
     let title = ctx_param(ctx, "title")
     let body  = ctx_param(ctx, "body")
-    let errs  = post_validate(title, body)
+    let errs  = user_validate_complex(title, body)
     if forge_errors_any(errs) {
         ctx_unprocessable(ctx, forge_errors_json(errs))
         ret
@@ -778,14 +952,21 @@ fn posts_create(ctx: i64) {
 }
 ```
 
-`forge_errors_json` returns a JSON object mapping field names to arrays of error messages:
+`forge_errors_json` returns a JSON object mapping field names to error messages:
 
 ```json
-{
-  "title": ["can't be blank", "is too short (minimum 2 characters)"],
-  "body": ["can't be blank"]
-}
+{"errors":{"title":"can't be blank","body":"is too short"}}
 ```
+
+**Error helper functions:**
+
+| Function | Returns | Description |
+|---|---|---|
+| `forge_errors_any(e)` | `bool` | True if there are any errors. |
+| `forge_errors_count(e)` | `i64` | Number of errors. |
+| `forge_errors_json(e)` | `[]i8` | `{"errors":{"field":"msg",...}}` — keyed by field. |
+| `forge_errors_full_messages(e)` | `[]i8` | `"Title can't be blank, Body is too short"` — human string. |
+| `forge_errors_full_messages_json(e)` | `[]i8` | `["Title can't be blank","Body is too short"]` — JSON array. |
 
 ### Using multiple validators on the same field
 
@@ -860,12 +1041,14 @@ let posts = forge_q("posts")
 
 Callbacks let you hook into the record lifecycle. A callback is a plain Jda function that receives a pointer to the row data and returns `bool`. Returning `false` from a before-callback aborts the operation.
 
+Declarative validations always run before any before-callback. See [Lifecycle order](#lifecycle-order) in the Validations section.
+
 ### Registering a callback
 
 ```jda
-forge_callback_add("users", CB_BEFORE_SAVE,   fn_addr(hash_password_before_save))
-forge_callback_add("users", CB_AFTER_CREATE,  fn_addr(send_welcome_email))
-forge_callback_add("users", CB_BEFORE_DELETE, fn_addr(cancel_subscriptions))
+forge_callback_add("users", FORGE_CB_BEFORE_SAVE,   fn_addr(hash_password_before_save))
+forge_callback_add("users", FORGE_CB_AFTER_CREATE,  fn_addr(send_welcome_email))
+forge_callback_add("users", FORGE_CB_BEFORE_DELETE, fn_addr(cancel_subscriptions))
 ```
 
 Register callbacks once at startup.
@@ -884,14 +1067,16 @@ fn hash_password_before_save(row_ptr: i64) -> bool {
 
 | Constant | Fires |
 |---|---|
-| `CB_BEFORE_SAVE` | Before any INSERT or UPDATE |
-| `CB_AFTER_SAVE` | After any INSERT or UPDATE |
-| `CB_BEFORE_CREATE` | Before INSERT only |
-| `CB_AFTER_CREATE` | After INSERT only |
-| `CB_BEFORE_UPDATE` | Before UPDATE only |
-| `CB_AFTER_UPDATE` | After UPDATE only |
-| `CB_BEFORE_DELETE` | Before soft or hard delete |
-| `CB_AFTER_DELETE` | After soft or hard delete |
+| `FORGE_CB_BEFORE_SAVE` | Before any INSERT or UPDATE |
+| `FORGE_CB_AFTER_SAVE` | After any INSERT or UPDATE |
+| `FORGE_CB_BEFORE_CREATE` | Before INSERT only |
+| `FORGE_CB_AFTER_CREATE` | After INSERT only |
+| `FORGE_CB_BEFORE_UPDATE` | Before UPDATE only |
+| `FORGE_CB_AFTER_UPDATE` | After UPDATE only |
+| `FORGE_CB_BEFORE_DELETE` | Before soft or hard delete |
+| `FORGE_CB_AFTER_DELETE` | After soft or hard delete |
+| `FORGE_CB_AFTER_COMMIT` | After any successful INSERT, UPDATE, or DELETE |
+| `FORGE_CB_AFTER_ROLLBACK` | After a failed INSERT, UPDATE, or DELETE (DB error only — not validation failure) |
 
 ### Notes
 
@@ -923,13 +1108,21 @@ let ok = forge_restore("posts", id)
 
 Sets `deleted_at = NULL`, making the row visible again.
 
-### Hard-deleting a row
+### Hard-deleting a row (with callbacks)
 
 ```jda
-let ok = forge_purge("posts", id)
+let ok = forge_hard_delete("posts", id)     // fires BEFORE/AFTER_DELETE + AFTER_COMMIT
 ```
 
-Permanently removes the row from the database. Bypasses soft delete entirely.
+Generated wrapper: `post_destroy(id)` — calls `forge_hard_delete` and fires the full callback lifecycle.
+
+### Hard-deleting a row (no callbacks)
+
+```jda
+let ok = forge_purge("posts", id)           // raw DELETE, skips all callbacks
+```
+
+Permanently removes the row without firing any callbacks. Like Rails `Model.delete` vs `Model.destroy`.
 
 ### Querying deleted rows
 
@@ -945,48 +1138,91 @@ let res = forge_q("posts").where_not_null("deleted_at").where_raw("deleted_at IS
 
 ---
 
-## Transactions
+## Model Utilities
 
-Use transactions when multiple writes must succeed or fail together. Forge transactions use a file descriptor as the transaction handle.
+### forge_touch
 
-### Basic transaction pattern
+Updates only `updated_at` without running validations or callbacks.
 
 ```jda
-let fd = forge_tx_begin()
-if fd < 0 {
-    // could not open transaction — handle error
-    ret
+forge_touch("posts", id)
+post_touch(id)              // generated wrapper
+```
+
+### forge_update_column
+
+Updates a single column directly, bypassing validations and callbacks.
+
+```jda
+forge_update_column("posts", id, "slug", "hello-world")
+post_update_column(id, "slug", "hello-world")    // generated wrapper
+```
+
+### forge_find_or_create_by
+
+Returns the first matching row, or creates a minimal record if none exists.
+
+```jda
+let res = forge_find_or_create_by("users", "email", "alice@example.com")
+let res = user_find_or_create_by("email", "alice@example.com")    // generated wrapper
+```
+
+### forge_attrs_upsert
+
+`INSERT ... ON CONFLICT (col) DO UPDATE SET ...` — insert or update on a unique column.
+
+```jda
+let ok = forge_attrs_new()
+    .set("email", email)
+    .set("name", name)
+    .upsert("users", "email")         // UFCS: forge_attrs_upsert(a, "users", "email")
+```
+
+---
+
+## Transactions
+
+Use transactions when multiple writes must succeed or fail together.
+
+### Block-style (recommended)
+
+Pass a function pointer whose return value determines commit vs rollback:
+
+```jda
+fn transfer_fn(ignored: i64) -> bool {
+    let ok1 = forge_db_exec("UPDATE accounts SET balance = balance - 100 WHERE id = '42'")
+    if not ok1 { ret false }
+    let ok2 = forge_db_exec("UPDATE accounts SET balance = balance + 100 WHERE id = '99'")
+    ret ok2
 }
 
-let ok = forge_tx_exec(fd, "UPDATE accounts SET balance = balance - 100 WHERE id = '42'")
-if !ok {
-    forge_tx_rollback(fd)
-    ret
-}
+forge_transaction(transfer_fn as i64)
+```
 
-let ok2 = forge_tx_exec(fd, "UPDATE accounts SET balance = balance + 100 WHERE id = '99'")
-if !ok2 {
-    forge_tx_rollback(fd)
-    ret
-}
+Returns `true` if committed, `false` if rolled back.
 
-forge_tx_commit(fd)
+### Manual
+
+```jda
+if not forge_begin() { ret }
+
+let ok = forge_db_exec("UPDATE accounts SET balance = balance - 100 WHERE id = '42'")
+if not ok { forge_rollback()  ret }
+
+let ok2 = forge_db_exec("UPDATE accounts SET balance = balance + 100 WHERE id = '99'")
+if not ok2 { forge_rollback()  ret }
+
+forge_commit()
 ```
 
 ### API
 
-| Function | Description |
-|---|---|
-| `forge_tx_begin() -> i64` | Starts a transaction. Returns a file descriptor, or `-1` on failure. |
-| `forge_tx_exec(fd, sql) -> bool` | Executes a SQL statement in the transaction. Returns `false` on error. |
-| `forge_tx_commit(fd)` | Commits the transaction and closes the descriptor. |
-| `forge_tx_rollback(fd)` | Rolls back the transaction and closes the descriptor. |
-
-### Notes
-
-- Always rollback on any failure before returning.
-- `forge_tx_exec` takes raw SQL. Do not interpolate user input without escaping.
-- Transactions are not compatible with `forge_q` at this time; use raw SQL strings with `forge_tx_exec`.
+| Function | Returns | Description |
+|---|---|---|
+| `forge_begin()` | `bool` | Issues `BEGIN`. |
+| `forge_commit()` | `bool` | Issues `COMMIT`. |
+| `forge_rollback()` | `bool` | Issues `ROLLBACK`. |
+| `forge_transaction(fn_ptr)` | `bool` | Runs fn in a BEGIN/COMMIT block; rolls back if fn returns false. |
 
 ---
 
@@ -1012,17 +1248,53 @@ let obj = forge_row_to_json(res, 0)
 
 The second argument to `forge_row_to_json` is the row index (zero-based). All column values are returned as strings in the JSON output.
 
-### Typical controller usage
+### JSON response helpers
+
+| Function | Status | Description |
+|---|---|---|
+| `ctx_json_ok(ctx, json)` | 200 | Send JSON with 200 OK. |
+| `ctx_json_created(ctx, json)` | 201 | Send JSON with 201 Created. |
+| `ctx_json_errors(ctx)` | 422 | Send `forge_last_errors()` body with 422. |
+
+### Format-aware controllers (respond_to)
+
+Branch on Accept header or `?format=` param:
+
+```jda
+fn posts_show_html(ctx: i64) {
+    let post = post_find(ctx_param(ctx, "id"))
+    ctx_render(ctx, view_posts_show(ctx, post))
+}
+
+fn posts_show_json(ctx: i64) {
+    let post = post_find(ctx_param(ctx, "id"))
+    ctx_json_ok(ctx, forge_row_to_json(post, 0))
+}
+
+fn posts_show(ctx: i64) {
+    ctx_respond_to(ctx, posts_show_html as i64, posts_show_json as i64)
+}
+```
+
+### Typical API controller
 
 ```jda
 fn api_post_show(ctx: i64) {
     let res = post_find(ctx_param(ctx, "id"))
     if res.count == 0 { ctx_not_found(ctx)  ret }
-    ctx_json(ctx, 200, forge_row_to_json(res, 0))
+    ctx_json_ok(ctx, forge_row_to_json(res, 0))
 }
 
 fn api_posts_index(ctx: i64) {
-    ctx_json(ctx, 200, forge_result_to_json(post_all()))
+    ctx_json_ok(ctx, forge_result_to_json(post_all()))
+}
+
+fn api_posts_create(ctx: i64) {
+    if post_create_from(ctx_permit(ctx, "title, body, author")) {
+        ctx_json_created(ctx, "{\"ok\":true}")
+        ret
+    }
+    ctx_json_errors(ctx)
 }
 ```
 

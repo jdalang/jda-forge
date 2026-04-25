@@ -11,11 +11,11 @@
 
 | Guide | Description |
 |---|---|
-| [routing.md](routing.md) | Routes, request/response API, middleware |
-| [models.md](models.md) | Query builder, validations, associations, callbacks, migrations |
+| [routing.md](routing.md) | Routes, request/response API, middleware, before/after filters |
+| [models.md](models.md) | Query builder, declarative validations, callbacks, transactions, associations, migrations |
 | [serializers.md](serializers.md) | JSON serializers — auto-render, selective fields, computed fields, conditions |
 | [views.md](views.md) | HTML helpers, forms, layout, partials, escaping |
-| [security.md](security.md) | SQL injection, XSS, CSRF, authentication, secure headers |
+| [security.md](security.md) | SQL injection, XSS, CSRF, authentication, bcrypt passwords, secure headers |
 | [testing.md](testing.md) | Request tests, assertions, database fixtures |
 | [configuration.md](configuration.md) | Environments, .env files, app_config, log levels |
 

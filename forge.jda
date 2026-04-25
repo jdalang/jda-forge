@@ -3565,6 +3565,48 @@ fn forge_errors_json(e: &ForgeErrors) -> []i8 {
     ret buf[0..pos]
 }
 
+fn forge_errors_count(e: &ForgeErrors) -> i64 { ret e.count }
+
+fn forge_errors_full_messages(e: &ForgeErrors) -> []i8 {
+    let buf: &i8 = alloc_pages(4)
+    let pos = 0i64
+    loop i in 0..e.count {
+        if i > 0 { buf[pos] = ','  pos = pos + 1  buf[pos] = ' '  pos = pos + 1 }
+        let field = e.errs[i].field
+        if field.len > 0 {
+            let fc = field[0]
+            if fc >= 97 and fc <= 122 { buf[pos] = fc - 32 } else { buf[pos] = fc }
+            pos = pos + 1
+            loop j in 1..field.len { buf[pos] = field[j]  pos = pos + 1 }
+            buf[pos] = ' '  pos = pos + 1
+        }
+        loop j in 0..e.errs[i].msg.len { buf[pos] = e.errs[i].msg[j]  pos = pos + 1 }
+    }
+    ret buf[0..pos]
+}
+
+fn forge_errors_full_messages_json(e: &ForgeErrors) -> []i8 {
+    let buf: &i8 = alloc_pages(4)
+    let pos = 0i64
+    buf[pos] = '['  pos = pos + 1
+    loop i in 0..e.count {
+        if i > 0 { buf[pos] = ','  pos = pos + 1  buf[pos] = ' '  pos = pos + 1 }
+        buf[pos] = '"'  pos = pos + 1
+        let field = e.errs[i].field
+        if field.len > 0 {
+            let fc = field[0]
+            if fc >= 97 and fc <= 122 { buf[pos] = fc - 32 } else { buf[pos] = fc }
+            pos = pos + 1
+            loop j in 1..field.len { buf[pos] = field[j]  pos = pos + 1 }
+            buf[pos] = ' '  pos = pos + 1
+        }
+        loop j in 0..e.errs[i].msg.len { buf[pos] = e.errs[i].msg[j]  pos = pos + 1 }
+        buf[pos] = '"'  pos = pos + 1
+    }
+    buf[pos] = ']'  pos = pos + 1
+    ret buf[0..pos]
+}
+
 fn forge_validate_presence(e: &ForgeErrors, field: []i8, val: []i8) -> bool {
     if val.len == 0 {
         forge_errors_add(e, field, "can't be blank")
@@ -3597,6 +3639,21 @@ fn forge_validate_min_length(e: &ForgeErrors, field: []i8, val: []i8, min: i64) 
         let p2 = " characters)"
         loop i in 0..p1.len { mb[mp] = p1[i]  mp = mp + 1 }
         let n1 = fmt_i64(mb + mp, min)  mp = mp + n1
+        loop i in 0..p2.len { mb[mp] = p2[i]  mp = mp + 1 }
+        forge_errors_add(e, field, mb[0..mp])
+        ret false
+    }
+    ret true
+}
+
+fn forge_validate_max_length(e: &ForgeErrors, field: []i8, val: []i8, max: i64) -> bool {
+    if val.len > max {
+        let mb: &i8 = alloc_pages(1)
+        let mp = 0i64
+        let p1 = "is too long (maximum is "
+        let p2 = " characters)"
+        loop i in 0..p1.len { mb[mp] = p1[i]  mp = mp + 1 }
+        let n1 = fmt_i64(mb + mp, max)  mp = mp + n1
         loop i in 0..p2.len { mb[mp] = p2[i]  mp = mp + 1 }
         forge_errors_add(e, field, mb[0..mp])
         ret false
@@ -3656,6 +3713,446 @@ fn forge_validate_inclusion(e: &ForgeErrors, field: []i8, val: []i8, allowed: []
     ret false
 }
 
+fn forge_validate_absence(e: &ForgeErrors, field: []i8, val: []i8) -> bool {
+    if val.len == 0 { ret true }
+    forge_errors_add(e, field, "must be blank")
+    ret false
+}
+
+fn forge_validate_exclusion(e: &ForgeErrors, field: []i8, val: []i8, forbidden: []i8) -> bool {
+    let start = 0i64
+    loop i in 0..forbidden.len {
+        if forbidden[i] == ',' {
+            if forge_slice_eq(forbidden[start..i], val) {
+                forge_errors_add(e, field, "is reserved")
+                ret false
+            }
+            start = i + 1
+        }
+    }
+    if forge_slice_eq(forbidden[start..forbidden.len], val) {
+        forge_errors_add(e, field, "is reserved")
+        ret false
+    }
+    ret true
+}
+
+fn forge_validate_acceptance(e: &ForgeErrors, field: []i8, val: []i8) -> bool {
+    if forge_slice_eq(val, "1") or forge_slice_eq(val, "true") { ret true }
+    forge_errors_add(e, field, "must be accepted")
+    ret false
+}
+
+fn forge_validate_url(e: &ForgeErrors, field: []i8, val: []i8) -> bool {
+    let http  = "http://"
+    let https = "https://"
+    let valid = false
+    if val.len >= http.len {
+        let ok = true
+        loop i in 0..http.len { if val[i] != http[i] { ok = false } }
+        if ok { valid = true }
+    }
+    if val.len >= https.len {
+        let ok = true
+        loop i in 0..https.len { if val[i] != https[i] { ok = false } }
+        if ok { valid = true }
+    }
+    if not valid { forge_errors_add(e, field, "is not a valid URL")  ret false }
+    let has_dot = false
+    loop i in 0..val.len { if val[i] == '.' { has_dot = true } }
+    if not has_dot { forge_errors_add(e, field, "is not a valid URL")  ret false }
+    ret true
+}
+
+fn forge_validate_exact_length(e: &ForgeErrors, field: []i8, val: []i8, n: i64) -> bool {
+    if val.len == n { ret true }
+    let mb: &i8 = alloc_pages(1)
+    let mp = 0i64
+    let p1 = "must be exactly "
+    let p2 = " characters"
+    loop i in 0..p1.len { mb[mp] = p1[i]  mp = mp + 1 }
+    let nn = fmt_i64(mb + mp, n)  mp = mp + nn
+    loop i in 0..p2.len { mb[mp] = p2[i]  mp = mp + 1 }
+    forge_errors_add(e, field, mb[0..mp])
+    ret false
+}
+
+fn forge_validate_gt(e: &ForgeErrors, field: []i8, val: []i8, n: i64) -> bool {
+    if val.len == 0 { forge_errors_add(e, field, "is not a number")  ret false }
+    loop i in 0..val.len {
+        let d = val[i] as i64 - 48
+        if d < 0 or d > 9 { forge_errors_add(e, field, "is not a number")  ret false }
+    }
+    if str_to_i64(val) > n { ret true }
+    let mb: &i8 = alloc_pages(1)  let mp = 0i64
+    let p1 = "must be greater than "
+    loop i in 0..p1.len { mb[mp] = p1[i]  mp = mp + 1 }
+    let nn = fmt_i64(mb + mp, n)  mp = mp + nn
+    forge_errors_add(e, field, mb[0..mp])
+    ret false
+}
+
+fn forge_validate_gte(e: &ForgeErrors, field: []i8, val: []i8, n: i64) -> bool {
+    if val.len == 0 { forge_errors_add(e, field, "is not a number")  ret false }
+    loop i in 0..val.len {
+        let d = val[i] as i64 - 48
+        if d < 0 or d > 9 { forge_errors_add(e, field, "is not a number")  ret false }
+    }
+    if str_to_i64(val) >= n { ret true }
+    let mb: &i8 = alloc_pages(1)  let mp = 0i64
+    let p1 = "must be greater than or equal to "
+    loop i in 0..p1.len { mb[mp] = p1[i]  mp = mp + 1 }
+    let nn = fmt_i64(mb + mp, n)  mp = mp + nn
+    forge_errors_add(e, field, mb[0..mp])
+    ret false
+}
+
+fn forge_validate_lt(e: &ForgeErrors, field: []i8, val: []i8, n: i64) -> bool {
+    if val.len == 0 { forge_errors_add(e, field, "is not a number")  ret false }
+    loop i in 0..val.len {
+        let d = val[i] as i64 - 48
+        if d < 0 or d > 9 { forge_errors_add(e, field, "is not a number")  ret false }
+    }
+    if str_to_i64(val) < n { ret true }
+    let mb: &i8 = alloc_pages(1)  let mp = 0i64
+    let p1 = "must be less than "
+    loop i in 0..p1.len { mb[mp] = p1[i]  mp = mp + 1 }
+    let nn = fmt_i64(mb + mp, n)  mp = mp + nn
+    forge_errors_add(e, field, mb[0..mp])
+    ret false
+}
+
+fn forge_validate_lte(e: &ForgeErrors, field: []i8, val: []i8, n: i64) -> bool {
+    if val.len == 0 { forge_errors_add(e, field, "is not a number")  ret false }
+    loop i in 0..val.len {
+        let d = val[i] as i64 - 48
+        if d < 0 or d > 9 { forge_errors_add(e, field, "is not a number")  ret false }
+    }
+    if str_to_i64(val) <= n { ret true }
+    let mb: &i8 = alloc_pages(1)  let mp = 0i64
+    let p1 = "must be less than or equal to "
+    loop i in 0..p1.len { mb[mp] = p1[i]  mp = mp + 1 }
+    let nn = fmt_i64(mb + mp, n)  mp = mp + nn
+    forge_errors_add(e, field, mb[0..mp])
+    ret false
+}
+
+fn forge_validate_equal_to(e: &ForgeErrors, field: []i8, val: []i8, n: i64) -> bool {
+    if val.len == 0 { forge_errors_add(e, field, "is not a number")  ret false }
+    loop i in 0..val.len {
+        let d = val[i] as i64 - 48
+        if d < 0 or d > 9 { forge_errors_add(e, field, "is not a number")  ret false }
+    }
+    if str_to_i64(val) == n { ret true }
+    let mb: &i8 = alloc_pages(1)  let mp = 0i64
+    let p1 = "must be equal to "
+    loop i in 0..p1.len { mb[mp] = p1[i]  mp = mp + 1 }
+    let nn = fmt_i64(mb + mp, n)  mp = mp + nn
+    forge_errors_add(e, field, mb[0..mp])
+    ret false
+}
+
+// Manual-only — declarative uniqueness requires an id that the attrs layer does not carry.
+// Call directly from a controller or a FORGE_CB_BEFORE_SAVE callback.
+fn forge_validate_uniqueness(e: &ForgeErrors, table: []i8, field: []i8, val: []i8, exclude_id: []i8) -> bool {
+    let q = forge_q(table)
+    forge_q_where(q, field, "=", val)
+    if exclude_id.len > 0 { forge_q_where(q, "id", "!=", exclude_id) }
+    let res = forge_q_exec(q)
+    if res.count > 0 {
+        forge_errors_add(e, field, "has already been taken")
+        ret false
+    }
+    ret true
+}
+
+// =============================================================================
+// Section B3 — Declarative Validations (Rails-style)
+// =============================================================================
+const FORGE_V_PRESENCE      = 1
+const FORGE_V_EMAIL         = 2
+const FORGE_V_MIN_LEN       = 3
+const FORGE_V_MAX_LEN       = 4
+const FORGE_V_NUMERICALITY  = 5
+const FORGE_V_INCLUSION     = 6
+const FORGE_V_ABSENCE       = 7
+const FORGE_V_EXCLUSION     = 8
+const FORGE_V_ACCEPTANCE    = 9
+const FORGE_V_URL           = 10
+const FORGE_V_GT            = 11
+const FORGE_V_GTE           = 12
+const FORGE_V_LT            = 13
+const FORGE_V_LTE           = 14
+const FORGE_V_EXACT_LEN     = 15
+const FORGE_V_CONFIRMATION  = 16
+const FORGE_V_EQUAL_TO      = 17
+
+const FORGE_V_MAX_RULES    = 128
+const FORGE_V_TABLE_CAP    = 32
+const FORGE_V_FIELD_CAP    = 48
+const FORGE_V_PARAM_CAP    = 64
+
+struct ForgeVRule {
+    table: [FORGE_V_TABLE_CAP]i8   tlen: i64
+    field: [FORGE_V_FIELD_CAP]i8   flen: i64
+    rule:  i64
+    param: [FORGE_V_PARAM_CAP]i8   plen: i64
+    used:  bool
+}
+const FORGE_V_RULE_STRIDE = 178   // 32+8+48+8+8+64+8+2(bool)
+
+let g_forge_v_store:     &i8          = 0
+let g_forge_v_count:     i64          = 0
+let g_forge_last_errors: &ForgeErrors = 0
+
+fn forge_v_init() {
+    if g_forge_v_store != 0 { ret }
+    g_forge_v_store = alloc_pages(6)   // 128 × 178 = 22784 < 24576
+}
+
+fn forge_last_errors() -> &ForgeErrors {
+    ret g_forge_last_errors
+}
+
+// --- per-request field scratchpad (written by forge_attrs_set) ---
+const FORGE_FA_MAX  = 24
+const FORGE_FA_NCAP = 48
+const FORGE_FA_VCAP = 512
+
+let g_fa_names: &i8  = 0   // FORGE_FA_MAX × FORGE_FA_NCAP
+let g_fa_vals:  &i8  = 0   // FORGE_FA_MAX × FORGE_FA_VCAP
+let g_fa_meta:  &i8  = 0   // FORGE_FA_MAX × 16: nlen(i64) + vlen(i64)
+let g_fa_count: i64  = 0
+let g_fa_ready: bool = false
+
+fn forge_fa_init() {
+    if g_fa_ready { ret }
+    g_fa_names = alloc_pages(1)   // 24 × 48  = 1152 < 4096
+    g_fa_vals  = alloc_pages(3)   // 24 × 512 = 12288
+    g_fa_meta  = alloc_pages(1)   // 24 × 16  = 384  < 4096
+    g_fa_ready = true
+}
+
+fn forge_fa_reset() {
+    forge_fa_init()
+    g_fa_count = 0
+}
+
+fn forge_fa_store(field: []i8, val: []i8) {
+    forge_fa_init()
+    if g_fa_count >= FORGE_FA_MAX { ret }
+    let i  = g_fa_count
+    let no = i * FORGE_FA_NCAP
+    let vo = i * FORGE_FA_VCAP
+    let nl = field.len
+    if nl > FORGE_FA_NCAP { nl = FORGE_FA_NCAP }
+    let vl = val.len
+    if vl > FORGE_FA_VCAP { vl = FORGE_FA_VCAP }
+    loop j in 0..nl { g_fa_names[no + j] = field[j] }
+    loop j in 0..vl { g_fa_vals[vo + j]  = val[j]   }
+    ((g_fa_meta as i64 + i * 16)     as &i64)[0] = nl
+    ((g_fa_meta as i64 + i * 16 + 8) as &i64)[0] = vl
+    g_fa_count = i + 1
+}
+
+fn forge_fa_get(field: []i8) -> []i8 {
+    forge_fa_init()
+    loop i in 0..g_fa_count {
+        let no = i * FORGE_FA_NCAP
+        let nl = ((g_fa_meta as i64 + i * 16) as &i64)[0]
+        if forge_slice_eq(field, g_fa_names[no..(no + nl)]) {
+            let vo = i * FORGE_FA_VCAP
+            let vl = ((g_fa_meta as i64 + i * 16 + 8) as &i64)[0]
+            ret g_fa_vals[vo..(vo + vl)]
+        }
+    }
+    ret ""
+}
+
+// --- registration ---
+
+fn forge_validates(table: []i8, field: []i8, rule: i64) {
+    forge_v_init()
+    if g_forge_v_count >= FORGE_V_MAX_RULES { ret }
+    let r: &ForgeVRule = (g_forge_v_store as i64 + g_forge_v_count * FORGE_V_RULE_STRIDE) as &ForgeVRule
+    let tl = table.len
+    if tl > FORGE_V_TABLE_CAP { tl = FORGE_V_TABLE_CAP }
+    loop i in 0..tl { r.table[i] = table[i] }
+    r.tlen = tl
+    let fl = field.len
+    if fl > FORGE_V_FIELD_CAP { fl = FORGE_V_FIELD_CAP }
+    loop i in 0..fl { r.field[i] = field[i] }
+    r.flen = fl
+    r.rule = rule
+    r.plen = 0
+    r.used = true
+    g_forge_v_count = g_forge_v_count + 1
+}
+
+fn forge_validates_param(table: []i8, field: []i8, rule: i64, param: []i8) {
+    forge_validates(table, field, rule)
+    let r: &ForgeVRule = (g_forge_v_store as i64 + (g_forge_v_count - 1) * FORGE_V_RULE_STRIDE) as &ForgeVRule
+    let pl = param.len
+    if pl > FORGE_V_PARAM_CAP { pl = FORGE_V_PARAM_CAP }
+    loop i in 0..pl { r.param[i] = param[i] }
+    r.plen = pl
+}
+
+fn forge_validates_length(table: []i8, field: []i8, min: i64, max: i64) {
+    let pb: &i8 = alloc_pages(1)
+    let pn = fmt_i64(pb, min)
+    forge_validates_param(table, field, FORGE_V_MIN_LEN, pb[0..pn])
+    pn = fmt_i64(pb, max)
+    forge_validates_param(table, field, FORGE_V_MAX_LEN, pb[0..pn])
+}
+
+fn forge_validates_min_len(table: []i8, field: []i8, min: i64) {
+    let pb: &i8 = alloc_pages(1)
+    let pn = fmt_i64(pb, min)
+    forge_validates_param(table, field, FORGE_V_MIN_LEN, pb[0..pn])
+}
+
+// Register the same rule for multiple comma-separated fields at once.
+// forge_validates_fields("posts", "title, body, author", FORGE_V_PRESENCE)
+fn forge_validates_fields(table: []i8, fields: []i8, rule: i64) {
+    let start = 0i64
+    loop i in 0..fields.len {
+        if fields[i] == ',' {
+            let a = start
+            let b = i
+            loop k in 0..FORGE_FA_NCAP { if a < b and fields[a] == ' ' { a = a + 1 } }
+            loop k in 0..FORGE_FA_NCAP { if b > a and fields[b - 1] == ' ' { b = b - 1 } }
+            if b > a { forge_validates(table, fields[a..b], rule) }
+            start = i + 1
+        }
+    }
+    let a = start
+    let b = fields.len
+    loop k in 0..FORGE_FA_NCAP { if a < b and fields[a] == ' ' { a = a + 1 } }
+    loop k in 0..FORGE_FA_NCAP { if b > a and fields[b - 1] == ' ' { b = b - 1 } }
+    if b > a { forge_validates(table, fields[a..b], rule) }
+}
+
+// --- model context (set once per init function, removes table repetition) ---
+
+let g_forge_model_buf: &i8 = 0
+let g_forge_model_len: i64  = 0
+
+fn forge_model_ctx_init() {
+    if g_forge_model_buf != 0 { ret }
+    g_forge_model_buf = alloc_pages(1)
+}
+
+fn forge_model(table: []i8) {
+    forge_model_ctx_init()
+    let tl = table.len
+    if tl > 64 { tl = 64 }
+    loop i in 0..tl { g_forge_model_buf[i] = table[i] }
+    g_forge_model_len = tl
+}
+
+fn forge_field(fields: []i8, rule: i64) {
+    forge_validates_fields(g_forge_model_buf[0..g_forge_model_len], fields, rule)
+}
+
+fn forge_field_param(field: []i8, rule: i64, param: []i8) {
+    forge_validates_param(g_forge_model_buf[0..g_forge_model_len], field, rule, param)
+}
+
+fn forge_field_length(field: []i8, min: i64, max: i64) {
+    forge_validates_length(g_forge_model_buf[0..g_forge_model_len], field, min, max)
+}
+
+fn forge_field_min(field: []i8, min: i64) {
+    forge_validates_min_len(g_forge_model_buf[0..g_forge_model_len], field, min)
+}
+
+fn forge_field_absence(fields: []i8) {
+    forge_validates_fields(g_forge_model_buf[0..g_forge_model_len], fields, FORGE_V_ABSENCE)
+}
+
+fn forge_field_url(fields: []i8) {
+    forge_validates_fields(g_forge_model_buf[0..g_forge_model_len], fields, FORGE_V_URL)
+}
+
+fn forge_field_acceptance(fields: []i8) {
+    forge_validates_fields(g_forge_model_buf[0..g_forge_model_len], fields, FORGE_V_ACCEPTANCE)
+}
+
+fn forge_field_exact(field: []i8, n: i64) {
+    let pb: &i8 = alloc_pages(1)
+    let pn = fmt_i64(pb, n)
+    forge_field_param(field, FORGE_V_EXACT_LEN, pb[0..pn])
+}
+
+fn forge_field_gt(field: []i8, n: i64) {
+    let pb: &i8 = alloc_pages(1)
+    let pn = fmt_i64(pb, n)
+    forge_field_param(field, FORGE_V_GT, pb[0..pn])
+}
+
+fn forge_field_gte(field: []i8, n: i64) {
+    let pb: &i8 = alloc_pages(1)
+    let pn = fmt_i64(pb, n)
+    forge_field_param(field, FORGE_V_GTE, pb[0..pn])
+}
+
+fn forge_field_lt(field: []i8, n: i64) {
+    let pb: &i8 = alloc_pages(1)
+    let pn = fmt_i64(pb, n)
+    forge_field_param(field, FORGE_V_LT, pb[0..pn])
+}
+
+fn forge_field_lte(field: []i8, n: i64) {
+    let pb: &i8 = alloc_pages(1)
+    let pn = fmt_i64(pb, n)
+    forge_field_param(field, FORGE_V_LTE, pb[0..pn])
+}
+
+fn forge_field_equal_to(field: []i8, n: i64) {
+    let pb: &i8 = alloc_pages(1)
+    let pn = fmt_i64(pb, n)
+    forge_field_param(field, FORGE_V_EQUAL_TO, pb[0..pn])
+}
+
+fn forge_field_confirm(field: []i8, confirm_field: []i8) {
+    forge_field_param(field, FORGE_V_CONFIRMATION, confirm_field)
+}
+
+// --- execution (called automatically from forge_attrs_insert / forge_attrs_update) ---
+
+fn forge_attrs_validate(table: []i8) -> bool {
+    forge_v_init()
+    let e = forge_errors_new()
+    loop i in 0..g_forge_v_count {
+        let r: &ForgeVRule = (g_forge_v_store as i64 + i * FORGE_V_RULE_STRIDE) as &ForgeVRule
+        if not r.used { continue }
+        if not forge_slice_eq(r.table[0..r.tlen], table) { continue }
+        let field = r.field[0..r.flen]
+        let val   = forge_fa_get(field)
+        let param = r.param[0..r.plen]
+        if r.rule == FORGE_V_PRESENCE     { forge_validate_presence(e, field, val) }
+        if r.rule == FORGE_V_ABSENCE      { forge_validate_absence(e, field, val) }
+        if r.rule == FORGE_V_EMAIL        { forge_validate_format_email(e, field, val) }
+        if r.rule == FORGE_V_URL          { forge_validate_url(e, field, val) }
+        if r.rule == FORGE_V_NUMERICALITY { forge_validate_numericality(e, field, val) }
+        if r.rule == FORGE_V_ACCEPTANCE   { forge_validate_acceptance(e, field, val) }
+        if r.rule == FORGE_V_INCLUSION    { forge_validate_inclusion(e, field, val, param) }
+        if r.rule == FORGE_V_EXCLUSION    { forge_validate_exclusion(e, field, val, param) }
+        if r.rule == FORGE_V_MIN_LEN      { forge_validate_min_length(e, field, val, str_to_i64(param)) }
+        if r.rule == FORGE_V_MAX_LEN      { forge_validate_max_length(e, field, val, str_to_i64(param)) }
+        if r.rule == FORGE_V_EXACT_LEN    { forge_validate_exact_length(e, field, val, str_to_i64(param)) }
+        if r.rule == FORGE_V_GT           { forge_validate_gt(e, field, val, str_to_i64(param)) }
+        if r.rule == FORGE_V_GTE          { forge_validate_gte(e, field, val, str_to_i64(param)) }
+        if r.rule == FORGE_V_LT           { forge_validate_lt(e, field, val, str_to_i64(param)) }
+        if r.rule == FORGE_V_LTE          { forge_validate_lte(e, field, val, str_to_i64(param)) }
+        if r.rule == FORGE_V_EQUAL_TO     { forge_validate_equal_to(e, field, val, str_to_i64(param)) }
+        if r.rule == FORGE_V_CONFIRMATION { forge_validate_confirmation(e, field, val, forge_fa_get(param)) }
+    }
+    g_forge_last_errors = e
+    ret not forge_errors_any(e)
+}
+
 // =============================================================================
 // Section C — Model Callbacks
 // =============================================================================
@@ -3665,8 +4162,10 @@ const FORGE_CB_BEFORE_CREATE = 3
 const FORGE_CB_AFTER_CREATE  = 4
 const FORGE_CB_BEFORE_UPDATE = 5
 const FORGE_CB_AFTER_UPDATE  = 6
-const FORGE_CB_BEFORE_DELETE = 7
-const FORGE_CB_AFTER_DELETE  = 8
+const FORGE_CB_BEFORE_DELETE  = 7
+const FORGE_CB_AFTER_DELETE   = 8
+const FORGE_CB_AFTER_COMMIT   = 9
+const FORGE_CB_AFTER_ROLLBACK = 10
 
 const FORGE_MAX_CALLBACKS    = 64
 const FORGE_CB_TABLE_CAP     = 32
@@ -3885,6 +4384,7 @@ fn forge_tx_rollback(fd: i32) {
 // =============================================================================
 
 fn forge_soft_delete(table: []i8, id: []i8) -> bool {
+    if not forge_callback_run(table, FORGE_CB_BEFORE_DELETE, 0) { ret false }
     let buf: &i8 = alloc_pages(1)
     let pos = 0i64
     let p1 = "UPDATE "
@@ -3896,7 +4396,14 @@ fn forge_soft_delete(table: []i8, id: []i8) -> bool {
     let esc_len = forge_db_escape_str(id, buf + pos)
     pos = pos + esc_len
     loop i in 0..p3.len { buf[pos] = p3[i]  pos = pos + 1 }
-    ret forge_db_exec(buf[0..pos])
+    let ok = forge_db_exec(buf[0..pos])
+    if ok {
+        forge_callback_run(table, FORGE_CB_AFTER_DELETE, 0)
+        forge_callback_run(table, FORGE_CB_AFTER_COMMIT, 0)
+    } else {
+        forge_callback_run(table, FORGE_CB_AFTER_ROLLBACK, 0)
+    }
+    ret ok
 }
 
 fn forge_restore(table: []i8, id: []i8) -> bool {
@@ -3927,6 +4434,138 @@ fn forge_purge(table: []i8, id: []i8) -> bool {
     pos = pos + esc_len
     loop i in 0..p3.len { buf[pos] = p3[i]  pos = pos + 1 }
     ret forge_db_exec(buf[0..pos])
+}
+
+// forge_touch — UPDATE table SET updated_at = NOW() WHERE id = '...'
+// Skips validations and callbacks (like Rails touch).
+fn forge_touch(table: []i8, id: []i8) -> bool {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "UPDATE "
+    let p2 = " SET updated_at = NOW() WHERE id = '"
+    loop i in 0..p1.len    { buf[pos] = p1[i]    pos = pos + 1 }
+    loop i in 0..table.len { buf[pos] = table[i] pos = pos + 1 }
+    loop i in 0..p2.len    { buf[pos] = p2[i]    pos = pos + 1 }
+    let en = forge_db_escape_str(id, buf + pos)
+    pos = pos + en
+    buf[pos] = '\''  pos = pos + 1
+    ret forge_db_exec(buf[0..pos])
+}
+
+// forge_update_column — single-column UPDATE, bypasses validations and callbacks.
+fn forge_update_column(table: []i8, id: []i8, col: []i8, val: []i8) -> bool {
+    let buf: &i8 = alloc_pages(2)
+    let pos = 0i64
+    let p1 = "UPDATE "
+    let p2 = " SET "
+    let p3 = " = '"
+    let p4 = "' WHERE id = '"
+    loop i in 0..p1.len    { buf[pos] = p1[i]    pos = pos + 1 }
+    loop i in 0..table.len { buf[pos] = table[i] pos = pos + 1 }
+    loop i in 0..p2.len    { buf[pos] = p2[i]    pos = pos + 1 }
+    loop i in 0..col.len   { buf[pos] = col[i]   pos = pos + 1 }
+    loop i in 0..p3.len    { buf[pos] = p3[i]    pos = pos + 1 }
+    let vn = forge_db_escape_str(val, buf + pos)
+    pos = pos + vn
+    loop i in 0..p4.len    { buf[pos] = p4[i]    pos = pos + 1 }
+    let en = forge_db_escape_str(id, buf + pos)
+    pos = pos + en
+    buf[pos] = '\''  pos = pos + 1
+    ret forge_db_exec(buf[0..pos])
+}
+
+// forge_hard_delete — DELETE with BEFORE/AFTER_DELETE + AFTER_COMMIT callbacks.
+// Like Rails destroy; use forge_purge to skip callbacks.
+fn forge_hard_delete(table: []i8, id: []i8) -> bool {
+    if not forge_callback_run(table, FORGE_CB_BEFORE_DELETE, 0) { ret false }
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let p1 = "DELETE FROM "
+    let p2 = " WHERE id = '"
+    loop i in 0..p1.len    { buf[pos] = p1[i]    pos = pos + 1 }
+    loop i in 0..table.len { buf[pos] = table[i] pos = pos + 1 }
+    loop i in 0..p2.len    { buf[pos] = p2[i]    pos = pos + 1 }
+    let en = forge_db_escape_str(id, buf + pos)
+    pos = pos + en
+    buf[pos] = '\''  pos = pos + 1
+    let ok = forge_db_exec(buf[0..pos])
+    if ok {
+        forge_callback_run(table, FORGE_CB_AFTER_DELETE, 0)
+        forge_callback_run(table, FORGE_CB_AFTER_COMMIT, 0)
+    } else {
+        forge_callback_run(table, FORGE_CB_AFTER_ROLLBACK, 0)
+    }
+    ret ok
+}
+
+// forge_find_or_create_by — returns existing row or inserts a minimal record.
+fn forge_find_or_create_by(table: []i8, col: []i8, val: []i8) -> &ForgeResult {
+    let res = forge_find_by(table, col, val)
+    if res.count > 0 { ret res }
+    let a = forge_attrs_new()
+    forge_attrs_set(a, col, val)
+    forge_attrs_insert(a, table)
+    ret forge_find_by(table, col, val)
+}
+
+// forge_attrs_upsert — INSERT ... ON CONFLICT (col) DO UPDATE SET ...
+fn forge_attrs_upsert(a: &ForgeAttrs, table: []i8, conflict_col: []i8) -> bool {
+    if not forge_attrs_validate(table) { ret false }
+    if not forge_callback_run(table, FORGE_CB_BEFORE_SAVE, 0) { ret false }
+    let buf: &i8 = alloc_pages(8)
+    let pos = 0i64
+    let p1 = "INSERT INTO "
+    let p2 = " ("
+    let p3 = ") VALUES ("
+    let p4 = ") ON CONFLICT ("
+    let p5 = ") DO UPDATE SET "
+    loop i in 0..p1.len          { buf[pos] = p1[i]           pos = pos + 1 }
+    loop i in 0..table.len       { buf[pos] = table[i]        pos = pos + 1 }
+    loop i in 0..p2.len          { buf[pos] = p2[i]           pos = pos + 1 }
+    loop i in 0..a.kpos          { buf[pos] = a.kbuf[i]       pos = pos + 1 }
+    loop i in 0..p3.len          { buf[pos] = p3[i]           pos = pos + 1 }
+    loop i in 0..a.vpos          { buf[pos] = a.vbuf[i]       pos = pos + 1 }
+    loop i in 0..p4.len          { buf[pos] = p4[i]           pos = pos + 1 }
+    loop i in 0..conflict_col.len{ buf[pos] = conflict_col[i] pos = pos + 1 }
+    loop i in 0..p5.len          { buf[pos] = p5[i]           pos = pos + 1 }
+    loop i in 0..a.spos          { buf[pos] = a.sbuf[i]       pos = pos + 1 }
+    let ok = forge_db_exec(buf[0..pos])
+    if ok {
+        forge_callback_run(table, FORGE_CB_AFTER_SAVE, 0)
+        forge_callback_run(table, FORGE_CB_AFTER_COMMIT, 0)
+    } else {
+        forge_callback_run(table, FORGE_CB_AFTER_ROLLBACK, 0)
+    }
+    ret ok
+}
+
+// Transactions — wraps PostgreSQL BEGIN / COMMIT / ROLLBACK.
+fn forge_begin()    -> bool { ret forge_db_exec("BEGIN") }
+fn forge_commit()   -> bool { ret forge_db_exec("COMMIT") }
+fn forge_rollback() -> bool { ret forge_db_exec("ROLLBACK") }
+
+// forge_transaction — runs fn_ptr inside a BEGIN/COMMIT block.
+// fn_ptr signature: fn(i64) -> bool  — return false to trigger rollback.
+fn forge_transaction(fn_ptr: i64) -> bool {
+    if not forge_begin() { ret false }
+    let ok = call_fn(fn_ptr, 0) as bool
+    if ok { ret forge_commit() }
+    forge_rollback()
+    ret false
+}
+
+// forge_secure_password_set — hashes password via bcrypt and sets "password_hash".
+fn forge_secure_password_set(a: &ForgeAttrs, password: []i8) -> &ForgeAttrs {
+    let hash = forge_bcrypt_hash(password)
+    ret forge_attrs_set(a, "password_hash", hash)
+}
+
+// forge_secure_password_verify — looks up "password_hash" column and verifies.
+fn forge_secure_password_verify(table: []i8, id: []i8, password: []i8) -> bool {
+    let res = forge_find(table, id)
+    if res.count == 0 { ret false }
+    let hash = forge_result_col(res, 0, "password_hash")
+    ret forge_bcrypt_verify(password, hash)
 }
 
 // =============================================================================
@@ -4113,10 +4752,12 @@ fn forge_attrs_new() -> &ForgeAttrs {
     a.vpos  = 0
     a.spos  = 0
     a.empty = true
+    forge_fa_reset()
     ret a
 }
 
 fn forge_attrs_set(a: &ForgeAttrs, key: []i8, val: []i8) -> &ForgeAttrs {
+    forge_fa_store(key, val)
     if !a.empty {
         a.kbuf[a.kpos] = ','   a.kpos = a.kpos + 1
         a.kbuf[a.kpos] = ' '   a.kpos = a.kpos + 1
@@ -4141,6 +4782,9 @@ fn forge_attrs_set(a: &ForgeAttrs, key: []i8, val: []i8) -> &ForgeAttrs {
 }
 
 fn forge_attrs_insert(a: &ForgeAttrs, table: []i8) -> bool {
+    if not forge_attrs_validate(table)                          { ret false }
+    if not forge_callback_run(table, FORGE_CB_BEFORE_SAVE, 0)   { ret false }
+    if not forge_callback_run(table, FORGE_CB_BEFORE_CREATE, 0) { ret false }
     let buf: &i8 = alloc_pages(8)
     let pos = 0i64
     let p1 = "INSERT INTO "; let p2 = " ("; let p3 = ") VALUES ("; let p4 = ")"
@@ -4151,10 +4795,21 @@ fn forge_attrs_insert(a: &ForgeAttrs, table: []i8) -> bool {
     loop i in 0..p3.len    { buf[pos] = p3[i]       pos = pos + 1 }
     loop i in 0..a.vpos    { buf[pos] = a.vbuf[i]   pos = pos + 1 }
     loop i in 0..p4.len    { buf[pos] = p4[i]       pos = pos + 1 }
-    ret forge_db_exec(buf[0..pos])
+    let ok = forge_db_exec(buf[0..pos])
+    if ok {
+        forge_callback_run(table, FORGE_CB_AFTER_CREATE, 0)
+        forge_callback_run(table, FORGE_CB_AFTER_SAVE, 0)
+        forge_callback_run(table, FORGE_CB_AFTER_COMMIT, 0)
+    } else {
+        forge_callback_run(table, FORGE_CB_AFTER_ROLLBACK, 0)
+    }
+    ret ok
 }
 
 fn forge_attrs_update(a: &ForgeAttrs, table: []i8, id: []i8) -> bool {
+    if not forge_attrs_validate(table)                          { ret false }
+    if not forge_callback_run(table, FORGE_CB_BEFORE_SAVE, 0)   { ret false }
+    if not forge_callback_run(table, FORGE_CB_BEFORE_UPDATE, 0) { ret false }
     let buf: &i8 = alloc_pages(8)
     let pos = 0i64
     let p1 = "UPDATE "; let p2 = " SET "; let p3 = ", updated_at = NOW() WHERE id = '"
@@ -4166,7 +4821,15 @@ fn forge_attrs_update(a: &ForgeAttrs, table: []i8, id: []i8) -> bool {
     let en = forge_db_escape_str(id, buf + pos)
     pos = pos + en
     buf[pos] = '\''   pos = pos + 1
-    ret forge_db_exec(buf[0..pos])
+    let ok = forge_db_exec(buf[0..pos])
+    if ok {
+        forge_callback_run(table, FORGE_CB_AFTER_UPDATE, 0)
+        forge_callback_run(table, FORGE_CB_AFTER_SAVE, 0)
+        forge_callback_run(table, FORGE_CB_AFTER_COMMIT, 0)
+    } else {
+        forge_callback_run(table, FORGE_CB_AFTER_ROLLBACK, 0)
+    }
+    ret ok
 }
 
 // =============================================================================
@@ -4343,6 +5006,57 @@ fn forge_page_meta_json(total: i64, page: i64, per: i64) -> []i8 {
     loop i in 0..nl { buf[pos] = nb[i]  pos = pos + 1 }
     buf[pos] = '}'  pos = pos + 1
     ret buf[0..pos]
+}
+
+// ctx_permit — strong parameters: extract and whitelist form fields from context.
+// Returns a ForgeAttrs builder ready for .insert() or .update().
+//   let attrs = ctx_permit(ctx, "title, body, author")
+//   if attrs.insert("posts") { ... }
+fn ctx_permit(ctx: i64, fields: []i8) -> &ForgeAttrs {
+    let a = forge_attrs_new()
+    let start = 0i64
+    loop i in 0..fields.len {
+        if fields[i] == ',' {
+            let fa = start    let fb = i
+            loop k in 0..64 { if fa < fb and fields[fa] == ' ' { fa = fa + 1 } }
+            loop k in 0..64 { if fb > fa and fields[fb - 1] == ' ' { fb = fb - 1 } }
+            if fb > fa { forge_attrs_set(a, fields[fa..fb], ctx_form(ctx, fields[fa..fb])) }
+            start = i + 1
+        }
+    }
+    let fa = start    let fb = fields.len
+    loop k in 0..64 { if fa < fb and fields[fa] == ' ' { fa = fa + 1 } }
+    loop k in 0..64 { if fb > fa and fields[fb - 1] == ' ' { fb = fb - 1 } }
+    if fb > fa { forge_attrs_set(a, fields[fa..fb], ctx_form(ctx, fields[fa..fb])) }
+    ret a
+}
+
+// ctx_save_errors — sets the "alert" flash from forge_last_errors().
+// Use in the failure branch after a failed insert/update.
+fn ctx_save_errors(ctx: i64) {
+    let errs = forge_last_errors()
+    if forge_errors_any(errs) {
+        ctx_flash_set(ctx, "alert", forge_errors_json(errs))
+    } else {
+        ctx_flash_set(ctx, "alert", "Save failed.")
+    }
+}
+
+// JSON response helpers — shorthand for API controllers.
+fn ctx_json_ok     (ctx: i64, json: []i8) { ctx_json(ctx, 200, json) }
+fn ctx_json_created(ctx: i64, json: []i8) { ctx_json(ctx, 201, json) }
+
+// ctx_json_errors — 422 Unprocessable Entity with forge_last_errors() body.
+fn ctx_json_errors(ctx: i64) {
+    let errs = forge_last_errors()
+    ctx_json(ctx, 422, forge_errors_json(errs))
+}
+
+// ctx_respond_to — branch on request format (Accept header or ?format= param).
+// html_fn and json_fn have signature fn(i64) — receive ctx as argument.
+fn ctx_respond_to(ctx: i64, html_fn: i64, json_fn: i64) {
+    let fmt = ctx_format(ctx)
+    if forge_slice_eq(fmt, "json") { call_fn(json_fn, ctx) } else { call_fn(html_fn, ctx) }
 }
 
 // =============================================================================

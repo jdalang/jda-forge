@@ -175,7 +175,7 @@ Additional libraries are added with `lib` lines. See [libraries.md](libraries.md
 
 **`config/routes.jda`** is the routes DSL you edit — declare resources, namespaces, scopes, and custom routes here. `forge build` compiles it into `_build/routes.jda` (path helpers + `routes()` function) and auto-generates `_build/controllers.jda` by scanning your controllers. You never edit the `_build/` files.
 
-**`main.jda`** is the entry point. It calls `load_env`, creates the app, registers middleware, calls `routes(app)`, runs migrations, and starts listening.
+**`main.jda`** is the entry point. It calls `load_env`, creates the app, registers middleware, calls model validation init functions (e.g. `post_validations_init()`), calls `routes(app)`, runs migrations, and starts listening.
 
 **`.env`** holds defaults that are safe to commit — typically just `FORGE_ENV=development` and `APP_PORT=8080`. Per-environment files (`.env.development`, `.env.production`) hold secrets and are gitignored.
 
@@ -205,7 +205,7 @@ Here is where each kind of code lives and why.
 
 | Layer | File | Functions |
 |---|---|---|
-| Model | `app/models/post.jda` | `post_find`, `post_all`, `post_create`, `post_validate` |
+| Model | `app/models/post.jda` | `post_find`, `post_all`, `post_create`, `post_validations_init` |
 | Controller | `app/controllers/posts_controller.jda` | `posts_index`, `posts_show`, `posts_create`, … |
 | View | `app/views/posts/index.html.jda` | `view_posts_index` |
 | Helper | `app/helpers/application_helper.jda` | `h`, `link_to`, `pluralize` |
@@ -378,7 +378,7 @@ This creates:
 ```
 db/migrate/001_create_posts.sql          # CREATE TABLE posts (...)
 app/models/post.jda                      # post_find, post_all, post_create, post_update,
-                                         # post_delete, post_validate
+                                         # post_delete, post_validations_init
 app/controllers/posts_controller.jda     # 7 thin action functions
 app/views/posts/index.html.jda           # view_posts_index
 app/views/posts/show.html.jda            # view_posts_show
@@ -422,17 +422,21 @@ Run `forge server`. The full CRUD interface for posts is now live:
 ```jda
 // app/models/post.jda
 
-fn post_validate(title: []i8, body: []i8, author: []i8) -> &ForgeErrors {
-    let e = forge_errors_new()
-    forge_validate_presence(e, "title",  title)
-    forge_validate_length  (e, "title",  title, 2, 255)
-    forge_validate_presence(e, "body",   body)
-    forge_validate_presence(e, "author", author)
-    ret e
+fn post_validations_init() {
+    forge_model("posts")
+    forge_field       ("title, body, author", FORGE_V_PRESENCE)
+    forge_field_length("title",               2, 255)
+    forge_field_min   ("body",                10)
+}
+
+fn post_published() -> &ForgeResult {
+    ret forge_q("posts").where_eq("published", "true").order_desc("created_at").exec()
 }
 ```
 
-That's the entire file. Every time you run `forge build`, Forge reads the migration and emits `_build/models.jda` automatically:
+Validations are declared once at startup (call `post_validations_init()` in `main.jda`) and fire automatically before every insert and update. That's the entire model file.
+
+Every time you run `forge build`, Forge reads the migration and emits `_build/models.jda` automatically:
 
 ```jda
 // _build/models.jda  — auto-generated, do not edit
@@ -445,6 +449,10 @@ fn post_where(col: []i8, val: []i8)   -> &ForgeQuery  { ret forge_q("posts").whe
 fn post_count()                        -> i64          { ret forge_q("posts").count() }
 fn post_exists(id: []i8)              -> bool         { ret forge_q("posts").where_eq("id", id).exists() }
 fn post_delete(id: []i8)              -> bool         { ret forge_soft_delete("posts", id) }
+fn post_destroy(id: []i8)             -> bool         { ret forge_hard_delete("posts", id) }
+fn post_touch(id: []i8)               -> bool         { ret forge_touch("posts", id) }
+fn post_update_column(id: []i8, col: []i8, val: []i8) -> bool { ret forge_update_column("posts", id, col, val) }
+fn post_find_or_create_by(col: []i8, val: []i8) -> &ForgeResult { ret forge_find_or_create_by("posts", col, val) }
 fn post_create(title: []i8, body: []i8, author: []i8) -> bool {
     ret forge_attrs_new()
         .set("title",  title)
@@ -459,11 +467,13 @@ fn post_update(id: []i8, title: []i8, body: []i8, author: []i8) -> bool {
         .set("author", author)
         .update("posts", id)
 }
+fn post_create_from(attrs: &ForgeAttrs) -> bool { ret forge_attrs_insert(attrs, "posts") }
+fn post_update_from(id: []i8, attrs: &ForgeAttrs) -> bool { ret forge_attrs_update(attrs, "posts", id) }
 ```
 
 You never write or touch this file.
 
-`forge_q("posts")` automatically excludes soft-deleted rows (`deleted_at IS NOT NULL`). Chain any query method off `post_q()`:
+`forge_q("posts")` automatically excludes soft-deleted rows (`WHERE deleted_at IS NULL`). Chain any query method off `post_q()`:
 
 ```jda
 let res = post_q()
@@ -519,12 +529,17 @@ All of these return `[]i8` (a byte slice). An empty slice (`.len == 0`) means th
 | Function | What it sends |
 |---|---|
 | `ctx_html(ctx, status, body)` | HTML response |
+| `ctx_render(ctx, body)` | HTML 200 (shorthand for `ctx_html(ctx, 200, body)`) |
 | `ctx_json(ctx, status, body)` | JSON response (`Content-Type: application/json`) |
+| `ctx_json_ok(ctx, json)` | JSON 200 |
+| `ctx_json_created(ctx, json)` | JSON 201 |
+| `ctx_json_errors(ctx)` | JSON 422 with `forge_last_errors()` body |
 | `ctx_text(ctx, status, body)` | Plain text response |
 | `ctx_redirect(ctx, path)` | 302 redirect |
 | `ctx_not_found(ctx)` | 404 response |
 | `ctx_too_many_requests(ctx)` | 429 response |
 | `ctx_set_header(ctx, name, val)` | Set a response header before sending |
+| `ctx_respond_to(ctx, html_fn, json_fn)` | Branch on Accept header — call html_fn or json_fn |
 
 ### A JSON API endpoint
 
@@ -532,15 +547,25 @@ Render all columns of a result set in one call:
 
 ```jda
 fn api_posts_index(ctx: i64) {
-    ctx_json_result(ctx, post_all())
+    ctx_json_ok(ctx, forge_result_to_json(post_all()))
 }
 
 fn api_post_show(ctx: i64) {
-    ctx_json_row(ctx, post_find(ctx_param(ctx, "id")))
+    let post = post_find(ctx_param(ctx, "id"))
+    if post.count == 0 { ctx_not_found(ctx)  ret }
+    ctx_json_ok(ctx, forge_row_to_json(post, 0))
+}
+
+fn api_posts_create(ctx: i64) {
+    if post_create_from(ctx_permit(ctx, "title, body, author")) {
+        ctx_json_created(ctx, "{\"ok\":true}")
+        ret
+    }
+    ctx_json_errors(ctx)
 }
 ```
 
-`ctx_json_result` serializes every column of every row automatically. `ctx_json_row` serializes the first row as a JSON object.
+`ctx_permit(ctx, fields)` extracts and whitelists the named form fields from the request. `ctx_json_errors` sends 422 with the validation error JSON automatically.
 
 **Selective columns — `ForgeJson` builder:**
 
@@ -552,7 +577,7 @@ fn api_post_show(ctx: i64) {
     j.field("id",    forge_result_col(post, 0, "id"))
      .field("title", forge_result_col(post, 0, "title"))
      .field_raw("published", forge_result_col(post, 0, "published"))
-    ctx_json(ctx, 200, j.done())
+    ctx_json_ok(ctx, j.done())
 }
 ```
 
@@ -570,7 +595,7 @@ fn posts_show(ctx: i64) {
         ctx_not_found(ctx)
         ret
     }
-    ctx_render(ctx, view_posts_show(post))
+    ctx_render(ctx, view_posts_show(ctx, post))
 }
 ```
 

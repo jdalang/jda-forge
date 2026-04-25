@@ -485,9 +485,29 @@ let valid = forge_bcrypt_verify(password, hash)  // returns bool
 
 `forge_bcrypt_hash` uses bcrypt with an appropriate work factor. The returned hash string is self-contained and includes the salt — store it directly in the database column.
 
-### Usage pattern
+### forge_secure_password_set / forge_secure_password_verify
 
-`user_create` is a custom function in `app/models/user.jda` — it hashes the password before calling the auto-generated insert:
+Convenience wrappers that mirror Rails `has_secure_password`. The column must be named `password_hash`.
+
+```jda
+fn user_create(email: []i8, password: []i8) -> bool {
+    ret forge_attrs_new()
+        .set("email", email)
+        .secure_password(password)     // UFCS: forge_secure_password_set(a, password)
+        .insert("users")
+}
+
+fn user_authenticate(email: []i8, password: []i8) -> bool {
+    let res = forge_q("users").where_eq("email", email).first()
+    if res.count == 0 { ret false }
+    let id = forge_result_col(res, 0, "id")
+    ret forge_secure_password_verify("users", id, password)
+}
+```
+
+### Manual usage pattern
+
+For full control, call the bcrypt functions directly:
 
 ```jda
 fn user_create(email: []i8, password: []i8) -> bool {
