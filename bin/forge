@@ -890,10 +890,10 @@ gen_scaffold() {
     mkdir -p test
     cat > "test/test_${snake}s.jda" <<JDA
 fn test_${snake}s_index() {
-    forge_assert_status(forge_test_get(${table}_path), 200)
+    forge_get(${table}_path).ok(200)
 }
 fn test_${snake}_not_found() {
-    forge_assert_status(forge_test_get(${snake}_path("99999")), 404)
+    forge_get(${snake}_path("99999")).ok(404)
 }
 JDA
     ok "created test/test_${snake}s.jda"

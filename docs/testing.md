@@ -6,85 +6,79 @@ Set `FORGE_ENV=test` and write plain functions whose names start with `test_`.
 
 ---
 
-## Firing requests
+## The one-liner pattern
 
-Four functions cover the standard HTTP methods. Each returns a response handle you pass to assertion functions.
-
-```jda
-let res = forge_test_get   ("/posts")
-let res = forge_test_post  ("/posts", "title=Hello&body=World&author=Alice")
-let res = forge_test_put   ("/posts/1", "title=Updated")
-let res = forge_test_delete("/posts/1")
-```
-
-### Using path helpers
-
-Scaffold-generated routes files include path helpers. Use them in tests instead of hard-coded strings so that renaming a resource only requires changing the route definition, not every test:
+Each test is typically a single line: a request paired with a chained assertion.
 
 ```jda
-let res = forge_test_get   (posts_path)
-let res = forge_test_post  (posts_path, "title=Hello&body=World&author=Alice")
-let res = forge_test_get   (post_path("1"))
-let res = forge_test_put   (post_path("1"), "title=Updated")
-let res = forge_test_delete(post_path("1"))
-let res = forge_test_get   (new_post_path)
-let res = forge_test_get   (edit_post_path("1"))
+forge_get(posts_path).ok(200)
+forge_get(posts_path).ok(200).has("Blog Posts")
+forge_post(posts_path, body).redirect()
+forge_delete(post_path("1")).redirect()
+forge_get(post_path("99999")).ok(404)
 ```
 
-The helpers are plain functions defined at the top of each routes file. They are in scope for the entire build because all source files are concatenated before compilation.
+`forge_get`, `forge_post`, `forge_put`, and `forge_delete` send a request and return a response. Assertion methods chain off the response via UFCS:
 
-- `forge_test_post`, `forge_test_put`, and `forge_test_delete` automatically attach a valid CSRF token, so you do not need to obtain or pass one in tests.
-- The body string can be form-encoded (`key=value&key2=value2`) or a raw JSON string — pass whatever the handler expects.
-- Path parameters, query strings, and everything else work exactly as they do in production.
+| Method | What it asserts |
+|---|---|
+| `.ok(code)` | Status matches `code` exactly |
+| `.redirect()` | Any 3xx status |
+| `.has(s)` | Body contains substring `s` |
+| `.not_has(s)` | Body does not contain substring `s` |
+
+All assertion methods return the response so you can chain:
+
+```jda
+forge_get("/api/users").ok(200).has("\"email\"").not_has("\"password\"")
+```
+
+POST and PUT automatically attach a valid CSRF token.
 
 ---
 
-## Assertions
+## Path helpers
 
-### Status code
-
-```jda
-forge_assert_status(res, 200)    // exact match — fails if status differs
-forge_assert_status(res, 404)
-forge_assert_status(res, 201)
-```
-
-### Redirect
+Scaffold generates path constants and helpers for each resource. Use them instead of hard-coded strings:
 
 ```jda
-forge_assert_redirect(res)       // passes for any 3xx response
+// Constants — no call needed
+forge_get(posts_path)        // GET /posts
+forge_get(new_post_path)     // GET /posts/new
+
+// Functions — pass the id
+forge_get(post_path("1"))         // GET /posts/1
+forge_get(edit_post_path("1"))    // GET /posts/1/edit
+forge_delete(post_path("1"))      // DELETE /posts/1
 ```
 
-Use this when the exact target URL is not important, or when you only care that the handler redirected rather than rendering inline.
+The helpers are defined at the top of each routes file and are in scope for the whole build.
 
-### Content-Type
+---
+
+## Sending a body
+
+Pass form-encoded or JSON strings as the second argument to `forge_post` / `forge_put`:
 
 ```jda
-forge_assert_json(res)           // Content-Type must be application/json
+// Form data
+forge_post(posts_path, "title=Hello&body=Long+enough+body&author=Alice").redirect()
+
+// JSON — Content-Type: application/json is set automatically when body starts with { or [
+forge_post("/api/users", "{\"email\":\"test@example.com\"}").ok(201)
 ```
-
-### Body content
-
-```jda
-forge_assert_contains    (res, "Hello")    // body contains substring
-forge_assert_not_contains(res, "error")   // body does not contain substring
-```
-
-Both are case-sensitive. Pass a literal string or any `[]i8` slice.
 
 ---
 
 ## Reading the response
 
-When you need to inspect the response directly rather than through assertions:
+When you need to inspect beyond assertions:
 
 ```jda
-let body   = forge_test_res_body  (res)                    // []i8
-let status = forge_test_res_status(res)                    // i64
-let header = forge_test_res_header(res, "Content-Type")    // []i8
+let res    = forge_get(posts_path)
+let body   = res.body    // []i8
+let status = res.status  // i32
 ```
-
-`forge_test_res_body` returns the full response body as a byte slice. Use `forge_assert_contains` for simple substring checks; read the body directly when you need to parse it or extract a value.
 
 ---
 
@@ -92,10 +86,10 @@ let header = forge_test_res_header(res, "Content-Type")    // []i8
 
 When `FORGE_ENV=test`:
 
-- **SMTP is disabled.** Emails are captured in memory and never sent. Your handlers can call mail functions without side effects.
-- **Database** uses `DATABASE_URL` from `.env.test`. This should point to a dedicated test database that you can freely wipe between runs.
+- **SMTP is disabled.** Emails are captured in memory and never sent.
+- **Database** uses `DATABASE_URL` from `.env.test`. Point it at a dedicated test database.
 - **Sessions** work normally — the session store is active and cookies are tracked across the in-memory request chain.
-- **CSRF tokens** are automatically included by `forge_test_post`, `forge_test_put`, and `forge_test_delete`.
+- **CSRF tokens** are automatically included by `forge_post`, `forge_put`, and `forge_delete`.
 
 ---
 
@@ -115,44 +109,38 @@ The `test_runner` binary is built by `forge test` and discovers all functions na
 
 ## Test file structure
 
-Test files live in `test/` and are named after the resource or feature they cover.
-
 ```jda
 // test/test_posts.jda
 
 fn test_posts_index() {
-    let res = forge_test_get(posts_path)
-    forge_assert_status(res, 200)
+    forge_get(posts_path).ok(200).has("Posts")
 }
 
 fn test_post_create_valid() {
-    let res = forge_test_post(posts_path, "title=Hello&body=Long+enough+body&author=Alice")
-    forge_assert_redirect(res)
+    let body = "title=Hello&body=Long+enough+body&author=Alice"
+    forge_post(posts_path, body).redirect()
 }
 
 fn test_post_create_missing_title() {
-    let res = forge_test_post(posts_path, "title=&body=Some+body&author=Alice")
-    forge_assert_redirect(res)   // redirects to new_post_path with flash
+    forge_post(posts_path, "title=&body=Some+body&author=Alice").redirect()
 }
 
 fn test_post_not_found() {
-    let res = forge_test_get(post_path("99999"))
-    forge_assert_status(res, 404)
+    forge_get(post_path("99999")).ok(404)
 }
 
 fn test_post_delete() {
-    let res = forge_test_delete(post_path("1"))
-    forge_assert_redirect(res)
+    forge_delete(post_path("1")).redirect()
 }
 ```
 
-One file per resource is a reasonable default. There is no required structure beyond placing files under `test/` and naming test functions `test_*`.
+One file per resource. No required structure beyond `test/` and `test_*` function names.
 
 ---
 
 ## Database in tests
 
-Tests hit a real database. You are responsible for controlling its state. The standard approach is a `test_setup` function that truncates affected tables and inserts known seed rows, called at the top of each test that depends on data.
+Tests hit a real database. Control its state with a `test_setup` function called at the top of each test that depends on data:
 
 ```jda
 fn test_setup() {
@@ -162,87 +150,59 @@ fn test_setup() {
 
 fn test_posts_index() {
     test_setup()
-    let res = forge_test_get("/posts")
-    forge_assert_status(res, 200)
-    forge_assert_contains(res, "Test")
+    forge_get(posts_path).ok(200).has("Test")
 }
 ```
 
-`forge_exec_sql` runs arbitrary SQL against the test database. Use it to seed rows, truncate tables, or check state after a mutation. For tests that create data through the HTTP layer (a `forge_test_post` to `/posts`), the row ends up in the test database — subsequent tests should not rely on that state unless they call `test_setup` first.
-
-Keep `.env.test` checked in (it contains no real secrets) and document the command to create the test database in your project README or Makefile.
-
----
-
-## Testing JSON APIs
-
-For handlers that return JSON, combine `forge_assert_json` with `forge_assert_contains` to verify both the Content-Type and the shape of the response body.
-
-```jda
-fn test_api_users() {
-    let res = forge_test_get("/api/users")
-    forge_assert_status(res, 200)
-    forge_assert_json(res)
-    forge_assert_contains(res, "\"email\"")
-}
-
-fn test_api_create_user() {
-    let res = forge_test_post("/api/users", "{\"email\":\"test@example.com\"}")
-    forge_assert_status(res, 201)
-}
-```
-
-When posting JSON, pass the raw JSON string as the body. The handler reads `ctx` as normal — the in-memory driver sets the correct `Content-Type: application/json` request header when the body string starts with `{` or `[`.
-
-For detailed response inspection, read the body and check specific fields:
-
-```jda
-fn test_api_user_fields() {
-    let res  = forge_test_get("/api/users/1")
-    let body = forge_test_res_body(res)
-    forge_assert_json(res)
-    forge_assert_contains(res, "\"id\"")
-    forge_assert_contains(res, "\"email\"")
-    forge_assert_not_contains(res, "\"password\"")
-}
-```
+`forge_exec_sql` runs arbitrary SQL against the test database. Keep `.env.test` checked in (it contains no real secrets).
 
 ---
 
 ## Generated test files
 
-`forge generate scaffold Post title:string` creates `test/test_posts.jda` alongside the model, controller, and views. The generated file contains skeleton tests for the index and not-found cases:
+`forge generate scaffold Post title:string` creates `test/test_posts.jda` with skeleton tests:
 
 ```jda
 fn test_posts_index() {
-    forge_assert_status(forge_test_get(posts_path), 200)
+    forge_get(posts_path).ok(200)
 }
 
 fn test_post_not_found() {
-    forge_assert_status(forge_test_get(post_path("99999")), 404)
+    forge_get(post_path("99999")).ok(404)
 }
 ```
 
-Fill in the remaining cases (create, update, delete, validation errors) to match your handler logic.
+Fill in create, update, delete, and validation cases to match your handler logic.
 
 ---
 
 ## Quick reference
 
+**Request functions:**
+
 | Function | What it does |
 |---|---|
-| `forge_test_get(path)` | GET request to path |
-| `forge_test_post(path, body)` | POST with body, CSRF included |
-| `forge_test_put(path, body)` | PUT with body, CSRF included |
-| `forge_test_delete(path)` | DELETE, CSRF included |
-| `forge_assert_status(res, code)` | Exact status code match |
-| `forge_assert_redirect(res)` | Any 3xx status |
-| `forge_assert_json(res)` | Content-Type is application/json |
-| `forge_assert_contains(res, s)` | Body contains string |
-| `forge_assert_not_contains(res, s)` | Body does not contain string |
-| `forge_test_res_body(res)` | Read body as `[]i8` |
-| `forge_test_res_status(res)` | Read status as `i64` |
-| `forge_test_res_header(res, name)` | Read response header as `[]i8` |
+| `forge_get(path)` | GET request |
+| `forge_post(path, body)` | POST with body, CSRF included |
+| `forge_put(path, body)` | PUT with body, CSRF included |
+| `forge_delete(path)` | DELETE, CSRF included |
+
+**Chainable assertion methods** (UFCS on the response):
+
+| Method | What it asserts |
+|---|---|
+| `.ok(code)` | Exact status code match |
+| `.redirect()` | Any 3xx status |
+| `.has(s)` | Body contains string |
+| `.not_has(s)` | Body does not contain string |
+
+**Low-level helpers** (when you need to inspect manually):
+
+| Function | Returns |
+|---|---|
+| `forge_assert_status(res, code)` | Assert and return bool |
+| `forge_assert_redirect(res)` | Assert and return bool |
+| `forge_assert_body_has(res, s)` | Assert and return bool |
 | `forge_exec_sql(query)` | Run SQL against test database |
 
 **Path helpers** (generated per resource, e.g. for `Post`):

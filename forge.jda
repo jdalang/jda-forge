@@ -4250,6 +4250,53 @@ fn forge_test_delete(path: []i8) -> &ForgeTestResponse {
     ret forge_test_request("DELETE", path, "")
 }
 
+// Short request aliases — drop the _test_ infix
+fn forge_get(path: []i8) -> &ForgeTestResponse              { ret forge_test_get(path) }
+fn forge_post(path: []i8, body: []i8) -> &ForgeTestResponse { ret forge_test_post(path, body) }
+fn forge_put(path: []i8, body: []i8) -> &ForgeTestResponse  { ret forge_test_put(path, body) }
+fn forge_delete(path: []i8) -> &ForgeTestResponse           { ret forge_test_delete(path) }
+
+// Response accessors  (UFCS prefix: forge_test_res)
+fn forge_test_res_body(res: &ForgeTestResponse) -> []i8 { ret res.body }
+fn forge_test_res_status(res: &ForgeTestResponse) -> i32 { ret res.status }
+
+// Chainable assertion methods  (UFCS: res.ok(200)  res.redirect()  res.has(s)  res.not_has(s))
+fn forge_test_res_ok(res: &ForgeTestResponse, code: i32) -> &ForgeTestResponse {
+    forge_assert_status(res, code)
+    ret res
+}
+fn forge_test_res_redirect(res: &ForgeTestResponse) -> &ForgeTestResponse {
+    forge_assert_redirect(res)
+    ret res
+}
+fn forge_test_res_has(res: &ForgeTestResponse, s: []i8) -> &ForgeTestResponse {
+    forge_assert_body_has(res, s)
+    ret res
+}
+fn forge_test_res_not_has(res: &ForgeTestResponse, s: []i8) -> &ForgeTestResponse {
+    let body = res.body
+    if s.len == 0 { ret res }
+    loop i in 0..body.len {
+        if i + s.len > body.len { break }
+        let match = true
+        loop j in 0..s.len {
+            if body[i + j] != s[j] { match = false  break }
+        }
+        if match {
+            let buf: &i8 = alloc_pages(1)
+            let pos = 0i64
+            let p1 = "  ASSERT NOT HAS FAILED: found unexpected substring: "
+            loop k in 0..p1.len { buf[pos] = p1[k]  pos = pos + 1 }
+            loop k in 0..s.len  { buf[pos] = s[k]   pos = pos + 1 }
+            buf[pos] = '\n'  pos = pos + 1
+            syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+            g_forge_test_fails = g_forge_test_fails + 1
+            ret res
+        }
+    }
+    ret res
+}
+
 fn forge_assert(cond: bool, msg: []i8) -> bool {
     if not cond {
         let p = "  ASSERT FAILED: "
