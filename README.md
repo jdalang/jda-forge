@@ -77,16 +77,24 @@ Walkthrough: [docs/blog-example.md](docs/blog-example.md)
 
 **ORM** — Rails-style query builder (`where_eq`, `order`, `limit`, `joins`, `group`, `having`, aggregates, scopes, batch processing). Tables with `deleted_at` get automatic soft-delete scoping — `post_all()` excludes deleted rows; `post_with_deleted()` and `post_only_deleted()` opt back in. Auto-generates typed CRUD per table including `post_reload`, `post_toggle`, `post_increment`, `post_decrement`, plus `forge_q_pick`, `forge_q_reorder`, `forge_q_reverse_order`, `forge_q_find_each`.
 
-**Declarative validations** — declare once at startup, fire automatically on every save with full lifecycle (`FORGE_CB_BEFORE_VALIDATION` / `FORGE_CB_AFTER_VALIDATION`). Supports create-only or update-only rules via `forge_field_on_create` / `forge_field_on_update`:
+**Model init** — associations, callbacks, and validations declared together in one `*_validations_init` function so the full shape of a model is visible in one place:
 
 ```jda
 fn post_validations_init() {
     forge_model("posts")
+    forge_assoc_belongs_to      ("user",     "users",    "user_id")
+    forge_assoc_has_many        ("comments", "comments", "post_id")
+    forge_assoc_has_many_through("tags",     "tags",     "post_tags", "post_id", "tag_id")
+    forge_assoc_poly_has_many   ("likes",    "likes",    "likeable_id", "likeable_type", "Post")
+    forge_callback(FORGE_CB_BEFORE_SAVE, fn_addr(post_before_save))
     forge_field       ("title, body, author", FORGE_V_PRESENCE)
     forge_field_length("title",               2, 255)
-    forge_field_min   ("body",                10)
 }
 ```
+
+**Associations** — `forge_assoc_belongs_to`, `forge_assoc_has_many`, `forge_assoc_has_one`, `forge_assoc_has_many_through` (HABTM), `forge_assoc_poly_belongs_to` / `forge_assoc_poly_has_many` (polymorphic), self-referential (parent/child by pointing the association at the same table). `forge generate model` emits typed accessor stubs automatically.
+
+**Declarative validations** — fire automatically on every save with full lifecycle (`FORGE_CB_BEFORE_VALIDATION` / `FORGE_CB_AFTER_VALIDATION`). Supports create-only or update-only rules via `forge_field_on_create` / `forge_field_on_update`.
 
 **Strong parameters** — `ctx_permit(ctx, "title, body, author")` whitelists and extracts form fields.
 

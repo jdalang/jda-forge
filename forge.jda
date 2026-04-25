@@ -5318,30 +5318,46 @@ fn forge_has_one(table: []i8, fk_col: []i8, owner_id: []i8) -> &ForgeResult {
 // =============================================================================
 // Section D2 — Association registry (model-level declarations)
 //
-// Declare associations inside *_validations_init with forge_assoc_belongs_to /
-// forge_assoc_has_many / forge_assoc_has_one.  forge generate model emits typed
-// accessor stubs; at runtime forge_assoc_query dispatches through this registry.
+// Supports belongs_to, has_many, has_one, has_many_through (HABTM),
+// polymorphic belongs_to, polymorphic has_many, and self-referential (parent/child).
+// Declare inside *_validations_init; forge generate model emits typed stubs.
 // =============================================================================
 
-let FORGE_ASSOC_BELONGS_TO: i64 = 1
-let FORGE_ASSOC_HAS_MANY:   i64 = 2
-let FORGE_ASSOC_HAS_ONE:    i64 = 3
-let FORGE_ASSOC_MAX:        i64 = 128
+let FORGE_ASSOC_BELONGS_TO:       i64 = 1
+let FORGE_ASSOC_HAS_MANY:         i64 = 2
+let FORGE_ASSOC_HAS_ONE:          i64 = 3
+let FORGE_ASSOC_HAS_MANY_THROUGH: i64 = 4   // has_many :through / HABTM
+let FORGE_ASSOC_POLY_BELONGS_TO:  i64 = 5   // polymorphic belongs_to
+let FORGE_ASSOC_POLY_HAS_MANY:    i64 = 6   // polymorphic has_many
+let FORGE_ASSOC_MAX:              i64 = 128
 
-let g_forge_assoc_models:      &i8  = 0   // [MAX * 64] model table names
-let g_forge_assoc_model_lens:  &i64 = 0
-let g_forge_assoc_names:       &i8  = 0   // [MAX * 64] association names
-let g_forge_assoc_name_lens:   &i64 = 0
-let g_forge_assoc_types:       &i64 = 0   // BELONGS_TO / HAS_MANY / HAS_ONE
-let g_forge_assoc_targets:     &i8  = 0   // [MAX * 64] target table
-let g_forge_assoc_target_lens: &i64 = 0
-let g_forge_assoc_fkeys:       &i8  = 0   // [MAX * 64] foreign key column
-let g_forge_assoc_fkey_lens:   &i64 = 0
-let g_forge_assoc_count:       i64  = 0
+// Per-entry layout (all arrays are [MAX * 64] bytes unless noted):
+//   models      — owner table name
+//   names       — association name
+//   types       — FORGE_ASSOC_* constant
+//   targets     — target/through table
+//   fkeys       — primary FK column (or owner FK for through)
+//   extras      — join table (through), type column (poly)
+//   extras2     — target FK in join (through), type value (poly has_many)
+
+let g_forge_assoc_models:       &i8  = 0
+let g_forge_assoc_model_lens:   &i64 = 0
+let g_forge_assoc_names:        &i8  = 0
+let g_forge_assoc_name_lens:    &i64 = 0
+let g_forge_assoc_types:        &i64 = 0
+let g_forge_assoc_targets:      &i8  = 0
+let g_forge_assoc_target_lens:  &i64 = 0
+let g_forge_assoc_fkeys:        &i8  = 0
+let g_forge_assoc_fkey_lens:    &i64 = 0
+let g_forge_assoc_extras:       &i8  = 0   // join table or type column
+let g_forge_assoc_extra_lens:   &i64 = 0
+let g_forge_assoc_extras2:      &i8  = 0   // target FK or type value
+let g_forge_assoc_extra2_lens:  &i64 = 0
+let g_forge_assoc_count:        i64  = 0
 
 fn forge_assoc_reg_init() {
     if g_forge_assoc_models != 0 { ret }
-    g_forge_assoc_models      = alloc_pages(2)   // 128 * 64 = 8 192 bytes
+    g_forge_assoc_models      = alloc_pages(2)
     g_forge_assoc_model_lens  = alloc_pages(1)
     g_forge_assoc_names       = alloc_pages(2)
     g_forge_assoc_name_lens   = alloc_pages(1)
@@ -5350,53 +5366,102 @@ fn forge_assoc_reg_init() {
     g_forge_assoc_target_lens = alloc_pages(1)
     g_forge_assoc_fkeys       = alloc_pages(2)
     g_forge_assoc_fkey_lens   = alloc_pages(1)
+    g_forge_assoc_extras      = alloc_pages(2)
+    g_forge_assoc_extra_lens  = alloc_pages(1)
+    g_forge_assoc_extras2     = alloc_pages(2)
+    g_forge_assoc_extra2_lens = alloc_pages(1)
 }
 
-fn forge_assoc_reg(assoc_type: i64, name: []i8, target: []i8, fkey: []i8) {
+fn forge_assoc_write(buf: &i8, lens: &i64, idx: i64, s: []i8) {
+    let base = idx * 64
+    let l = s.len  if l > 64 { l = 64 }
+    loop i in 0..l { buf[base + i] = s[i] }
+    lens[idx] = l
+}
+
+fn forge_assoc_reg_full(assoc_type: i64, name: []i8, target: []i8, fkey: []i8, extra: []i8, extra2: []i8) {
     forge_assoc_reg_init()
     let n = g_forge_assoc_count
     if n >= FORGE_ASSOC_MAX { ret }
-    let base = n * 64
-
-    let ml = g_forge_model_len
-    loop i in 0..ml { g_forge_assoc_models[base + i] = g_forge_model_buf[i] }
-    g_forge_assoc_model_lens[n] = ml
-
-    let nl = name.len  if nl > 64 { nl = 64 }
-    loop i in 0..nl { g_forge_assoc_names[base + i] = name[i] }
-    g_forge_assoc_name_lens[n] = nl
-
+    forge_assoc_write(g_forge_assoc_models,  g_forge_assoc_model_lens,  n, g_forge_model_buf[0..g_forge_model_len])
+    forge_assoc_write(g_forge_assoc_names,   g_forge_assoc_name_lens,   n, name)
+    forge_assoc_write(g_forge_assoc_targets, g_forge_assoc_target_lens, n, target)
+    forge_assoc_write(g_forge_assoc_fkeys,   g_forge_assoc_fkey_lens,   n, fkey)
+    forge_assoc_write(g_forge_assoc_extras,  g_forge_assoc_extra_lens,  n, extra)
+    forge_assoc_write(g_forge_assoc_extras2, g_forge_assoc_extra2_lens, n, extra2)
     g_forge_assoc_types[n] = assoc_type
-
-    let tl = target.len  if tl > 64 { tl = 64 }
-    loop i in 0..tl { g_forge_assoc_targets[base + i] = target[i] }
-    g_forge_assoc_target_lens[n] = tl
-
-    let fl = fkey.len  if fl > 64 { fl = 64 }
-    loop i in 0..fl { g_forge_assoc_fkeys[base + i] = fkey[i] }
-    g_forge_assoc_fkey_lens[n] = fl
-
     g_forge_assoc_count = n + 1
 }
 
-// Model-level declaration helpers — call inside *_validations_init after forge_model().
+fn forge_assoc_reg(assoc_type: i64, name: []i8, target: []i8, fkey: []i8) {
+    forge_assoc_reg_full(assoc_type, name, target, fkey, "", "")
+}
 
+// ---------------------------------------------------------------------------
+// Model-level declaration helpers
+// ---------------------------------------------------------------------------
+
+// belongs_to :user, foreign_key: :user_id
 fn forge_assoc_belongs_to(name: []i8, target_table: []i8, fk_col: []i8) {
     forge_assoc_reg(FORGE_ASSOC_BELONGS_TO, name, target_table, fk_col)
 }
 
+// has_many :comments, foreign_key: :post_id
+// Works for self-referential (parent/child) when target_table == model table.
 fn forge_assoc_has_many(name: []i8, target_table: []i8, fk_col: []i8) {
     forge_assoc_reg(FORGE_ASSOC_HAS_MANY, name, target_table, fk_col)
 }
 
+// has_one :profile, foreign_key: :user_id
 fn forge_assoc_has_one(name: []i8, target_table: []i8, fk_col: []i8) {
     forge_assoc_reg(FORGE_ASSOC_HAS_ONE, name, target_table, fk_col)
 }
 
-// Runtime dispatch — looks up (model_table, assoc_name) in the registry and
-// executes the association query.  id_or_fk is the FK value for belongs_to, or
-// the owner ID for has_many / has_one.
-fn forge_assoc_query(model_table: []i8, assoc_name: []i8, id_or_fk: []i8) -> &ForgeResult {
+// has_and_belongs_to_many :tags, through: :post_tags
+// name        — association name ("tags")
+// target      — target table ("tags")
+// join_table  — join table ("post_tags")
+// owner_fk    — owner FK column in join table ("post_id")
+// target_fk   — target FK column in join table ("tag_id")
+fn forge_assoc_has_many_through(name: []i8, target: []i8, join_table: []i8, owner_fk: []i8, target_fk: []i8) {
+    forge_assoc_reg_full(FORGE_ASSOC_HAS_MANY_THROUGH, name, target, owner_fk, join_table, target_fk)
+}
+
+// belongs_to :commentable, polymorphic: true
+// name     — association name ("commentable")
+// type_col — column holding the type string ("commentable_type")
+// id_col   — column holding the FK ("commentable_id")
+fn forge_assoc_poly_belongs_to(name: []i8, type_col: []i8, id_col: []i8) {
+    forge_assoc_reg_full(FORGE_ASSOC_POLY_BELONGS_TO, name, "", id_col, type_col, "")
+}
+
+// has_many :comments, as: :commentable
+// name      — association name ("comments")
+// target    — target table ("comments")
+// fk_id     — FK id column in target ("commentable_id")
+// fk_type   — FK type column in target ("commentable_type")
+// type_val  — type discriminator stored in fk_type column ("Post")
+fn forge_assoc_poly_has_many(name: []i8, target: []i8, fk_id: []i8, fk_type: []i8, type_val: []i8) {
+    forge_assoc_reg_full(FORGE_ASSOC_POLY_HAS_MANY, name, target, fk_id, fk_type, type_val)
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+// Resolve a polymorphic type name to a table name: "Post" -> "posts".
+fn forge_poly_table_name(type_val: []i8, buf: &i8) -> i64 {
+    let n = type_val.len
+    loop i in 0..n {
+        let c = type_val[i]
+        if c >= 65 and c <= 90 { c = c + 32 }
+        buf[i] = c
+    }
+    buf[n] = 's'
+    ret n + 1
+}
+
+fn forge_assoc_find(model_table: []i8, assoc_name: []i8) -> i64 {
     forge_assoc_reg_init()
     let mtl = model_table.len
     let anl = assoc_name.len
@@ -5409,18 +5474,90 @@ fn forge_assoc_query(model_table: []i8, assoc_name: []i8, id_or_fk: []i8) -> &Fo
         if g_forge_assoc_name_lens[i] != anl { continue }
         let nm = true
         loop j in 0..anl { if g_forge_assoc_names[base + j] != assoc_name[j] { nm = false  break } }
-        if not nm { continue }
-        let tl  = g_forge_assoc_target_lens[i]
-        let fl  = g_forge_assoc_fkey_lens[i]
-        let tgt = g_forge_assoc_targets[base..base + tl]
-        let fk  = g_forge_assoc_fkeys[base..base + fl]
-        let at  = g_forge_assoc_types[i]
-        if at == FORGE_ASSOC_BELONGS_TO { ret forge_belongs_to(tgt, id_or_fk) }
-        if at == FORGE_ASSOC_HAS_MANY   { ret forge_has_many(tgt, fk, id_or_fk) }
-        if at == FORGE_ASSOC_HAS_ONE    { ret forge_has_one(tgt, fk, id_or_fk) }
-        break
+        if nm { ret i }
     }
+    ret -1
+}
+
+// ---------------------------------------------------------------------------
+// Runtime dispatch
+// ---------------------------------------------------------------------------
+
+// forge_assoc_query — standard associations + has_many_through + poly_has_many.
+// id_or_fk is the FK value (belongs_to) or owner ID (has_many / has_one / through).
+fn forge_assoc_query(model_table: []i8, assoc_name: []i8, id_or_fk: []i8) -> &ForgeResult {
+    let i = forge_assoc_find(model_table, assoc_name)
+    if i < 0 { ret 0 }
+    let base  = i * 64
+    let tl    = g_forge_assoc_target_lens[i]
+    let fl    = g_forge_assoc_fkey_lens[i]
+    let el    = g_forge_assoc_extra_lens[i]
+    let e2l   = g_forge_assoc_extra2_lens[i]
+    let tgt   = g_forge_assoc_targets[base..base + tl]
+    let fk    = g_forge_assoc_fkeys[base..base + fl]
+    let extra = g_forge_assoc_extras[base..base + el]
+    let ex2   = g_forge_assoc_extras2[base..base + e2l]
+    let at    = g_forge_assoc_types[i]
+
+    if at == FORGE_ASSOC_BELONGS_TO { ret forge_belongs_to(tgt, id_or_fk) }
+    if at == FORGE_ASSOC_HAS_MANY   { ret forge_has_many(tgt, fk, id_or_fk) }
+    if at == FORGE_ASSOC_HAS_ONE    { ret forge_has_one(tgt, fk, id_or_fk) }
+
+    if at == FORGE_ASSOC_HAS_MANY_THROUGH {
+        // SELECT tgt.* FROM tgt INNER JOIN extra ON extra.ex2 = tgt.id WHERE extra.fk = id_or_fk
+        let b = forge_buf_new(1)
+        forge_buf_append(b, "SELECT ")
+        forge_buf_append(b, tgt)
+        forge_buf_append(b, ".* FROM ")
+        forge_buf_append(b, tgt)
+        forge_buf_append(b, " INNER JOIN ")
+        forge_buf_append(b, extra)
+        forge_buf_append(b, " ON ")
+        forge_buf_append(b, extra)
+        forge_buf_append(b, ".")
+        forge_buf_append(b, ex2)
+        forge_buf_append(b, " = ")
+        forge_buf_append(b, tgt)
+        forge_buf_append(b, ".id WHERE ")
+        forge_buf_append(b, extra)
+        forge_buf_append(b, ".")
+        forge_buf_append(b, fk)
+        forge_buf_append(b, " = '")
+        forge_buf_append(b, id_or_fk)
+        forge_buf_append(b, "'")
+        ret forge_db_query(forge_buf_str(b))
+    }
+
+    if at == FORGE_ASSOC_POLY_HAS_MANY {
+        // SELECT * FROM tgt WHERE fk = id_or_fk AND extra = 'ex2'
+        let b = forge_buf_new(1)
+        forge_buf_append(b, "SELECT * FROM ")
+        forge_buf_append(b, tgt)
+        forge_buf_append(b, " WHERE ")
+        forge_buf_append(b, fk)
+        forge_buf_append(b, " = '")
+        forge_buf_append(b, id_or_fk)
+        forge_buf_append(b, "' AND ")
+        forge_buf_append(b, extra)
+        forge_buf_append(b, " = '")
+        forge_buf_append(b, ex2)
+        forge_buf_append(b, "'")
+        ret forge_db_query(forge_buf_str(b))
+    }
+
     ret 0
+}
+
+// forge_assoc_poly_query — polymorphic belongs_to.
+// type_val is the value of the type column (e.g. "Post");
+// id_val is the FK value.  The target table is derived from type_val.
+fn forge_assoc_poly_query(model_table: []i8, assoc_name: []i8, type_val: []i8, id_val: []i8) -> &ForgeResult {
+    let i = forge_assoc_find(model_table, assoc_name)
+    if i < 0 { ret 0 }
+    if g_forge_assoc_types[i] != FORGE_ASSOC_POLY_BELONGS_TO { ret 0 }
+    let tbl_buf: &i8 = alloc_pages(1)
+    let tbl_len = forge_poly_table_name(type_val, tbl_buf)
+    ret forge_find(tbl_buf[0..tbl_len], id_val)
 }
 
 // =============================================================================

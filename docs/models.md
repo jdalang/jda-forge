@@ -1124,35 +1124,95 @@ Declare associations at the model level so the complete relationship graph is vi
 
 ### Declaring associations (model-level)
 
-Inside `*_validations_init`, after `forge_model()`:
+Inside `*_validations_init`, after `forge_model()`. Forge supports the full set of Rails-style associations including HABTM, polymorphic, and self-referential (parent/child).
+
+#### belongs_to / has_many / has_one
 
 ```jda
 fn post_validations_init() {
     forge_model("posts")
-    forge_assoc_belongs_to("user",     "users",    "user_id")   // parent
+    forge_assoc_belongs_to("user",     "users",    "user_id")   // parent record
     forge_assoc_has_many  ("comments", "comments", "post_id")   // children
     forge_assoc_has_one   ("image",    "images",   "post_id")   // single child
-    // ...
 }
 ```
 
-The generator then emits typed accessor functions in `app/models/post.jda`:
+#### has_many :through (HABTM)
+
+Many-to-many through a join table:
 
 ```jda
-fn post_user(fk_val: []i8)    -> &ForgeResult { ret forge_assoc_query("posts", "user",     fk_val) }
-fn post_comments(post_id: []i8) -> &ForgeResult { ret forge_assoc_query("posts", "comments", post_id) }
-fn post_image(post_id: []i8)    -> &ForgeResult { ret forge_assoc_query("posts", "image",    post_id) }
+fn post_validations_init() {
+    forge_model("posts")
+    forge_assoc_has_many_through("tags", "tags", "post_tags", "post_id", "tag_id")
+    //                           name  target  join_table  owner_fk  target_fk
+}
+
+fn tag_validations_init() {
+    forge_model("tags")
+    forge_assoc_has_many_through("posts", "posts", "post_tags", "tag_id", "post_id")
+}
 ```
 
-Call them from controllers or other models:
+#### Polymorphic associations
+
+A `belongs_to :commentable, polymorphic: true` pattern — a single model can belong to any number of other model types via a type/id column pair:
+
+```jda
+fn comment_validations_init() {
+    forge_model("comments")
+    // "commentable_type" stores "Post", "Video", etc.
+    // "commentable_id"   stores the owner's id
+    forge_assoc_poly_belongs_to("commentable", "commentable_type", "commentable_id")
+}
+
+fn post_validations_init() {
+    forge_model("posts")
+    forge_assoc_poly_has_many("comments", "comments", "commentable_id", "commentable_type", "Post")
+    //                         name       target       fk_id             fk_type             type_val
+}
+```
+
+#### Self-referential (parent/child)
+
+Hierarchical data uses the same `forge_assoc_belongs_to` / `forge_assoc_has_many` with the same table:
+
+```jda
+fn category_validations_init() {
+    forge_model("categories")
+    forge_assoc_belongs_to("parent",   "categories", "parent_id")
+    forge_assoc_has_many  ("children", "categories", "parent_id")
+}
+```
+
+---
+
+### Typed accessor stubs
+
+`forge generate model` emits a typed accessor function for each declared association. For standard and through associations, use `forge_assoc_query`; for polymorphic belongs_to, use `forge_assoc_poly_query`:
+
+```jda
+// Standard / through / poly has_many — one argument (owner id or FK value)
+fn post_user(fk_val: []i8)      -> &ForgeResult { ret forge_assoc_query("posts", "user",     fk_val) }
+fn post_comments(post_id: []i8) -> &ForgeResult { ret forge_assoc_query("posts", "comments", post_id) }
+fn post_tags(post_id: []i8)     -> &ForgeResult { ret forge_assoc_query("posts", "tags",     post_id) }
+
+// Polymorphic belongs_to — two arguments (type value + id value from the row)
+fn comment_commentable(type_val: []i8, id_val: []i8) -> &ForgeResult {
+    ret forge_assoc_poly_query("comments", "commentable", type_val, id_val)
+}
+```
+
+Call from controllers or other models:
 
 ```jda
 let author   = post_user(post.user_id)
 let comments = post_comments(post.id)
-let image    = post_image(post.id)
-```
+let tags     = post_tags(post.id)
 
-For `belongs_to` pass the FK **value** (`post.user_id`); for `has_many` / `has_one` pass the owner's `id`.
+// polymorphic — pass both type and id columns from the row
+let owner    = comment_commentable(comment.commentable_type, comment.commentable_id)
+```
 
 ### Ad-hoc association queries
 
