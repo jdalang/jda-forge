@@ -2361,21 +2361,49 @@ fn forge_admin_list(ctx: i64) {
 // =============================================================================
 // Section A — DB Utilities + Query Builder
 // =============================================================================
-const FORGE_QUERY_WHERE_CAP = 2048
-const FORGE_QUERY_ORDER_CAP = 256
-const FORGE_QUERY_SEL_CAP   = 512
+
+const FORGE_QUERY_WHERE_CAP  = 2048
+const FORGE_QUERY_ORDER_CAP  = 256
+const FORGE_QUERY_SEL_CAP    = 512
+const FORGE_QUERY_JOIN_CAP   = 1024
+const FORGE_QUERY_GROUP_CAP  = 256
+const FORGE_QUERY_HAVING_CAP = 512
+const FORGE_SCOPE_MAX        = 64
 
 struct ForgeQuery {
-    table:     []i8
-    where_buf: [FORGE_QUERY_WHERE_CAP]i8
-    where_len: i64
-    order_buf: [FORGE_QUERY_ORDER_CAP]i8
-    order_len: i64
-    sel_buf:   [FORGE_QUERY_SEL_CAP]i8
-    sel_len:   i64
-    lim:       i64
-    off:       i64
+    table:      []i8
+    where_buf:  [FORGE_QUERY_WHERE_CAP]i8
+    where_len:  i64
+    order_buf:  [FORGE_QUERY_ORDER_CAP]i8
+    order_len:  i64
+    sel_buf:    [FORGE_QUERY_SEL_CAP]i8
+    sel_len:    i64
+    join_buf:   [FORGE_QUERY_JOIN_CAP]i8
+    join_len:   i64
+    group_buf:  [FORGE_QUERY_GROUP_CAP]i8
+    group_len:  i64
+    having_buf: [FORGE_QUERY_HAVING_CAP]i8
+    having_len: i64
+    lim:        i64
+    off:        i64
+    distinct:   bool
+    or_mode:    bool
 }
+
+struct ForgeScopeEntry {
+    table_buf: [64]i8
+    tlen:      i64
+    name_buf:  [64]i8
+    nlen:      i64
+    fn_ptr:    i64
+}
+
+let g_forge_scope_store: &ForgeScopeEntry = 0
+let g_forge_scope_count: i64 = 0
+
+// ---------------------------------------------------------------------------
+// SQL string escape
+// ---------------------------------------------------------------------------
 
 fn forge_db_escape_str(val: []i8, dst: &i8) -> i64 {
     let pos = 0i64
@@ -2393,16 +2421,99 @@ fn forge_db_escape_str(val: []i8, dst: &i8) -> i64 {
     ret pos
 }
 
+// ---------------------------------------------------------------------------
+// Internal buffer-append helpers
+// ---------------------------------------------------------------------------
+
+fn forge__wbuf(q: &ForgeQuery, s: []i8) {
+    loop i in 0..s.len {
+        if q.where_len < FORGE_QUERY_WHERE_CAP {
+            q.where_buf[q.where_len] = s[i]
+            q.where_len = q.where_len + 1
+        }
+    }
+}
+
+fn forge__obuf(q: &ForgeQuery, s: []i8) {
+    loop i in 0..s.len {
+        if q.order_len < FORGE_QUERY_ORDER_CAP {
+            q.order_buf[q.order_len] = s[i]
+            q.order_len = q.order_len + 1
+        }
+    }
+}
+
+fn forge__jbuf(q: &ForgeQuery, s: []i8) {
+    loop i in 0..s.len {
+        if q.join_len < FORGE_QUERY_JOIN_CAP {
+            q.join_buf[q.join_len] = s[i]
+            q.join_len = q.join_len + 1
+        }
+    }
+}
+
+fn forge__gbuf(q: &ForgeQuery, s: []i8) {
+    loop i in 0..s.len {
+        if q.group_len < FORGE_QUERY_GROUP_CAP {
+            q.group_buf[q.group_len] = s[i]
+            q.group_len = q.group_len + 1
+        }
+    }
+}
+
+fn forge__hbuf(q: &ForgeQuery, s: []i8) {
+    loop i in 0..s.len {
+        if q.having_len < FORGE_QUERY_HAVING_CAP {
+            q.having_buf[q.having_len] = s[i]
+            q.having_len = q.having_len + 1
+        }
+    }
+}
+
+fn forge__wbuf_escaped(q: &ForgeQuery, val: []i8) {
+    let eb: &i8 = alloc_pages(1)
+    let el = forge_db_escape_str(val, eb)
+    loop i in 0..el {
+        if q.where_len < FORGE_QUERY_WHERE_CAP {
+            q.where_buf[q.where_len] = eb[i]
+            q.where_len = q.where_len + 1
+        }
+    }
+}
+
+fn forge__where_connector(q: &ForgeQuery) {
+    if q.where_len == 0 { ret }
+    if q.or_mode {
+        forge__wbuf(q, " OR ")
+        q.or_mode = false
+    } else {
+        forge__wbuf(q, " AND ")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Constructor
+// ---------------------------------------------------------------------------
+
 fn forge_q(table: []i8) -> &ForgeQuery {
-    let q: &ForgeQuery = alloc_pages(1)
-    q.table     = table
-    q.where_len = 0
-    q.order_len = 0
-    q.sel_len   = 0
-    q.lim       = -1
-    q.off       = -1
+    let q: &ForgeQuery = alloc_pages(2)
+    q.table      = table
+    q.where_len  = 0
+    q.order_len  = 0
+    q.sel_len    = 0
+    q.join_len   = 0
+    q.group_len  = 0
+    q.having_len = 0
+    q.lim        = -1
+    q.off        = -1
+    q.distinct   = false
+    q.or_mode    = false
     ret q
 }
+
+// ---------------------------------------------------------------------------
+// SELECT
+// ---------------------------------------------------------------------------
 
 fn forge_q_select(q: &ForgeQuery, cols: []i8) -> &ForgeQuery {
     let l = cols.len
@@ -2412,120 +2523,258 @@ fn forge_q_select(q: &ForgeQuery, cols: []i8) -> &ForgeQuery {
     ret q
 }
 
+fn forge_q_distinct(q: &ForgeQuery) -> &ForgeQuery {
+    q.distinct = true
+    ret q
+}
+
+// ---------------------------------------------------------------------------
+// WHERE — core
+// ---------------------------------------------------------------------------
+
 fn forge_q_where(q: &ForgeQuery, col: []i8, op: []i8, val: []i8) -> &ForgeQuery {
     let is_kw = forge_slice_eq(op, "IS") or forge_slice_eq(op, "IS NOT")
-    if q.where_len > 0 {
-        let and_s = " AND "
-        loop i in 0..and_s.len {
-            if q.where_len < FORGE_QUERY_WHERE_CAP {
-                q.where_buf[q.where_len] = and_s[i]
-                q.where_len = q.where_len + 1
-            }
-        }
-    }
-    loop i in 0..col.len {
-        if q.where_len < FORGE_QUERY_WHERE_CAP {
-            q.where_buf[q.where_len] = col[i]
-            q.where_len = q.where_len + 1
-        }
-    }
-    let sp = " "
-    loop i in 0..sp.len {
-        if q.where_len < FORGE_QUERY_WHERE_CAP {
-            q.where_buf[q.where_len] = sp[i]
-            q.where_len = q.where_len + 1
-        }
-    }
-    loop i in 0..op.len {
-        if q.where_len < FORGE_QUERY_WHERE_CAP {
-            q.where_buf[q.where_len] = op[i]
-            q.where_len = q.where_len + 1
-        }
-    }
-    loop i in 0..sp.len {
-        if q.where_len < FORGE_QUERY_WHERE_CAP {
-            q.where_buf[q.where_len] = sp[i]
-            q.where_len = q.where_len + 1
-        }
-    }
+    forge__where_connector(q)
+    forge__wbuf(q, col)
+    forge__wbuf(q, " ")
+    forge__wbuf(q, op)
+    forge__wbuf(q, " ")
     if is_kw {
-        loop i in 0..val.len {
-            if q.where_len < FORGE_QUERY_WHERE_CAP {
-                q.where_buf[q.where_len] = val[i]
-                q.where_len = q.where_len + 1
-            }
-        }
+        forge__wbuf(q, val)
     } else {
-        if q.where_len < FORGE_QUERY_WHERE_CAP {
-            q.where_buf[q.where_len] = '\''
-            q.where_len = q.where_len + 1
-        }
-        let esc_buf: &i8 = alloc_pages(1)
-        let esc_len = forge_db_escape_str(val, esc_buf)
-        loop i in 0..esc_len {
-            if q.where_len < FORGE_QUERY_WHERE_CAP {
-                q.where_buf[q.where_len] = esc_buf[i]
-                q.where_len = q.where_len + 1
-            }
-        }
-        if q.where_len < FORGE_QUERY_WHERE_CAP {
-            q.where_buf[q.where_len] = '\''
-            q.where_len = q.where_len + 1
-        }
+        forge__wbuf(q, "'")
+        forge__wbuf_escaped(q, val)
+        forge__wbuf(q, "'")
     }
     ret q
 }
 
 fn forge_q_where_raw(q: &ForgeQuery, expr: []i8) -> &ForgeQuery {
-    if q.where_len > 0 {
-        let and_s = " AND "
-        loop i in 0..and_s.len {
-            if q.where_len < FORGE_QUERY_WHERE_CAP {
-                q.where_buf[q.where_len] = and_s[i]
-                q.where_len = q.where_len + 1
-            }
-        }
-    }
-    loop i in 0..expr.len {
-        if q.where_len < FORGE_QUERY_WHERE_CAP {
-            q.where_buf[q.where_len] = expr[i]
-            q.where_len = q.where_len + 1
-        }
-    }
+    forge__where_connector(q)
+    forge__wbuf(q, expr)
     ret q
 }
 
-fn forge_q_order(q: &ForgeQuery, col: []i8, dir: []i8) -> &ForgeQuery {
-    if q.order_len > 0 {
-        let cs = ", "
-        loop i in 0..cs.len {
-            if q.order_len < FORGE_QUERY_ORDER_CAP {
-                q.order_buf[q.order_len] = cs[i]
-                q.order_len = q.order_len + 1
-            }
-        }
-    }
-    loop i in 0..col.len {
-        if q.order_len < FORGE_QUERY_ORDER_CAP {
-            q.order_buf[q.order_len] = col[i]
-            q.order_len = q.order_len + 1
-        }
-    }
-    let sp = " "
-    loop i in 0..sp.len {
-        if q.order_len < FORGE_QUERY_ORDER_CAP {
-            q.order_buf[q.order_len] = sp[i]
-            q.order_len = q.order_len + 1
-        }
-    }
-    loop i in 0..dir.len {
-        if q.order_len < FORGE_QUERY_ORDER_CAP {
-            q.order_buf[q.order_len] = dir[i]
-            q.order_len = q.order_len + 1
-        }
-    }
+fn forge_q_or(q: &ForgeQuery) -> &ForgeQuery {
+    q.or_mode = true
     ret q
 }
+
+// ---------------------------------------------------------------------------
+// WHERE — convenience helpers
+// ---------------------------------------------------------------------------
+
+fn forge_q_where_not(q: &ForgeQuery, col: []i8, val: []i8) -> &ForgeQuery {
+    forge__where_connector(q)
+    forge__wbuf(q, col)
+    forge__wbuf(q, " != '")
+    forge__wbuf_escaped(q, val)
+    forge__wbuf(q, "'")
+    ret q
+}
+
+fn forge_q_where_null(q: &ForgeQuery, col: []i8) -> &ForgeQuery {
+    forge__where_connector(q)
+    forge__wbuf(q, col)
+    forge__wbuf(q, " IS NULL")
+    ret q
+}
+
+fn forge_q_where_not_null(q: &ForgeQuery, col: []i8) -> &ForgeQuery {
+    forge__where_connector(q)
+    forge__wbuf(q, col)
+    forge__wbuf(q, " IS NOT NULL")
+    ret q
+}
+
+fn forge_q_where_like(q: &ForgeQuery, col: []i8, pattern: []i8) -> &ForgeQuery {
+    forge__where_connector(q)
+    forge__wbuf(q, col)
+    forge__wbuf(q, " LIKE '")
+    forge__wbuf_escaped(q, pattern)
+    forge__wbuf(q, "'")
+    ret q
+}
+
+fn forge_q_where_ilike(q: &ForgeQuery, col: []i8, pattern: []i8) -> &ForgeQuery {
+    forge__where_connector(q)
+    forge__wbuf(q, col)
+    forge__wbuf(q, " ILIKE '")
+    forge__wbuf_escaped(q, pattern)
+    forge__wbuf(q, "'")
+    ret q
+}
+
+fn forge_q_where_between(q: &ForgeQuery, col: []i8, lo: []i8, hi: []i8) -> &ForgeQuery {
+    forge__where_connector(q)
+    forge__wbuf(q, col)
+    forge__wbuf(q, " BETWEEN '")
+    forge__wbuf_escaped(q, lo)
+    forge__wbuf(q, "' AND '")
+    forge__wbuf_escaped(q, hi)
+    forge__wbuf(q, "'")
+    ret q
+}
+
+fn forge_q_where_gt(q: &ForgeQuery, col: []i8, val: []i8) -> &ForgeQuery {
+    forge__where_connector(q)
+    forge__wbuf(q, col)
+    forge__wbuf(q, " > '")
+    forge__wbuf_escaped(q, val)
+    forge__wbuf(q, "'")
+    ret q
+}
+
+fn forge_q_where_gte(q: &ForgeQuery, col: []i8, val: []i8) -> &ForgeQuery {
+    forge__where_connector(q)
+    forge__wbuf(q, col)
+    forge__wbuf(q, " >= '")
+    forge__wbuf_escaped(q, val)
+    forge__wbuf(q, "'")
+    ret q
+}
+
+fn forge_q_where_lt(q: &ForgeQuery, col: []i8, val: []i8) -> &ForgeQuery {
+    forge__where_connector(q)
+    forge__wbuf(q, col)
+    forge__wbuf(q, " < '")
+    forge__wbuf_escaped(q, val)
+    forge__wbuf(q, "'")
+    ret q
+}
+
+fn forge_q_where_lte(q: &ForgeQuery, col: []i8, val: []i8) -> &ForgeQuery {
+    forge__where_connector(q)
+    forge__wbuf(q, col)
+    forge__wbuf(q, " <= '")
+    forge__wbuf_escaped(q, val)
+    forge__wbuf(q, "'")
+    ret q
+}
+
+// WHERE col IN ('a','b','c') — vals is a comma-separated string e.g. "admin,user,guest"
+fn forge_q_where_in(q: &ForgeQuery, col: []i8, vals: []i8) -> &ForgeQuery {
+    forge__where_connector(q)
+    forge__wbuf(q, col)
+    forge__wbuf(q, " IN (")
+    let start = 0i64
+    let first = true
+    loop i in 0..vals.len {
+        let is_sep = (vals[i] == ',')
+        let is_end = (i == vals.len - 1)
+        if is_sep or is_end {
+            let end = i
+            if is_end and not is_sep { end = i + 1 }
+            if not first { forge__wbuf(q, ",") }
+            first = false
+            forge__wbuf(q, "'")
+            forge__wbuf_escaped(q, vals[start..end])
+            forge__wbuf(q, "'")
+            start = i + 1
+        }
+    }
+    forge__wbuf(q, ")")
+    ret q
+}
+
+fn forge_q_where_not_in(q: &ForgeQuery, col: []i8, vals: []i8) -> &ForgeQuery {
+    forge__where_connector(q)
+    forge__wbuf(q, col)
+    forge__wbuf(q, " NOT IN (")
+    let start = 0i64
+    let first = true
+    loop i in 0..vals.len {
+        let is_sep = (vals[i] == ',')
+        let is_end = (i == vals.len - 1)
+        if is_sep or is_end {
+            let end = i
+            if is_end and not is_sep { end = i + 1 }
+            if not first { forge__wbuf(q, ",") }
+            first = false
+            forge__wbuf(q, "'")
+            forge__wbuf_escaped(q, vals[start..end])
+            forge__wbuf(q, "'")
+            start = i + 1
+        }
+    }
+    forge__wbuf(q, ")")
+    ret q
+}
+
+// ---------------------------------------------------------------------------
+// JOINs
+// ---------------------------------------------------------------------------
+
+fn forge_q_join_raw(q: &ForgeQuery, expr: []i8) -> &ForgeQuery {
+    if q.join_len > 0 { forge__jbuf(q, " ") }
+    forge__jbuf(q, expr)
+    ret q
+}
+
+fn forge_q_join(q: &ForgeQuery, table: []i8, condition: []i8) -> &ForgeQuery {
+    if q.join_len > 0 { forge__jbuf(q, " ") }
+    forge__jbuf(q, "JOIN ")
+    forge__jbuf(q, table)
+    forge__jbuf(q, " ON ")
+    forge__jbuf(q, condition)
+    ret q
+}
+
+fn forge_q_left_join(q: &ForgeQuery, table: []i8, condition: []i8) -> &ForgeQuery {
+    if q.join_len > 0 { forge__jbuf(q, " ") }
+    forge__jbuf(q, "LEFT JOIN ")
+    forge__jbuf(q, table)
+    forge__jbuf(q, " ON ")
+    forge__jbuf(q, condition)
+    ret q
+}
+
+fn forge_q_inner_join(q: &ForgeQuery, table: []i8, condition: []i8) -> &ForgeQuery {
+    if q.join_len > 0 { forge__jbuf(q, " ") }
+    forge__jbuf(q, "INNER JOIN ")
+    forge__jbuf(q, table)
+    forge__jbuf(q, " ON ")
+    forge__jbuf(q, condition)
+    ret q
+}
+
+// ---------------------------------------------------------------------------
+// GROUP BY / HAVING
+// ---------------------------------------------------------------------------
+
+fn forge_q_group(q: &ForgeQuery, cols: []i8) -> &ForgeQuery {
+    forge__gbuf(q, cols)
+    ret q
+}
+
+fn forge_q_having(q: &ForgeQuery, expr: []i8) -> &ForgeQuery {
+    forge__hbuf(q, expr)
+    ret q
+}
+
+// ---------------------------------------------------------------------------
+// ORDER BY
+// ---------------------------------------------------------------------------
+
+fn forge_q_order(q: &ForgeQuery, col: []i8, dir: []i8) -> &ForgeQuery {
+    if q.order_len > 0 { forge__obuf(q, ", ") }
+    forge__obuf(q, col)
+    forge__obuf(q, " ")
+    forge__obuf(q, dir)
+    ret q
+}
+
+fn forge_q_order_asc(q: &ForgeQuery, col: []i8) -> &ForgeQuery {
+    ret forge_q_order(q, col, "ASC")
+}
+
+fn forge_q_order_desc(q: &ForgeQuery, col: []i8) -> &ForgeQuery {
+    ret forge_q_order(q, col, "DESC")
+}
+
+// ---------------------------------------------------------------------------
+// LIMIT / OFFSET / PAGE
+// ---------------------------------------------------------------------------
 
 fn forge_q_limit(q: &ForgeQuery, n: i64) -> &ForgeQuery {
     q.lim = n
@@ -2537,28 +2786,73 @@ fn forge_q_offset(q: &ForgeQuery, n: i64) -> &ForgeQuery {
     ret q
 }
 
+fn forge_q_page(q: &ForgeQuery, page: i64, per: i64) -> &ForgeQuery {
+    if page < 1 { page = 1 }
+    q.lim = per
+    q.off = (page - 1) * per
+    ret q
+}
+
+// ---------------------------------------------------------------------------
+// SQL builder
+// ---------------------------------------------------------------------------
+
 fn forge_q_sql(q: &ForgeQuery, dst: &i8) -> i64 {
     let pos = 0i64
-    let sel_s  = "SELECT "
-    let from_s = " FROM "
-    loop i in 0..sel_s.len  { dst[pos] = sel_s[i]   pos = pos + 1 }
+
+    // SELECT [DISTINCT] [cols]
+    let sel_s = "SELECT "
+    loop i in 0..sel_s.len { dst[pos] = sel_s[i]  pos = pos + 1 }
+    if q.distinct {
+        let d = "DISTINCT "
+        loop i in 0..d.len { dst[pos] = d[i]  pos = pos + 1 }
+    }
     if q.sel_len > 0 {
         loop i in 0..q.sel_len { dst[pos] = q.sel_buf[i]  pos = pos + 1 }
     } else {
         dst[pos] = '*'  pos = pos + 1
     }
+
+    // FROM table
+    let from_s = " FROM "
     loop i in 0..from_s.len { dst[pos] = from_s[i]  pos = pos + 1 }
     loop i in 0..q.table.len { dst[pos] = q.table[i]  pos = pos + 1 }
+
+    // JOIN
+    if q.join_len > 0 {
+        dst[pos] = ' '  pos = pos + 1
+        loop i in 0..q.join_len { dst[pos] = q.join_buf[i]  pos = pos + 1 }
+    }
+
+    // WHERE
     if q.where_len > 0 {
         let wh = " WHERE "
         loop i in 0..wh.len { dst[pos] = wh[i]  pos = pos + 1 }
         loop i in 0..q.where_len { dst[pos] = q.where_buf[i]  pos = pos + 1 }
     }
+
+    // GROUP BY
+    if q.group_len > 0 {
+        let gb = " GROUP BY "
+        loop i in 0..gb.len { dst[pos] = gb[i]  pos = pos + 1 }
+        loop i in 0..q.group_len { dst[pos] = q.group_buf[i]  pos = pos + 1 }
+    }
+
+    // HAVING
+    if q.having_len > 0 {
+        let hv = " HAVING "
+        loop i in 0..hv.len { dst[pos] = hv[i]  pos = pos + 1 }
+        loop i in 0..q.having_len { dst[pos] = q.having_buf[i]  pos = pos + 1 }
+    }
+
+    // ORDER BY
     if q.order_len > 0 {
         let ob = " ORDER BY "
         loop i in 0..ob.len { dst[pos] = ob[i]  pos = pos + 1 }
         loop i in 0..q.order_len { dst[pos] = q.order_buf[i]  pos = pos + 1 }
     }
+
+    // LIMIT
     if q.lim >= 0 {
         let ls = " LIMIT "
         loop i in 0..ls.len { dst[pos] = ls[i]  pos = pos + 1 }
@@ -2566,6 +2860,8 @@ fn forge_q_sql(q: &ForgeQuery, dst: &i8) -> i64 {
         let nl = fmt_i64(nb, q.lim)
         loop i in 0..nl { dst[pos] = nb[i]  pos = pos + 1 }
     }
+
+    // OFFSET
     if q.off >= 0 {
         let os = " OFFSET "
         loop i in 0..os.len { dst[pos] = os[i]  pos = pos + 1 }
@@ -2573,8 +2869,13 @@ fn forge_q_sql(q: &ForgeQuery, dst: &i8) -> i64 {
         let nl2 = fmt_i64(nb2, q.off)
         loop i in 0..nl2 { dst[pos] = nb2[i]  pos = pos + 1 }
     }
+
     ret pos
 }
+
+// ---------------------------------------------------------------------------
+// Execution
+// ---------------------------------------------------------------------------
 
 fn forge_q_exec(q: &ForgeQuery) -> &ForgeResult {
     let sql_buf: &i8 = alloc_pages(2)
@@ -2582,18 +2883,31 @@ fn forge_q_exec(q: &ForgeQuery) -> &ForgeResult {
     ret forge_db_query(sql_buf[0..sql_len])
 }
 
+fn forge_q_all(q: &ForgeQuery) -> &ForgeResult {
+    ret forge_q_exec(q)
+}
+
 fn forge_q_first(q: &ForgeQuery) -> &ForgeResult {
+    q.lim = 1
+    ret forge_q_exec(q)
+}
+
+fn forge_q_last(q: &ForgeQuery) -> &ForgeResult {
+    if q.order_len == 0 { forge_q_order_desc(q, "id") }
     q.lim = 1
     ret forge_q_exec(q)
 }
 
 fn forge_q_count(q: &ForgeQuery) -> i64 {
     let orig_sel_len = q.sel_len
+    let orig_distinct = q.distinct
     let count_s = "COUNT(*)"
     loop i in 0..count_s.len { q.sel_buf[i] = count_s[i] }
-    q.sel_len = count_s.len
+    q.sel_len  = count_s.len
+    q.distinct = false
     let res = forge_q_exec(q)
-    q.sel_len = orig_sel_len
+    q.sel_len  = orig_sel_len
+    q.distinct = orig_distinct
     if res.count == 0 { ret 0 }
     let val = forge_row_col(res, 0, 0)
     let acc = 0i64
@@ -2603,6 +2917,79 @@ fn forge_q_count(q: &ForgeQuery) -> i64 {
     }
     ret acc
 }
+
+fn forge_q_exists(q: &ForgeQuery) -> bool {
+    ret forge_q_count(q) > 0
+}
+
+fn forge_q_pluck(q: &ForgeQuery, col: []i8) -> &ForgeResult {
+    forge_q_select(q, col)
+    ret forge_q_exec(q)
+}
+
+// ---------------------------------------------------------------------------
+// Aggregates
+// ---------------------------------------------------------------------------
+
+fn forge__aggregate(q: &ForgeQuery, fn_name: []i8, col: []i8) -> []i8 {
+    let buf = [128]i8
+    let pos = 0i64
+    loop i in 0..fn_name.len { buf[pos] = fn_name[i]  pos = pos + 1 }
+    buf[pos] = '('  pos = pos + 1
+    loop i in 0..col.len     { buf[pos] = col[i]       pos = pos + 1 }
+    buf[pos] = ')'  pos = pos + 1
+    let orig_sel_len = q.sel_len
+    loop i in 0..pos { q.sel_buf[i] = buf[i] }
+    q.sel_len = pos
+    let res = forge_q_exec(q)
+    q.sel_len = orig_sel_len
+    if res.count == 0 { ret "" }
+    ret forge_row_col(res, 0, 0)
+}
+
+fn forge_q_sum(q: &ForgeQuery, col: []i8) -> []i8 { ret forge__aggregate(q, "SUM", col) }
+fn forge_q_avg(q: &ForgeQuery, col: []i8) -> []i8 { ret forge__aggregate(q, "AVG", col) }
+fn forge_q_max(q: &ForgeQuery, col: []i8) -> []i8 { ret forge__aggregate(q, "MAX", col) }
+fn forge_q_min(q: &ForgeQuery, col: []i8) -> []i8 { ret forge__aggregate(q, "MIN", col) }
+
+// ---------------------------------------------------------------------------
+// DML — update_all / delete_all
+// ---------------------------------------------------------------------------
+
+fn forge_q_update_all(q: &ForgeQuery, set_clause: []i8) -> bool {
+    let buf: &i8 = alloc_pages(2)
+    let pos = 0i64
+    let s1 = "UPDATE "
+    let s2 = " SET "
+    loop i in 0..s1.len { buf[pos] = s1[i]  pos = pos + 1 }
+    loop i in 0..q.table.len { buf[pos] = q.table[i]  pos = pos + 1 }
+    loop i in 0..s2.len { buf[pos] = s2[i]  pos = pos + 1 }
+    loop i in 0..set_clause.len { buf[pos] = set_clause[i]  pos = pos + 1 }
+    if q.where_len > 0 {
+        let wh = " WHERE "
+        loop i in 0..wh.len { buf[pos] = wh[i]  pos = pos + 1 }
+        loop i in 0..q.where_len { buf[pos] = q.where_buf[i]  pos = pos + 1 }
+    }
+    ret forge_db_exec(buf[0..pos])
+}
+
+fn forge_q_delete_all(q: &ForgeQuery) -> bool {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let s1 = "DELETE FROM "
+    loop i in 0..s1.len { buf[pos] = s1[i]  pos = pos + 1 }
+    loop i in 0..q.table.len { buf[pos] = q.table[i]  pos = pos + 1 }
+    if q.where_len > 0 {
+        let wh = " WHERE "
+        loop i in 0..wh.len { buf[pos] = wh[i]  pos = pos + 1 }
+        loop i in 0..q.where_len { buf[pos] = q.where_buf[i]  pos = pos + 1 }
+    }
+    ret forge_db_exec(buf[0..pos])
+}
+
+// ---------------------------------------------------------------------------
+// Convenience finders
+// ---------------------------------------------------------------------------
 
 fn forge_find(table: []i8, id: []i8) -> &ForgeResult {
     let q = forge_q(table)
@@ -2619,6 +3006,91 @@ fn forge_find_by(table: []i8, col: []i8, val: []i8) -> &ForgeResult {
 fn forge_all(table: []i8) -> &ForgeResult {
     let q = forge_q(table)
     ret forge_q_exec(q)
+}
+
+fn forge_find_in_batches(table: []i8, batch_size: i64, fn_ptr: i64) {
+    let off = 0i64
+    loop {
+        let q = forge_q(table)
+        forge_q_limit(q, batch_size)
+        forge_q_offset(q, off)
+        forge_q_order_asc(q, "id")
+        let res = forge_q_exec(q)
+        if res.count == 0 { break }
+        call_fn(fn_ptr, res as i64)
+        off = off + batch_size
+        if res.count < batch_size { break }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scopes
+// ---------------------------------------------------------------------------
+
+fn forge_scope_init() {
+    if g_forge_scope_store != 0 { ret }
+    g_forge_scope_store = alloc_pages(8) as &ForgeScopeEntry
+    g_forge_scope_count = 0
+}
+
+fn forge_scope_register(table: []i8, name: []i8, fn_ptr: i64) {
+    forge_scope_init()
+    if g_forge_scope_count >= FORGE_SCOPE_MAX { ret }
+    let idx = g_forge_scope_count
+    let stride = 152i64
+    let entry: &ForgeScopeEntry = (g_forge_scope_store as i64 + idx * stride) as &ForgeScopeEntry
+    let tl = table.len
+    if tl > 63 { tl = 63 }
+    loop i in 0..tl { entry.table_buf[i] = table[i] }
+    entry.tlen = tl
+    let nl = name.len
+    if nl > 63 { nl = 63 }
+    loop i in 0..nl { entry.name_buf[i] = name[i] }
+    entry.nlen = nl
+    entry.fn_ptr = fn_ptr
+    g_forge_scope_count = g_forge_scope_count + 1
+}
+
+fn forge_q_scope(q: &ForgeQuery, name: []i8) -> &ForgeQuery {
+    forge_scope_init()
+    let stride = 152i64
+    loop i in 0..g_forge_scope_count {
+        let entry: &ForgeScopeEntry = (g_forge_scope_store as i64 + i * stride) as &ForgeScopeEntry
+        let tlen = q.table.len
+        if tlen > 63 { tlen = 63 }
+        let tmatch = true
+        if tlen != entry.tlen { tmatch = false }
+        if tmatch {
+            loop j in 0..tlen {
+                if q.table[j] != entry.table_buf[j] { tmatch = false }
+            }
+        }
+        let nlen = name.len
+        let nmatch = true
+        if nlen != entry.nlen { nmatch = false }
+        if nmatch {
+            loop j in 0..nlen {
+                if name[j] != entry.name_buf[j] { nmatch = false }
+            }
+        }
+        if tmatch and nmatch {
+            call_fn(entry.fn_ptr, q as i64)
+            ret q
+        }
+    }
+    ret q
+}
+
+// ---------------------------------------------------------------------------
+// Raw SQL aliases
+// ---------------------------------------------------------------------------
+
+fn forge_sql(raw_sql: []i8) -> &ForgeResult {
+    ret forge_db_query(raw_sql)
+}
+
+fn forge_exec_sql(raw_sql: []i8) -> bool {
+    ret forge_db_exec(raw_sql)
 }
 
 // =============================================================================
