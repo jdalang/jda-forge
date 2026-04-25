@@ -122,11 +122,11 @@ next_migration_number() {
 }
 
 # ---------------------------------------------------------------------------
-# compile_routes — DSL config/routes → config/routes.jda
+# compile_routes — DSL config/routes.jda → _build/routes.jda + _build/controllers.jda
 # ---------------------------------------------------------------------------
 
 compile_routes() {
-    local dsl="config/routes"
+    local dsl="config/routes.jda"
     [ ! -f "$dsl" ] && return 0
 
     mkdir -p _build
@@ -272,7 +272,7 @@ compile_routes() {
     done < "$dsl"
 
     {
-        printf '// Auto-generated from config/routes — do not edit directly\n\n'
+        printf '// Auto-generated from config/routes.jda — do not edit directly\n\n'
         cat "$fh"
         printf '\nfn routes(app: &ForgeApp) {\n'
         cat "$fb"
@@ -280,7 +280,7 @@ compile_routes() {
     } > "$out"
 
     rm -f "$fh" "$fb"
-    ok "compiled config/routes → _build/routes.jda"
+    ok "compiled config/routes.jda → _build/routes.jda"
 
     # Auto-generate _build/controllers.jda by scanning app/controllers/*.jda
     # Picks up every fn name(ctx: i64) { handler (no return type = it's a route handler)
@@ -780,7 +780,7 @@ fn app_config() -> ForgeConfig {
 JDA
     ok "created config/application.jda"
 
-    cat > "$name/config/routes" <<'DSL'
+    cat > "$name/config/routes.jda" <<'DSL'
 root "pages#home"
 
 # resources "posts" do
@@ -793,7 +793,7 @@ root "pages#home"
 #
 # get "/about" "pages#about" as "about"
 DSL
-    ok "created config/routes"
+    ok "created config/routes.jda"
 
 
     cat > "$name/app/controllers/application_controller.jda" <<'JDA'
@@ -949,7 +949,7 @@ run: build
 	./$(APP)
 
 watch:
-	@{ find app config -name "*.jda" -o -name "*.html.jda"; [ -f config/routes ] && echo config/routes; } \
+	@{ find app config -name "*.jda" -o -name "*.html.jda"; [ -f config/routes.jda ] && echo config/routes.jda; } \
 	    | entr -rn sh -c 'forge compile-routes 2>/dev/null; make run'
 
 test: _gen $(TEST_OUT)
@@ -1282,14 +1282,14 @@ gen_scaffold() {
 
     # Append resources entry to config/routes DSL
     mkdir -p config
-    if [ ! -f "config/routes" ]; then
-        cat > "config/routes" <<DSL
+    if [ ! -f "config/routes.jda" ]; then
+        cat > "config/routes.jda" <<DSL
 root "pages#home"
 DSL
-        ok "created config/routes"
+        ok "created config/routes.jda"
     fi
-    printf '\nresources "%s"\n' "$table" >> "config/routes"
-    ok "appended resources \"${table}\" to config/routes"
+    printf '\nresources "%s"\n' "$table" >> "config/routes.jda"
+    ok "appended resources \"${table}\" to config/routes.jda"
 
 
     mkdir -p test
@@ -1310,7 +1310,7 @@ JDA
     echo "  app/views/${table}/show.html.jda"
     echo "  app/views/${table}/new.html.jda"
     echo "  app/views/${table}/edit.html.jda"
-    echo "  config/routes  (appended — run forge build to recompile)"
+    echo "  config/routes.jda  (appended — run forge build to recompile)"
     echo "  test/test_${snake}s.jda"
 }
 
@@ -1389,7 +1389,7 @@ cmd_server() {
         command -v entr >/dev/null 2>&1 || err "'entr' not found. Install with: brew install entr  or  apt install entr"
         info "Starting Forge server with live reload (${env_name})"
         [ -n "$port" ] && dim "Port: ${port}"
-        { find . -name '*.jda' -not -path './libs/*' -not -path './_build/*'; [ -f config/routes ] && echo config/routes; } \
+        { find . -name '*.jda' -not -path './libs/*' -not -path './_build/*'; [ -f config/routes.jda ] && echo config/routes.jda; } \
             | entr -rn sh -c 'forge compile-routes 2>/dev/null; make run'
     else
         info "Starting Forge server (${env_name})"

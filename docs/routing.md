@@ -127,7 +127,7 @@ A wildcard matches across `/` boundaries and must appear at the end of the patte
 
 ### 2.5 The routes DSL
 
-**`config/routes`** is the only routing file you ever edit:
+**`config/routes.jda`** is the only routing file you ever edit:
 
 ```
 root "posts#index"
@@ -151,10 +151,10 @@ delete "/logout" "sessions#delete" as "logout"
 
 When you run `forge build` (or `forge server`, `forge test`), Forge automatically:
 
-1. Compiles `config/routes` → `config/routes.jda` (path helpers + `routes()` function)
-2. Scans `app/controllers/*.jda` for handler functions → `config/controllers.jda`
+1. Compiles `config/routes.jda` → `_build/routes.jda` (path helpers + `routes()` function)
+2. Scans `app/controllers/*.jda` for handler functions → `_build/controllers.jda`
 
-Both generated files are wired into the build by the Makefile. **You never read or edit them.** If an action defined in `config/routes` has no matching handler function in a controller, that route is silently skipped at runtime.
+Both generated files are wired into the build by the Makefile. **You never read or edit them.** If an action defined in `config/routes.jda` has no matching handler function in a controller, that route is silently skipped at runtime.
 
 ### 2.6 `app.resources` — 7 RESTful routes
 
@@ -881,7 +881,7 @@ app/views/posts/edit.html.jda
 test/test_posts.jda
 ```
 
-It also appends `resources "posts"` to `config/routes`. The next `forge build` auto-scans controllers and wires everything. No manual registration needed.
+It also appends `resources "posts"` to `config/routes.jda`. The next `forge build` auto-scans controllers and wires everything. No manual registration needed.
 
 Generated controller actions for a `Post` resource:
 
@@ -897,7 +897,7 @@ Generated controller actions for a `Post` resource:
 
 ### Path helpers
 
-`forge build` generates path helpers in `config/routes.jda` from your `config/routes` DSL:
+`forge build` generates path helpers in `config/routes.jda` from your `config/routes.jda` DSL:
 
 ```jda
 // Zero-arg paths — constants, no call needed
