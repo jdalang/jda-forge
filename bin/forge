@@ -365,7 +365,12 @@ compile_models() {
                 # Extract column name (word 1) and type (word 2)
                 local word1="${L%%[[:space:]]*}"; word1="${word1%%,*}"
                 [[ -z "$word1" ]] && continue
-                [[ "$word1" =~ ^(id|created_at|updated_at|deleted_at|PRIMARY|UNIQUE|INDEX|CHECK|CONSTRAINT|FOREIGN|KEY)$ ]] && continue
+                # Track deleted_at presence as a sentinel in tbl_cols
+                if [[ "$word1" == "deleted_at" ]]; then
+                    [ $tbl_idx -ge 0 ] && tbl_cols[$tbl_idx]+=" deleted_at:sd"
+                    continue
+                fi
+                [[ "$word1" =~ ^(id|created_at|updated_at|PRIMARY|UNIQUE|INDEX|CHECK|CONSTRAINT|FOREIGN|KEY)$ ]] && continue
                 local rest1="${L#"$word1"}"; rest1="${rest1#"${rest1%%[![:space:]]*}"}"
                 local word2="${rest1%%[[:space:]]*}"; word2="${word2%%,*}"
                 local type_up; type_up=$(printf '%s' "$word2" | tr '[:lower:]' '[:upper:]')
@@ -380,7 +385,17 @@ compile_models() {
             if [[ "$L" =~ ^ALTER[[:space:]]+TABLE[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]+ADD[[:space:]]+COLUMN([[:space:]]+IF[[:space:]]+NOT[[:space:]]+EXISTS)?[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]+([a-zA-Z]+) ]]; then
                 at="${BASH_REMATCH[1]}"; ac="${BASH_REMATCH[3]}"
                 local atype; atype=$(printf '%s' "${BASH_REMATCH[4]}" | tr '[:lower:]' '[:upper:]')
-                [[ "$ac" =~ ^(id|created_at|updated_at|deleted_at)$ ]] && continue
+                if [[ "$ac" == "deleted_at" ]]; then
+                    j=0; tn=${#tbl_names[@]}
+                    while [ $j -lt $tn ]; do
+                        if [ "${tbl_names[$j]}" = "$at" ]; then
+                            tbl_cols[$j]+=" deleted_at:sd"; break
+                        fi
+                        j=$((j+1))
+                    done
+                    continue
+                fi
+                [[ "$ac" =~ ^(id|created_at|updated_at)$ ]] && continue
                 local askip="0"
                 [[ "$atype" =~ ^(BOOLEAN|SERIAL|BIGSERIAL) ]] && askip="1"
                 j=0; tn=${#tbl_names[@]}
@@ -422,26 +437,46 @@ compile_models() {
         [[ "$tb" == forge_* ]] && continue
 
         local sing; sing=$(singularize "$tb")
+        # Detect whether this table has a deleted_at column (marked as :sd sentinel)
+        local has_deleted_at=0
+        [[ "${cs}" == *"deleted_at:sd"* ]] && has_deleted_at=1
         {
             printf '// === %s ===\n' "$tb"
-            printf 'fn %s_q() -> &ForgeQuery { ret forge_q("%s") }\n' "$sing" "$tb"
-            printf 'fn %s_all() -> &ForgeResult { ret forge_q("%s").order_desc("created_at").exec() }\n' "$sing" "$tb"
-            printf 'fn %s_find(id: []i8) -> &ForgeResult { ret forge_find("%s", id) }\n' "$sing" "$tb"
-            printf 'fn %s_find_by(col: []i8, val: []i8) -> &ForgeResult { ret forge_find_by("%s", col, val) }\n' "$sing" "$tb"
-            printf 'fn %s_where(col: []i8, val: []i8) -> &ForgeQuery { ret forge_q("%s").where_eq(col, val) }\n' "$sing" "$tb"
-            printf 'fn %s_count() -> i64 { ret forge_q("%s").count() }\n' "$sing" "$tb"
-            printf 'fn %s_exists(id: []i8) -> bool { ret forge_q("%s").where_eq("id", id).exists() }\n' "$sing" "$tb"
+            if [ $has_deleted_at -eq 1 ]; then
+                printf 'fn %s_q() -> &ForgeQuery { ret forge_q_where_not_deleted(forge_q("%s")) }\n' "$sing" "$tb"
+                printf 'fn %s_all() -> &ForgeResult { ret forge_q_where_not_deleted(forge_q("%s")).order_desc("created_at").exec() }\n' "$sing" "$tb"
+                printf 'fn %s_find(id: []i8) -> &ForgeResult { ret forge_q_where_not_deleted(forge_q("%s")).where_eq("id", id).first() }\n' "$sing" "$tb"
+                printf 'fn %s_find_by(col: []i8, val: []i8) -> &ForgeResult { ret forge_q_where_not_deleted(forge_q("%s")).where_eq(col, val).first() }\n' "$sing" "$tb"
+                printf 'fn %s_where(col: []i8, val: []i8) -> &ForgeQuery { ret forge_q_where_not_deleted(forge_q("%s")).where_eq(col, val) }\n' "$sing" "$tb"
+                printf 'fn %s_count() -> i64 { ret forge_q_where_not_deleted(forge_q("%s")).count() }\n' "$sing" "$tb"
+                printf 'fn %s_exists(id: []i8) -> bool { ret forge_q_where_not_deleted(forge_q("%s")).where_eq("id", id).exists() }\n' "$sing" "$tb"
+                printf 'fn %s_with_deleted() -> &ForgeQuery { ret forge_q_with_deleted(forge_q("%s")) }\n' "$sing" "$tb"
+                printf 'fn %s_only_deleted() -> &ForgeQuery { ret forge_q_only_deleted(forge_q("%s")) }\n' "$sing" "$tb"
+            else
+                printf 'fn %s_q() -> &ForgeQuery { ret forge_q("%s") }\n' "$sing" "$tb"
+                printf 'fn %s_all() -> &ForgeResult { ret forge_q("%s").order_desc("created_at").exec() }\n' "$sing" "$tb"
+                printf 'fn %s_find(id: []i8) -> &ForgeResult { ret forge_find("%s", id) }\n' "$sing" "$tb"
+                printf 'fn %s_find_by(col: []i8, val: []i8) -> &ForgeResult { ret forge_find_by("%s", col, val) }\n' "$sing" "$tb"
+                printf 'fn %s_where(col: []i8, val: []i8) -> &ForgeQuery { ret forge_q("%s").where_eq(col, val) }\n' "$sing" "$tb"
+                printf 'fn %s_count() -> i64 { ret forge_q("%s").count() }\n' "$sing" "$tb"
+                printf 'fn %s_exists(id: []i8) -> bool { ret forge_q("%s").where_eq("id", id).exists() }\n' "$sing" "$tb"
+            fi
             printf 'fn %s_delete(id: []i8) -> bool { ret forge_soft_delete("%s", id) }\n' "$sing" "$tb"
             printf 'fn %s_destroy(id: []i8) -> bool { ret forge_hard_delete("%s", id) }\n' "$sing" "$tb"
             printf 'fn %s_touch(id: []i8) -> bool { ret forge_touch("%s", id) }\n' "$sing" "$tb"
             printf 'fn %s_update_column(id: []i8, col: []i8, val: []i8) -> bool { ret forge_update_column("%s", id, col, val) }\n' "$sing" "$tb"
             printf 'fn %s_find_or_create_by(col: []i8, val: []i8) -> &ForgeResult { ret forge_find_or_create_by("%s", col, val) }\n' "$sing" "$tb"
+            printf 'fn %s_reload(id: []i8) -> &ForgeResult { ret forge_reload("%s", id) }\n' "$sing" "$tb"
+            printf 'fn %s_toggle(id: []i8, col: []i8) -> bool { ret forge_toggle("%s", id, col) }\n' "$sing" "$tb"
+            printf 'fn %s_increment(id: []i8, col: []i8, by: i64) -> bool { ret forge_increment("%s", id, col, by) }\n' "$sing" "$tb"
+            printf 'fn %s_decrement(id: []i8, col: []i8, by: i64) -> bool { ret forge_decrement("%s", id, col, by) }\n' "$sing" "$tb"
 
-            # Build create/update params (exclude skip=1 columns)
+            # Build create/update params (exclude skip=1 and system sentinel columns)
             local params="" chain=""
             for cv in ${cs:-}; do
                 c="${cv%%:*}"; local skip="${cv##*:}"
                 [ "$skip" = "1" ] && continue
+                [ "$skip" = "sd" ] && continue   # deleted_at sentinel
                 params+="${c}: []i8, "
                 chain+="        .set(\"${c}\", ${c})\n"
             done
