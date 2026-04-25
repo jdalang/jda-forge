@@ -2,15 +2,16 @@ APP   = blog
 FORGE = ../../forge.jda
 OUT   = _build/$(APP).jda
 
-CONFIG  = config.jda
-MODELS  = $(wildcard models/*.jda)
-VIEWS   = $(wildcard views/*.jda)
-ROUTES  = $(wildcard routes/*.jda)
-MAIN    = main.jda
+CONFIG      = config.jda
+MODELS      = $(wildcard models/*.jda)
+VIEWS       = $(wildcard views/*.jda)
+CONTROLLERS = $(wildcard controllers/*.jda)
+ROUTES      = $(wildcard routes/*.jda)
+MAIN        = main.jda
 
-SRC = $(CONFIG) $(MODELS) $(VIEWS) $(ROUTES) $(MAIN)
+SRC = $(CONFIG) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) $(MAIN)
 
-TEST_SRC = $(CONFIG) $(MODELS) $(VIEWS) $(ROUTES) $(wildcard test/*.jda)
+TEST_SRC = $(CONFIG) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) $(wildcard test/*.jda)
 TEST_OUT = _build/test.jda
 
 .PHONY: all build run watch test clean

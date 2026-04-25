@@ -308,6 +308,51 @@ fn app_put   (app: &ForgeApp, p: []i8, h: i64) { app_route(app, "PUT",    p, h) 
 fn app_delete(app: &ForgeApp, p: []i8, h: i64) { app_route(app, "DELETE", p, h) }
 fn app_patch (app: &ForgeApp, p: []i8, h: i64) { app_route(app, "PATCH",  p, h) }
 
+// ctx_render — send 200 HTML response (convenience alias for ctx_html)
+fn ctx_render(ctx: i64, html: []i8) { ctx_html(ctx, 200, html) }
+
+// =============================================================================
+// ForgeBuf — growable string buffer for view rendering
+//
+// Eliminates manual loop-copy boilerplate. Use in view functions:
+//
+//   fn view_posts_index(ctx: i64, posts: &ForgeResult) -> []i8 {
+//       let buf = forge_buf_new(8)
+//       buf.write("<h1>Posts</h1>")
+//       buf.write(tmpl_flash(ctx))
+//       loop r in 0..posts.count {
+//           buf.write(forge_result_col(posts, r, "title"))
+//       }
+//       ret tmpl_layout("Posts", buf.done())
+//   }
+//
+// buf.write() returns buf so calls can be chained.
+// buf.done() returns the accumulated []i8 slice.
+// =============================================================================
+
+struct ForgeBuf {
+    data: &i8
+    pos:  i64
+    cap:  i64
+}
+
+fn forge_buf_new(pages: i64) -> &ForgeBuf {
+    let b: &ForgeBuf = alloc_pages(1)
+    b.data = alloc_pages(pages)
+    b.pos  = 0
+    b.cap  = pages * 4096
+    ret b
+}
+
+fn forge_buf_write(b: &ForgeBuf, s: []i8) -> &ForgeBuf {
+    loop i in 0..s.len {
+        if b.pos < b.cap { b.data[b.pos] = s[i]  b.pos = b.pos + 1 }
+    }
+    ret b
+}
+
+fn forge_buf_done(b: &ForgeBuf) -> []i8 { ret b.data[0..b.pos] }
+
 // =============================================================================
 // Route scopes — namespace and nested resource grouping
 //

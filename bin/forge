@@ -807,73 +807,110 @@ gen_migration() {
     ok "created $out"
 }
 
+gen_view() {
+    local name="$1"
+    local snake; snake=$(snake_case "$name")
+    local table; table=$(plural "$snake")
+    mkdir -p views
+    local out="views/${snake}.jda"
+    cat > "$out" <<JDA
+// Views: ${name}
+
+fn view_${table}_index(ctx: i64, rows: &ForgeResult) -> []i8 {
+    let buf = forge_buf_new(8)
+    buf.write(tmpl_flash(ctx))
+    buf.write("<h1>${name}s</h1>")
+    buf.write("<a href=")  buf.write(new_${snake}_path)  buf.write(">New ${name}</a><hr>")
+    if rows.count == 0 { buf.write("<p>No ${table} yet.</p>") }
+    loop r in 0..rows.count {
+        let id = forge_result_col(rows, r, "id")
+        buf.write("<div><a href=")
+        buf.write(${snake}_path(id))
+        buf.write(">")
+        buf.write(id)
+        buf.write("</a></div>")
+    }
+    ret tmpl_layout("${name}s", buf.done())
+}
+
+fn view_${snake}_show(ctx: i64, row: &ForgeResult) -> []i8 {
+    let id  = forge_result_col(row, 0, "id")
+    let tok = forge_csrf_token(ctx)
+    let buf = forge_buf_new(4)
+    buf.write(tmpl_flash(ctx))
+    buf.write("<h1>${name} #")  buf.write(id)  buf.write("</h1>")
+    buf.write(" <a href=")  buf.write(edit_${snake}_path(id))  buf.write(">Edit</a> &nbsp;")
+    buf.write(forge_link_to_delete("Delete", ${snake}_path(id), tok))
+    ret tmpl_layout("${name}", buf.done())
+}
+
+fn view_${snake}_new(ctx: i64) -> []i8 {
+    let buf = forge_buf_new(2)
+    buf.write(tmpl_flash(ctx))
+    buf.write("<h1>New ${name}</h1>")
+    buf.write("<form method=POST action=")  buf.write(${table}_path)  buf.write(">")
+    buf.write("<input type=hidden name=_csrf value=\"")  buf.write(forge_csrf_token(ctx))  buf.write("\">")
+    buf.write("<button>Create</button> <a href=")  buf.write(${table}_path)  buf.write(">Cancel</a></form>")
+    ret tmpl_layout("New ${name}", buf.done())
+}
+
+fn view_${snake}_edit(ctx: i64, row: &ForgeResult) -> []i8 {
+    let id  = forge_result_col(row, 0, "id")
+    let buf = forge_buf_new(2)
+    buf.write("<h1>Edit ${name}</h1>")
+    buf.write("<form method=POST action=")  buf.write(${snake}_path(id))  buf.write(">")
+    buf.write("<input type=hidden name=_method value=PUT>")
+    buf.write("<input type=hidden name=_csrf value=\"")  buf.write(forge_csrf_token(ctx))  buf.write("\">")
+    buf.write("<button>Update</button> <a href=")  buf.write(${snake}_path(id))  buf.write(">Cancel</a></form>")
+    ret tmpl_layout("Edit ${name}", buf.done())
+}
+JDA
+    ok "created $out"
+}
+
 gen_controller() {
     local name="$1"
     local snake; snake=$(snake_case "$name")
     local table; table=$(plural "$snake")
     mkdir -p controllers
-    local out="controllers/${snake}s_controller.jda"
+    local out="controllers/${snake}.jda"
     cat > "$out" <<JDA
-// Controller: ${name}s
+// Controller: ${name}
 
-// Path helpers
-let ${table}_path: []i8    = "/${table}"
-let new_${snake}_path: []i8 = "/${table}/new"
-fn ${snake}_path(id: []i8) -> []i8      { ret forge_path_id("${table}", id) }
-fn edit_${snake}_path(id: []i8) -> []i8 { ret forge_path_edit("${table}", id) }
-
-let g_${snake}_ctrl: &ForgeController = 0
-
-fn ${snake}_ctrl_init() {
-    if g_${snake}_ctrl != 0 { ret }
-    g_${snake}_ctrl = forge_ctrl_new()
-    forge_ctrl_before(g_${snake}_ctrl, fn_addr(require_login), "create")
-    forge_ctrl_before(g_${snake}_ctrl, fn_addr(require_login), "update")
-    forge_ctrl_before(g_${snake}_ctrl, fn_addr(require_login), "delete")
+fn ${table}_index(ctx: i64) {
+    ctx_render(ctx, view_${table}_index(ctx, forge_all("${table}")))
 }
 
-fn ${snake}_index_action(ctx: i64) {
-    let res = forge_all("${table}")
-    if forge_slice_eq(ctx_format(ctx), "json") { ctx_json(ctx, 200, forge_result_to_json(res)) }
-    else { ctx_html(ctx, 200, "<h1>${name}s</h1>") }
+fn ${table}_new(ctx: i64) {
+    ctx_render(ctx, view_${snake}_new(ctx))
 }
-fn ${snake}_show_action(ctx: i64) {
-    let res = forge_find("${table}", ctx_param(ctx, "id"))
-    if res.count == 0 { ctx_not_found(ctx)  ret }
-    if forge_slice_eq(ctx_format(ctx), "json") { ctx_json(ctx, 200, forge_row_to_json(res, 0)) }
-    else { ctx_html(ctx, 200, "<h1>${name}</h1>") }
-}
-fn ${snake}_new_action(ctx: i64)    { ctx_html(ctx, 200, "<h1>New ${name}</h1>") }
-fn ${snake}_create_action(ctx: i64) { ctx_flash_set(ctx, "notice", "Created.")  ctx_redirect(ctx, ${table}_path) }
-fn ${snake}_edit_action(ctx: i64) {
-    let res = forge_find("${table}", ctx_param(ctx, "id"))
-    if res.count == 0 { ctx_not_found(ctx)  ret }
-    ctx_html(ctx, 200, "<h1>Edit ${name}</h1>")
-}
-fn ${snake}_update_action(ctx: i64) { ctx_flash_set(ctx, "notice", "Updated.")  ctx_redirect(ctx, ${table}_path) }
-fn ${snake}_delete_action(ctx: i64) {
-    forge_soft_delete("${table}", ctx_param(ctx, "id"))
-    ctx_flash_set(ctx, "notice", "Deleted.")
+
+fn ${table}_create(ctx: i64) {
+    ctx_flash_set(ctx, "notice", "Created.")
     ctx_redirect(ctx, ${table}_path)
 }
 
-fn handle_${snake}_index(ctx: i64)  { ${snake}_ctrl_init()  forge_ctrl_dispatch(g_${snake}_ctrl, ctx, fn_addr(${snake}_index_action),  "index")  }
-fn handle_${snake}_show(ctx: i64)   { ${snake}_ctrl_init()  forge_ctrl_dispatch(g_${snake}_ctrl, ctx, fn_addr(${snake}_show_action),   "show")   }
-fn handle_${snake}_new(ctx: i64)    { ${snake}_ctrl_init()  forge_ctrl_dispatch(g_${snake}_ctrl, ctx, fn_addr(${snake}_new_action),    "new")    }
-fn handle_${snake}_create(ctx: i64) { ${snake}_ctrl_init()  forge_ctrl_dispatch(g_${snake}_ctrl, ctx, fn_addr(${snake}_create_action), "create") }
-fn handle_${snake}_edit(ctx: i64)   { ${snake}_ctrl_init()  forge_ctrl_dispatch(g_${snake}_ctrl, ctx, fn_addr(${snake}_edit_action),   "edit")   }
-fn handle_${snake}_update(ctx: i64) { ${snake}_ctrl_init()  forge_ctrl_dispatch(g_${snake}_ctrl, ctx, fn_addr(${snake}_update_action), "update") }
-fn handle_${snake}_delete(ctx: i64) { ${snake}_ctrl_init()  forge_ctrl_dispatch(g_${snake}_ctrl, ctx, fn_addr(${snake}_delete_action), "delete") }
+fn ${table}_show(ctx: i64) {
+    let row = forge_find("${table}", ctx_param(ctx, "id"))
+    if row.count == 0 { ctx_not_found(ctx)  ret }
+    ctx_render(ctx, view_${snake}_show(ctx, row))
+}
 
-fn ${snake}s_routes(app: &ForgeApp) {
-    ${snake}_ctrl_init()
-    app_get   (app, "/${table}",          fn_addr(handle_${snake}_index))
-    app_get   (app, "/${table}/new",      fn_addr(handle_${snake}_new))
-    app_get   (app, "/${table}/:id",      fn_addr(handle_${snake}_show))
-    app_post  (app, "/${table}",          fn_addr(handle_${snake}_create))
-    app_get   (app, "/${table}/:id/edit", fn_addr(handle_${snake}_edit))
-    app_put   (app, "/${table}/:id",      fn_addr(handle_${snake}_update))
-    app_delete(app, "/${table}/:id",      fn_addr(handle_${snake}_delete))
+fn ${table}_edit(ctx: i64) {
+    let row = forge_find("${table}", ctx_param(ctx, "id"))
+    if row.count == 0 { ctx_not_found(ctx)  ret }
+    ctx_render(ctx, view_${snake}_edit(ctx, row))
+}
+
+fn ${table}_update(ctx: i64) {
+    ctx_flash_set(ctx, "notice", "Updated.")
+    ctx_redirect(ctx, ${snake}_path(ctx_param(ctx, "id")))
+}
+
+fn ${table}_delete(ctx: i64) {
+    forge_soft_delete("${table}", ctx_param(ctx, "id"))
+    ctx_flash_set(ctx, "notice", "Deleted.")
+    ctx_redirect(ctx, ${table}_path)
 }
 JDA
     ok "created $out"
@@ -886,10 +923,31 @@ gen_scaffold() {
     info "Generating scaffold for ${name}..."
     gen_migration "create_${table}" "${fields[@]:-}"
     gen_model "$name" "${fields[@]:-}"
+    gen_view "$name"
     gen_controller "$name"
+    mkdir -p routes
+    cat > "routes/${snake}.jda" <<JDA
+// Routes: ${name}
+
+let ${table}_path: []i8    = "/${table}"
+let new_${snake}_path: []i8 = "/${table}/new"
+fn ${snake}_path(id: []i8) -> []i8      { ret forge_path_id("${table}", id) }
+fn edit_${snake}_path(id: []i8) -> []i8 { ret forge_path_edit("${table}", id) }
+
+fn register_${snake}_routes(app: &ForgeApp) {
+    app_get   (app, "/${table}",          fn_addr(${table}_index))
+    app_get   (app, "/${table}/new",      fn_addr(${table}_new))
+    app_post  (app, "/${table}",          fn_addr(${table}_create))
+    app_get   (app, "/${table}/:id",      fn_addr(${table}_show))
+    app_get   (app, "/${table}/:id/edit", fn_addr(${table}_edit))
+    app_put   (app, "/${table}/:id",      fn_addr(${table}_update))
+    app_delete(app, "/${table}/:id",      fn_addr(${table}_delete))
+}
+JDA
+    ok "created routes/${snake}.jda"
     mkdir -p test
     cat > "test/test_${snake}s.jda" <<JDA
-fn test_${snake}s_index() {
+fn test_${table}_index() {
     forge_get(${table}_path).ok(200)
 }
 fn test_${snake}_not_found() {
@@ -898,7 +956,7 @@ fn test_${snake}_not_found() {
 JDA
     ok "created test/test_${snake}s.jda"
     echo ""
-    echo "  Add to main(): ${snake}s_routes(app)"
+    echo "  Add to main(): register_${snake}_routes(app)"
 }
 
 # ---------------------------------------------------------------------------
