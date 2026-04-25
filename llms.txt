@@ -1,0 +1,63 @@
+# JDA Forge
+
+> A full-stack web framework for the [Jda language](https://github.com/jdalang/jda). Ships as a single `--include` file; everything from routing and ORM to mailer, WebSocket, testing, and background jobs is built in. Jda compiles to native x86-64 binaries, calls the kernel directly (no libc), manages memory without a GC, and uses UFCS for method-style chaining. Forge brings Rails-style conventions to that environment.
+
+## Key language facts
+
+- Every function is global — no modules, no imports. Convention: prefix with table/domain name (`post_create`, `view_posts_index`).
+- UFCS: `post_q().where_eq("published", "true").order_desc("created_at").exec()` — chaining is syntax sugar, not OOP.
+- Memory: per-request arena managed by Forge; use `ForgeBuf` to build strings. No GC, no pauses.
+- Strings are `[]i8` (byte slice). Raw pointer is `&i8`. Function pointers passed as `fn_addr(fn_name)`, called via `call_fn`.
+- No closures. Callbacks and job functions are passed as `fn_addr`.
+
+## Quick start
+
+```bash
+forge new myapp && cd myapp
+forge install
+cp .env.example .env.development   # set DATABASE_URL and APP_SECRET
+forge server                        # build + start on :8080
+```
+
+## CLI reference (forge)
+
+```
+forge server [--port N] [--environment ENV]   # build + start dev server (alias: forge s)
+forge console [--environment ENV]             # database console (alias: forge c)
+forge new <name>                              # scaffold new project
+forge install [--locked]                      # install deps from Forgefile
+forge add <lib> [--version v1.2.0]           # add a library
+forge update [<lib>]                          # update all or one library
+forge list                                    # show installed libraries
+forge generate scaffold Post title:string body:text
+forge generate model    Post title:string
+forge generate migration add_slug_to_posts slug:string
+forge compile-routes                          # regenerate _build/routes.jda
+forge compile-models                          # regenerate _build/models.jda
+forge release v3.1.0
+forge self-update [--version v3.1.0]
+```
+
+## Docs
+
+- [Getting Started](docs/getting-started.md): Installation, project structure, build pipeline, first handler, scaffold walkthrough, running tests.
+- [Blog Example](docs/blog-example.md): Full walkthrough of the example app — Posts + Comments CRUD, sessions, CSRF, validations, callbacks, soft delete.
+- [Routing](docs/routing.md): Route DSL, resources, namespaces, nested resources, path helpers, before/after filters, reading request data, sending responses, cookies, flash, sessions, middleware.
+- [Models](docs/models.md): Query builder, generated CRUD API, soft delete scoping, validations (including on_create/on_update), associations, callbacks, controller before-actions, transactions, migrations, model utilities (reload, toggle, increment, decrement).
+- [Views](docs/views.md): HTML helpers, form builder, layout, partials, escaping, view helpers (time_ago, number_to_currency, word_wrap).
+- [Security](docs/security.md): SQL injection prevention, XSS/HTML escaping, CSRF, bcrypt passwords, JWT helpers, secure headers, rate limiting, timing-safe token comparison.
+- [Testing](docs/testing.md): In-process request tests, assertions, database fixtures, transaction rollback per test, JSON response assertions.
+- [Configuration](docs/configuration.md): Environments, .env files, app_config, log levels.
+- [Mailer](docs/mailer.md): SMTP, HTML/text bodies, async delivery, ForgeMail struct.
+- [Background Jobs](docs/background-jobs.md): Worker pool, forge_job_enqueue, forge_job_enqueue_retry.
+- [WebSocket](docs/websocket.md): Upgrade, send/receive, broadcast patterns.
+- [SSE](docs/sse.md): Server-Sent Events — live feeds, notifications.
+- [Caching](docs/caching.md): forge_cache_fetch (memoized TTL cache), response caching middleware.
+- [File Uploads](docs/file-uploads.md): Multipart parsing, validation, saving uploads.
+- [i18n](docs/i18n.md): Locale files, translation, per-request locale.
+- [Libraries](docs/libraries.md): Forgefile format, version pinning, Forgefile.lock, writing libraries.
+- [Overriding](docs/overriding.md): Monkey patching, patch files, middleware override.
+
+## Optional: full content
+
+- [llms-full.txt](llms-full.txt): All documentation concatenated into a single file.
