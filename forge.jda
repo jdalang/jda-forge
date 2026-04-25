@@ -1,91 +1,143 @@
 // =============================================================================
-// JDA Forge — Web Framework for the Jda Language
+// JDA Forge — Competitive Web Framework for the Jda Language
+// Version 2.0
 // =============================================================================
 //
 // USAGE
 //   jda build --include path/to/forge.jda myapp.jda
 //
 // QUICK START
-//   fn handle_hello(ctx: i64) {
-//       ctx_text(ctx, 200, "Hello, World!")
-//   }
-//
 //   fn main() {
 //       let app = app_new()
-//       app_get(app, "/", fn_addr(handle_hello))
+//       app_use(app, fn_addr(forge_logger))
+//       app_get(app, "/", fn_addr(handle_root))
 //       app_listen(app, 8080)
 //   }
 //
-// ROUTES
-//   app_get(app, "/users/:id", fn_addr(handler))   // named param → ctx_param
-//   app_get(app, "/files/*",   fn_addr(handler))   // wildcard
+// ROUTE GROUPS
+//   let api = app_group(app, "/api/v1")
+//   group_use(&api, fn_addr(auth_middleware))    // scoped middleware
+//   group_get(&api, "/users",     fn_addr(list_users))
+//   group_post(&api, "/users",    fn_addr(create_user))
+//   group_get(&api, "/users/:id", fn_addr(get_user))
 //
-// CONTEXT API  (ctx: i64 passed to every handler)
-//   ctx_param(ctx, "id")          -> []i8   named path parameter
-//   ctx_query(ctx, "page")        -> []i8   query string value
-//   ctx_header(ctx, "Accept")     -> []i8   request header
-//   ctx_method(ctx)               -> []i8   HTTP method ("GET", "POST", …)
-//   ctx_path(ctx)                 -> []i8   request path
-//   ctx_body(ctx)                 -> []i8   raw request body
-//   ctx_body_json(ctx)            -> Result<JsonValue, []i8>
+// CONTEXT API  (ctx: i64 in every handler/middleware)
+//   ctx_param(ctx, "id")              -> []i8   :param from path
+//   ctx_query(ctx, "page")            -> []i8   ?key=value
+//   ctx_header(ctx, "Accept")         -> []i8   request header
+//   ctx_method(ctx)                   -> []i8   "GET" / "POST" / …
+//   ctx_path(ctx)                     -> []i8   "/users/42"
+//   ctx_body(ctx)                     -> []i8   raw body bytes
+//   ctx_body_json(ctx)                -> Result<JsonValue, []i8>
+//   ctx_cookie(ctx, "session")        -> []i8   cookie value
+//   ctx_set(ctx, "user_id", ptr)                store arbitrary value
+//   ctx_get(ctx, "user_id")           -> i64    retrieve stored value
 //
-//   ctx_text(ctx, 200, "ok")                 text/plain response
-//   ctx_json(ctx, 200, "{\"ok\":true}")      application/json response
-//   ctx_html(ctx, 200, "<h1>Hi</h1>")        text/html response
-//   ctx_ok(ctx, "done")                       200 text shorthand
-//   ctx_no_content(ctx)                       204 No Content
-//   ctx_bad_request(ctx, "reason")            400
-//   ctx_not_found(ctx)                        404
-//   ctx_method_not_allowed(ctx)               405
-//   ctx_internal_error(ctx, "oops")           500
-//   ctx_redirect(ctx, "/login")               302 redirect
-//   ctx_set_header(ctx, "X-Foo", "bar")      add response header
+// RESPONSE
+//   ctx_text(ctx, 200, "hello")
+//   ctx_json(ctx, 200, "{\"ok\":true}")
+//   ctx_html(ctx, 200, "<h1>Hi</h1>")
+//   ctx_ok / ctx_created / ctx_no_content / ctx_bad_request
+//   ctx_unauthorized / ctx_forbidden / ctx_not_found / ctx_internal_error
+//   ctx_redirect(ctx, "/login")          302
+//   ctx_redirect_perm(ctx, "/new")       301
+//   ctx_set_header(ctx, "X-Foo", "bar")
+//   ctx_set_cookie(ctx, "session", "abc", 3600)
+//   ctx_del_cookie(ctx, "session")
 //
-// MIDDLEWARE
-//   app_use(app, fn_addr(forge_logger))    built-in request logger
-//   app_use(app, fn_addr(forge_cors))      built-in permissive CORS
-//   app_use(app, fn_addr(my_mw))           custom — fn my_mw(ctx: i64) { … }
-//                                          call ctx_not_found / ctx_text to abort
+// WEBSOCKET
+//   fn my_ws_handler(ctx: i64) {
+//       if ctx_upgrade_ws(ctx) {
+//           let fd = ctx_fd(ctx)
+//           loop {
+//               let buf = [4096]i8
+//               let n = forge_ws_recv(fd, buf, 4096)
+//               if n <= 0 { break }
+//               forge_ws_send_text(fd, buf[0..n])
+//           }
+//       }
+//   }
+//
+// STATIC FILES
+//   app_static(app, "/public", "./www")    // GET /public/file.js → ./www/file.js
+//
+// TEMPLATE RENDERING
+//   let vars = erb_vars_new()
+//   erb_vars_set(vars, "name", 4, "Alice", 5)
+//   ctx_render(ctx, 200, "Hello, <%= name %>!", vars)
+//
+// BUILT-IN MIDDLEWARE
+//   forge_logger          request logger
+//   forge_cors            permissive CORS + OPTIONS preflight
+//   forge_recover         log 500s and keep server alive
+//   forge_request_id      X-Request-ID header
+//   forge_no_cache        Cache-Control: no-cache
+//   forge_secure_headers  security headers (HSTS, XSS, etc.)
+//   forge_rate_limit      100 req/min global token bucket
+//   forge_basic_auth      HTTP Basic Auth (reads FORGE_USER / FORGE_PASS env)
 // =============================================================================
 
-import jda::net::tcp::{ TcpListener }
+import jda::net::tcp::{ TcpListener, TcpStream }
 import jda::net::http::{ HttpRequest, HttpResponse, parse_request, send_response }
 import jda::json::{ JsonValue, json_parse }
+import jda::crypto::{ sha1, hmac_sha256 }
+import jda::base64::{ b64_encode, b64_decode }
+import jda::file_io::{ fs_read_file, path_join }
+import jda::time::{ time_now_ms }
+import jda::erb::{ erb_vars_new, erb_vars_set, erb_render }
 
 // =============================================================================
-// Tuneable limits
+// Constants
 // =============================================================================
-const FORGE_WORKERS    = 256      // J-Thread worker pool size
-const FORGE_MAX_ROUTES = 128      // max registered routes
-const FORGE_MAX_MW     = 16       // max middleware layers
-const FORGE_MAX_PARAMS = 16       // max path parameters per request
-const FORGE_MAX_HDRS   = 32       // max response headers per request
-const FORGE_REQ_SIZE   = 8192     // max HTTP request size in bytes
+const FORGE_WORKERS      = 256
+const FORGE_MAX_ROUTES   = 256
+const FORGE_MAX_MW       = 16
+const FORGE_MAX_PARAMS   = 16
+const FORGE_MAX_HDRS     = 32
+const FORGE_MAX_STORE    = 16
+const FORGE_MAX_STATIC   = 8
+const FORGE_MAX_GRP_MW   = 4
+const FORGE_REQ_SIZE     = 8192
+const FORGE_STATIC_BUF   = 1048576   // 1 MB max static file
 
-const FORGE_SYS_WRITE   = 1
+const FORGE_SYS_WRITE    = 1
 const FORGE_SYS_RECVFROM = 45
 const FORGE_SYS_CLOSE    = 3
 
 // =============================================================================
-// ForgeParam — one captured path parameter (e.g. :id → "42")
+// ForgeConfig — server configuration
 // =============================================================================
-struct ForgeParam {
-    key: []i8
-    val: []i8
+struct ForgeConfig {
+    host:       []i8
+    port:       i32
+    workers:    i32
+    max_body:   i64    // bytes; 0 = 1 MB default
+}
+
+fn forge_default_config() -> ForgeConfig {
+    ret ForgeConfig {
+        host:    "0.0.0.0",
+        port:    8080,
+        workers: 256,
+        max_body: 1048576,
+    }
 }
 
 // =============================================================================
-// ForgeHdr — one outgoing response header
+// Data types
 // =============================================================================
-struct ForgeHdr {
-    name: []i8
-    val:  []i8
+
+struct ForgeParam { key: []i8  val: []i8 }
+struct ForgeHdr   { name: []i8  val: []i8 }
+struct ForgeKV    { key: []i8  val: i64 }
+
+struct ForgeStaticRoute {
+    url_prefix: []i8
+    fs_root:    []i8
 }
 
 // =============================================================================
-// ForgeCtx — per-request context
-// Passed as an opaque i64 pointer to every handler and middleware function.
-// Access via ctx_* helper functions below.
+// ForgeCtx — per-request context (passed as i64 pointer to handlers)
 // =============================================================================
 struct ForgeCtx {
     req:         HttpRequest
@@ -94,138 +146,215 @@ struct ForgeCtx {
     param_count: i64
     out_hdrs:    [FORGE_MAX_HDRS]ForgeHdr
     out_hcount:  i64
+    store:       [FORGE_MAX_STORE]ForgeKV
+    store_count: i64
     sent:        bool
+    is_ws:       bool       // set to true after successful WebSocket upgrade
 }
 
 // =============================================================================
-// ForgeRoute — registered route entry
+// ForgeRoute — single registered route
 // =============================================================================
 struct ForgeRoute {
-    method:  []i8
-    pattern: []i8
-    handler: i64    // fn(ctx: i64)
+    method:   []i8
+    pattern:  []i8
+    handler:  i64
+    grp_mw:  [FORGE_MAX_GRP_MW]i64   // group-scoped middleware
+    grp_mwc: i64
+    is_ws:    bool
+}
+
+// =============================================================================
+// ForgeGroup — route group with shared prefix and middleware
+// =============================================================================
+struct ForgeGroup {
+    app:      &ForgeApp
+    prefix:   []i8
+    mw:      [FORGE_MAX_GRP_MW]i64
+    mw_count: i64
 }
 
 // =============================================================================
 // ForgeApp — the application object
-// Create with app_new(). Register routes with app_get/post/… .
-// Start serving with app_listen().
 // =============================================================================
 struct ForgeApp {
-    routes:      [FORGE_MAX_ROUTES]ForgeRoute
-    route_count: i64
-    middleware:  [FORGE_MAX_MW]i64
-    mw_count:    i64
+    routes:          [FORGE_MAX_ROUTES]ForgeRoute
+    route_count:     i64
+    middleware:      [FORGE_MAX_MW]i64
+    mw_count:        i64
+    after:           [FORGE_MAX_MW]i64   // post-handler middleware
+    after_count:     i64
+    static_routes:   [FORGE_MAX_STATIC]ForgeStaticRoute
+    static_count:    i64
+    not_found_h:     i64   // custom 404 handler (0 = default)
+    error_h:         i64   // custom 500 handler (0 = default)
+    config:          ForgeConfig
 }
 
-// Global app pointer written in app_listen, read by workers (read-only after start)
 let g_forge_app: i64 = 0
 
 // =============================================================================
-// App — construction and route registration
+// App construction
 // =============================================================================
 
-// Create a new heap-allocated ForgeApp.
 fn app_new() -> &ForgeApp {
-    let app: &ForgeApp = alloc_pages(2)
-    app.route_count = 0
-    app.mw_count    = 0
+    let app: &ForgeApp = alloc_pages(8)
+    app.route_count  = 0
+    app.mw_count     = 0
+    app.after_count  = 0
+    app.static_count = 0
+    app.not_found_h  = 0
+    app.error_h      = 0
+    app.config       = forge_default_config()
     ret app
 }
 
-// Register a route for any HTTP method.
+fn app_new_config(cfg: ForgeConfig) -> &ForgeApp {
+    let app = app_new()
+    app.config = cfg
+    ret app
+}
+
+fn app_not_found(app: &ForgeApp, handler: i64) { app.not_found_h = handler }
+fn app_on_error (app: &ForgeApp, handler: i64) { app.error_h     = handler }
+
+fn app_after(app: &ForgeApp, mw: i64) {
+    let n = app.after_count
+    if n < FORGE_MAX_MW { app.after[n] = mw   app.after_count = n + 1 }
+}
+
+// =============================================================================
+// Route registration
+// =============================================================================
+
 fn app_route(app: &ForgeApp, method: []i8, pattern: []i8, handler: i64) {
     let n = app.route_count
     if n < FORGE_MAX_ROUTES {
         app.routes[n].method  = method
         app.routes[n].pattern = pattern
         app.routes[n].handler = handler
+        app.routes[n].grp_mwc = 0
+        app.routes[n].is_ws   = false
         app.route_count = n + 1
     }
 }
 
-fn app_get   (app: &ForgeApp, pattern: []i8, handler: i64) { app_route(app, "GET",    pattern, handler) }
-fn app_post  (app: &ForgeApp, pattern: []i8, handler: i64) { app_route(app, "POST",   pattern, handler) }
-fn app_put   (app: &ForgeApp, pattern: []i8, handler: i64) { app_route(app, "PUT",    pattern, handler) }
-fn app_delete(app: &ForgeApp, pattern: []i8, handler: i64) { app_route(app, "DELETE", pattern, handler) }
-fn app_patch (app: &ForgeApp, pattern: []i8, handler: i64) { app_route(app, "PATCH",  pattern, handler) }
+fn app_get   (app: &ForgeApp, p: []i8, h: i64) { app_route(app, "GET",    p, h) }
+fn app_post  (app: &ForgeApp, p: []i8, h: i64) { app_route(app, "POST",   p, h) }
+fn app_put   (app: &ForgeApp, p: []i8, h: i64) { app_route(app, "PUT",    p, h) }
+fn app_delete(app: &ForgeApp, p: []i8, h: i64) { app_route(app, "DELETE", p, h) }
+fn app_patch (app: &ForgeApp, p: []i8, h: i64) { app_route(app, "PATCH",  p, h) }
 
-// Register a middleware function. Runs before every route handler.
-// Middleware signature: fn my_mw(ctx: i64)
-// To reject a request (e.g. auth failure) call ctx_text/ctx_json then return —
-// forge checks ctx.sent after each layer and skips the handler if already sent.
+fn app_ws(app: &ForgeApp, pattern: []i8, handler: i64) {
+    let n = app.route_count
+    if n < FORGE_MAX_ROUTES {
+        app.routes[n].method  = "GET"
+        app.routes[n].pattern = pattern
+        app.routes[n].handler = handler
+        app.routes[n].grp_mwc = 0
+        app.routes[n].is_ws   = true
+        app.route_count = n + 1
+    }
+}
+
 fn app_use(app: &ForgeApp, mw: i64) {
     let n = app.mw_count
-    if n < FORGE_MAX_MW {
-        app.middleware[n] = mw
-        app.mw_count = n + 1
+    if n < FORGE_MAX_MW { app.middleware[n] = mw   app.mw_count = n + 1 }
+}
+
+fn app_static(app: &ForgeApp, url_prefix: []i8, fs_root: []i8) {
+    let n = app.static_count
+    if n < FORGE_MAX_STATIC {
+        app.static_routes[n].url_prefix = url_prefix
+        app.static_routes[n].fs_root    = fs_root
+        app.static_count = n + 1
     }
 }
 
 // =============================================================================
-// Internal helpers
+// Route groups
 // =============================================================================
 
-// Byte-exact equality of two []i8 slices.
+fn app_group(app: &ForgeApp, prefix: []i8) -> ForgeGroup {
+    ret ForgeGroup { app: app, prefix: prefix, mw_count: 0 }
+}
+
+fn group_use(grp: &ForgeGroup, mw: i64) {
+    let n = grp.mw_count
+    if n < FORGE_MAX_GRP_MW { grp.mw[n] = mw   grp.mw_count = n + 1 }
+}
+
+fn group_route(grp: &ForgeGroup, method: []i8, pattern: []i8, handler: i64) {
+    // Build prefix + pattern on the heap so the slice outlives this call
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    let pfx = grp.prefix
+    loop i in 0..pfx.len     { buf[pos] = pfx[i]      pos = pos + 1 }
+    loop i in 0..pattern.len { buf[pos] = pattern[i]  pos = pos + 1 }
+    let full_path = buf[0..pos]
+
+    let app = grp.app
+    let n = app.route_count
+    if n < FORGE_MAX_ROUTES {
+        app.routes[n].method  = method
+        app.routes[n].pattern = full_path
+        app.routes[n].handler = handler
+        app.routes[n].is_ws   = false
+        // Copy group middleware into route
+        let mc = grp.mw_count
+        app.routes[n].grp_mwc = mc
+        loop i in 0..mc { app.routes[n].grp_mw[i] = grp.mw[i] }
+        app.route_count = n + 1
+    }
+}
+
+fn group_get   (grp: &ForgeGroup, p: []i8, h: i64) { group_route(grp, "GET",    p, h) }
+fn group_post  (grp: &ForgeGroup, p: []i8, h: i64) { group_route(grp, "POST",   p, h) }
+fn group_put   (grp: &ForgeGroup, p: []i8, h: i64) { group_route(grp, "PUT",    p, h) }
+fn group_delete(grp: &ForgeGroup, p: []i8, h: i64) { group_route(grp, "DELETE", p, h) }
+fn group_patch (grp: &ForgeGroup, p: []i8, h: i64) { group_route(grp, "PATCH",  p, h) }
+
+// =============================================================================
+// Internal: slice equality
+// =============================================================================
 fn forge_slice_eq(a: []i8, b: []i8) -> bool {
     if a.len != b.len { ret false }
-    loop i in 0..a.len {
-        if a[i] != b[i] { ret false }
-    }
+    loop i in 0..a.len { if a[i] != b[i] { ret false } }
     ret true
 }
 
-// Write a []i8 slice into a byte buffer at offset `pos`. Returns new pos.
-fn forge_write_slice(buf: &i8, pos: i64, s: []i8) -> i64 {
-    loop i in 0..s.len {
-        buf[pos] = s[i]
-        pos = pos + 1
-    }
-    ret pos
+fn forge_starts_with(s: []i8, prefix: []i8) -> bool {
+    if s.len < prefix.len { ret false }
+    loop i in 0..prefix.len { if s[i] != prefix[i] { ret false } }
+    ret true
 }
 
 // =============================================================================
 // Path pattern matching
-//
-// Segments are matched left-to-right split by '/'.
-//   :name   captures the path segment into ctx.params
-//   *       matches the rest of the path (wildcard, must be last segment)
-//   literal exact comparison
-//
-// Returns true if pattern matches path; populates ctx.params on success.
+// Segments: /:param  /*wildcard  /literal
 // =============================================================================
 fn forge_match_path(pattern: []i8, path: []i8, ctx: &ForgeCtx) -> bool {
     let pi = 0i64
     let ri = 0i64
-
-    // Skip leading slashes
     if pi < pattern.len and pattern[pi] == '/' { pi = pi + 1 }
     if ri < path.len    and path[ri]    == '/' { ri = ri + 1 }
 
     loop {
-        // Extract next pattern segment (up to '/' or end)
         let ps = pi
         loop pi < pattern.len and pattern[pi] != '/' { pi = pi + 1 }
         let pseg = pattern[ps..pi]
-        if pi < pattern.len { pi = pi + 1 }   // consume '/'
+        if pi < pattern.len { pi = pi + 1 }
 
-        // Extract next path segment
         let rs = ri
         loop ri < path.len and path[ri] != '/' { ri = ri + 1 }
         let rseg = path[rs..ri]
-        if ri < path.len { ri = ri + 1 }      // consume '/'
+        if ri < path.len { ri = ri + 1 }
 
-        // Wildcard: consume rest of path
         if pseg.len == 1 and pseg[0] == '*'   { ret true }
-
-        // Both exhausted: complete match
         if pseg.len == 0 and rseg.len == 0    { ret true }
-
-        // One side exhausted: segment count mismatch
         if pseg.len == 0 or  rseg.len == 0   { ret false }
 
         if pseg[0] == ':' {
-            // Named parameter: capture value
             let n = ctx.param_count
             if n < FORGE_MAX_PARAMS {
                 ctx.params[n].key = pseg[1..]
@@ -233,42 +362,68 @@ fn forge_match_path(pattern: []i8, path: []i8, ctx: &ForgeCtx) -> bool {
                 ctx.param_count   = n + 1
             }
         } else {
-            // Literal segment: must match exactly
             if not forge_slice_eq(pseg, rseg) { ret false }
         }
     }
 }
 
 // =============================================================================
-// Dispatch — match request to a route and invoke middleware + handler
+// Dispatch
 // =============================================================================
 fn forge_dispatch(app: &ForgeApp, ctx_ptr: i64) {
     let ctx: &ForgeCtx = ctx_ptr
+
+    // 1. Check normal routes
     loop i in 0..app.route_count {
-        ctx.param_count = 0   // reset captured params before each attempt
+        ctx.param_count = 0
         let route = &app.routes[i]
         if forge_slice_eq(route.method, ctx.req.method) and
            forge_match_path(route.pattern, ctx.req.path, ctx) {
-            // Run middleware chain; any layer can abort by sending a response
+            // Global middleware
             loop j in 0..app.mw_count {
                 call_fn(app.middleware[j], ctx_ptr)
                 if ctx.sent { ret }
             }
+            // Group-scoped middleware
+            loop j in 0..route.grp_mwc {
+                call_fn(route.grp_mw[j], ctx_ptr)
+                if ctx.sent { ret }
+            }
+            // Handler
             call_fn(route.handler, ctx_ptr)
+            // Post-handler middleware (response already sent, just hooks)
+            loop j in 0..app.after_count { call_fn(app.after[j], ctx_ptr) }
             ret
         }
     }
-    // No route matched
-    ctx_not_found(ctx_ptr)
+
+    // 2. Check static file routes
+    loop i in 0..app.static_count {
+        let sr = &app.static_routes[i]
+        if forge_starts_with(ctx.req.path, sr.url_prefix) {
+            forge_serve_static(ctx_ptr, sr.url_prefix, sr.fs_root)
+            ret
+        }
+    }
+
+    // 3. 404
+    if app.not_found_h != 0 {
+        call_fn(app.not_found_h, ctx_ptr)
+    } else {
+        ctx_not_found(ctx_ptr)
+    }
 }
 
 // =============================================================================
-// Connection handler — read request, dispatch, close socket
+// Connection handler
 // =============================================================================
 fn forge_handle_fd(fd: i32) {
     let app: &ForgeApp = g_forge_app
     let req_buf = [FORGE_REQ_SIZE]i8
-    let n = syscall(FORGE_SYS_RECVFROM, fd, req_buf, FORGE_REQ_SIZE, 0, 0, 0) as i64
+    let max = app.config.max_body
+    if max <= 0 { max = 1048576 }
+    if max > FORGE_REQ_SIZE { max = FORGE_REQ_SIZE }
+    let n = syscall(FORGE_SYS_RECVFROM, fd, req_buf, max, 0, 0, 0) as i64
     if n <= 0 {
         syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
         ret
@@ -280,49 +435,57 @@ fn forge_handle_fd(fd: i32) {
             ctx.fd          = fd
             ctx.param_count = 0
             ctx.out_hcount  = 0
+            ctx.store_count = 0
             ctx.sent        = false
-            forge_dispatch(app, &ctx)
+            ctx.is_ws       = false
+            let app2: &ForgeApp = g_forge_app
+            forge_dispatch(app2, &ctx)
+            // Only close if NOT upgraded to WebSocket (WS handler owns the fd)
+            if not ctx.is_ws {
+                syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+            }
         }
         err(_) => {
             let bad = HttpResponse { status: 400, headers: "", body: "Bad Request" }
             send_response(fd, bad)
+            syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
         }
     }
-    syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
 }
 
 // =============================================================================
-// Worker J-Thread — dequeues fds from channel and handles them
+// Worker and server loop
 // =============================================================================
 fn forge_worker(ch: i64) {
     loop {
         let fd = chan_recv(ch) as i32
-        if fd < 0 { ret }    // negative fd = shutdown signal
+        if fd < 0 { ret }
         forge_handle_fd(fd)
     }
 }
 
-// =============================================================================
-// app_listen — bind, spawn workers, accept connections forever
-// =============================================================================
 fn app_listen(app: &ForgeApp, port: i32) {
     g_forge_app = app
+    app.config.port = port
 
-    let listener = TcpListener::bind("0.0.0.0", port as u16)
+    let host = app.config.host
+    let workers = app.config.workers
+    if workers <= 0 { workers = 256 }
+
+    let listener = TcpListener::bind(host, port as u16)
         .unwrap_or_else(|e| {
-            print("forge: failed to bind port\n")
+            print("forge: bind failed\n")
             exit(1)
         })
 
-    print("forge: listening on :")
+    print("forge: listening on ")
+    syscall(FORGE_SYS_WRITE, 1, host, host.len, 0, 0)
+    print(":")
     print_int(port)
     print("\n")
 
-    let ch = chan_new(FORGE_WORKERS * 4)
-
-    loop i in 0..FORGE_WORKERS {
-        spawn { forge_worker(ch) }
-    }
+    let ch = chan_new(workers * 4)
+    loop i in 0..workers { spawn { forge_worker(ch) } }
 
     loop {
         match listener.accept() {
@@ -335,202 +498,600 @@ fn app_listen(app: &ForgeApp, port: i32) {
 // =============================================================================
 // Context — request accessors
 // =============================================================================
-
-// HTTP method ("GET", "POST", "PUT", "DELETE", …)
-fn ctx_method(ctx_ptr: i64) -> []i8 {
-    let ctx: &ForgeCtx = ctx_ptr
-    ret ctx.req.method
-}
-
-// Request path ("/users/42")
-fn ctx_path(ctx_ptr: i64) -> []i8 {
-    let ctx: &ForgeCtx = ctx_ptr
-    ret ctx.req.path
-}
-
-// Raw request body bytes
-fn ctx_body(ctx_ptr: i64) -> []i8 {
-    let ctx: &ForgeCtx = ctx_ptr
-    ret ctx.req.body
-}
-
-// Parse request body as JSON. Returns err if body is not valid JSON.
+fn ctx_fd    (ctx_ptr: i64) -> i32  { let c: &ForgeCtx = ctx_ptr   ret c.fd }
+fn ctx_method(ctx_ptr: i64) -> []i8 { let c: &ForgeCtx = ctx_ptr   ret c.req.method }
+fn ctx_path  (ctx_ptr: i64) -> []i8 { let c: &ForgeCtx = ctx_ptr   ret c.req.path }
+fn ctx_body  (ctx_ptr: i64) -> []i8 { let c: &ForgeCtx = ctx_ptr   ret c.req.body }
 fn ctx_body_json(ctx_ptr: i64) -> Result<JsonValue, []i8> {
-    let ctx: &ForgeCtx = ctx_ptr
-    ret json_parse(ctx.req.body)
+    let c: &ForgeCtx = ctx_ptr
+    ret json_parse(c.req.body)
 }
 
-// Named path parameter captured from pattern (e.g. :id → "42"). Returns "" if missing.
 fn ctx_param(ctx_ptr: i64, key: []i8) -> []i8 {
-    let ctx: &ForgeCtx = ctx_ptr
-    loop i in 0..ctx.param_count {
-        if forge_slice_eq(ctx.params[i].key, key) { ret ctx.params[i].val }
+    let c: &ForgeCtx = ctx_ptr
+    loop i in 0..c.param_count {
+        if forge_slice_eq(c.params[i].key, key) { ret c.params[i].val }
     }
     ret ""
 }
 
-// Query string value (e.g. ?page=2 → ctx_query(ctx, "page") == "2"). Returns "" if missing.
 fn ctx_query(ctx_ptr: i64, key: []i8) -> []i8 {
-    let ctx: &ForgeCtx = ctx_ptr
-    let q = ctx.req.query
+    let c: &ForgeCtx = ctx_ptr
+    let q = c.req.query
     if q.len == 0 { ret "" }
     let pos = 0i64
     loop pos < q.len {
         let ks = pos
         loop pos < q.len and q[pos] != '=' { pos = pos + 1 }
         let k = q[ks..pos]
-        if pos < q.len { pos = pos + 1 }    // skip '='
+        if pos < q.len { pos = pos + 1 }
         let vs = pos
         loop pos < q.len and q[pos] != '&' { pos = pos + 1 }
         let v = q[vs..pos]
-        if pos < q.len { pos = pos + 1 }    // skip '&'
+        if pos < q.len { pos = pos + 1 }
         if forge_slice_eq(k, key) { ret v }
     }
     ret ""
 }
 
-// Request header value by name (case-insensitive). Returns "" if missing.
 fn ctx_header(ctx_ptr: i64, name: []i8) -> []i8 {
-    let ctx: &ForgeCtx = ctx_ptr
-    ret ctx.req.header(name)
+    let c: &ForgeCtx = ctx_ptr
+    ret c.req.header(name)
+}
+
+fn ctx_ip(ctx_ptr: i64) -> []i8 {
+    ret ctx_header(ctx_ptr, "X-Forwarded-For")
 }
 
 // =============================================================================
-// Context — response helpers
+// Context store — pass data between middleware and handler
 // =============================================================================
-
-// Add a response header. Called before ctx_text / ctx_json / ctx_html.
-fn ctx_set_header(ctx_ptr: i64, name: []i8, val: []i8) {
-    let ctx: &ForgeCtx = ctx_ptr
-    let n = ctx.out_hcount
-    if n < FORGE_MAX_HDRS {
-        ctx.out_hdrs[n].name = name
-        ctx.out_hdrs[n].val  = val
-        ctx.out_hcount = n + 1
+fn ctx_set(ctx_ptr: i64, key: []i8, val: i64) {
+    let c: &ForgeCtx = ctx_ptr
+    // Update existing key if present
+    loop i in 0..c.store_count {
+        if forge_slice_eq(c.store[i].key, key) {
+            c.store[i].val = val
+            ret
+        }
+    }
+    let n = c.store_count
+    if n < FORGE_MAX_STORE {
+        c.store[n].key = key
+        c.store[n].val = val
+        c.store_count  = n + 1
     }
 }
 
-// Internal: serialise response headers into a raw byte buffer.
-fn forge_build_hdr_str(ctx: &ForgeCtx, buf: &i8) -> i64 {
+fn ctx_get(ctx_ptr: i64, key: []i8) -> i64 {
+    let c: &ForgeCtx = ctx_ptr
+    loop i in 0..c.store_count {
+        if forge_slice_eq(c.store[i].key, key) { ret c.store[i].val }
+    }
+    ret 0
+}
+
+// =============================================================================
+// Cookie API
+// =============================================================================
+fn ctx_cookie(ctx_ptr: i64, name: []i8) -> []i8 {
+    let raw = ctx_header(ctx_ptr, "Cookie")
+    if raw.len == 0 { ret "" }
     let pos = 0i64
-    loop i in 0..ctx.out_hcount {
-        let nm = ctx.out_hdrs[i].name
-        let vl = ctx.out_hdrs[i].val
+    loop pos < raw.len {
+        // Skip whitespace
+        loop pos < raw.len and raw[pos] == ' ' { pos = pos + 1 }
+        // Key
+        let ks = pos
+        loop pos < raw.len and raw[pos] != '=' and raw[pos] != ';' { pos = pos + 1 }
+        let k = raw[ks..pos]
+        if pos < raw.len and raw[pos] == '=' { pos = pos + 1 }
+        // Value
+        let vs = pos
+        loop pos < raw.len and raw[pos] != ';' { pos = pos + 1 }
+        let v = raw[vs..pos]
+        if pos < raw.len { pos = pos + 1 }   // skip ';'
+        if forge_slice_eq(k, name) { ret v }
+    }
+    ret ""
+}
+
+fn ctx_set_cookie(ctx_ptr: i64, name: []i8, val: []i8, max_age_secs: i64) {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    loop i in 0..name.len { buf[pos] = name[i]  pos = pos + 1 }
+    buf[pos] = '='   pos = pos + 1
+    loop i in 0..val.len  { buf[pos] = val[i]   pos = pos + 1 }
+    let ma = "; Max-Age="
+    loop i in 0..ma.len { buf[pos] = ma[i]  pos = pos + 1 }
+    // Append max_age as decimal
+    let tmp = [20]i8
+    let tlen = fmt_i64(tmp, max_age_secs)
+    loop i in 0..tlen { buf[pos] = tmp[i]  pos = pos + 1 }
+    let path_s = "; Path=/"
+    loop i in 0..path_s.len { buf[pos] = path_s[i]  pos = pos + 1 }
+    ctx_set_header(ctx_ptr, "Set-Cookie", buf[0..pos])
+}
+
+fn ctx_del_cookie(ctx_ptr: i64, name: []i8) {
+    ctx_set_cookie(ctx_ptr, name, "", 0)
+}
+
+// =============================================================================
+// Response helpers
+// =============================================================================
+fn ctx_set_header(ctx_ptr: i64, name: []i8, val: []i8) {
+    let c: &ForgeCtx = ctx_ptr
+    let n = c.out_hcount
+    if n < FORGE_MAX_HDRS {
+        c.out_hdrs[n].name = name
+        c.out_hdrs[n].val  = val
+        c.out_hcount = n + 1
+    }
+}
+
+fn forge_build_hdr_str(c: &ForgeCtx, buf: &i8) -> i64 {
+    let pos = 0i64
+    loop i in 0..c.out_hcount {
+        let nm = c.out_hdrs[i].name
+        let vl = c.out_hdrs[i].val
         loop j in 0..nm.len { buf[pos] = nm[j]   pos = pos + 1 }
-        buf[pos] = ':'    pos = pos + 1
-        buf[pos] = ' '    pos = pos + 1
+        buf[pos] = ':'   pos = pos + 1
+        buf[pos] = ' '   pos = pos + 1
         loop j in 0..vl.len  { buf[pos] = vl[j]  pos = pos + 1 }
-        buf[pos] = '\r'   pos = pos + 1
-        buf[pos] = '\n'   pos = pos + 1
+        buf[pos] = '\r'  pos = pos + 1
+        buf[pos] = '\n'  pos = pos + 1
     }
     ret pos
 }
 
-// Internal: set Content-Type, build headers, serialise and send HTTP response.
 fn ctx_respond(ctx_ptr: i64, status: i32, content_type: []i8, body: []i8) {
-    let ctx: &ForgeCtx = ctx_ptr
-    if ctx.sent { ret }
-    ctx.sent = true
-    if content_type.len > 0 {
-        ctx_set_header(ctx_ptr, "Content-Type", content_type)
-    }
-    let hdr_buf = [2048]i8
-    let hdr_len = forge_build_hdr_str(ctx, hdr_buf)
-    let resp = HttpResponse {
-        status:  status,
-        headers: hdr_buf[0..hdr_len],
-        body:    body,
-    }
-    send_response(ctx.fd, resp)
+    let c: &ForgeCtx = ctx_ptr
+    if c.sent { ret }
+    c.sent = true
+    if content_type.len > 0 { ctx_set_header(ctx_ptr, "Content-Type", content_type) }
+    let hdr_buf = [4096]i8
+    let hdr_len = forge_build_hdr_str(c, hdr_buf)
+    let resp = HttpResponse { status: status, headers: hdr_buf[0..hdr_len], body: body }
+    send_response(c.fd, resp)
 }
 
-// Send a text/plain response.
-fn ctx_text(ctx_ptr: i64, status: i32, body: []i8) {
-    ctx_respond(ctx_ptr, status, "text/plain; charset=utf-8", body)
-}
+fn ctx_text(ctx_ptr: i64, status: i32, body: []i8)  { ctx_respond(ctx_ptr, status, "text/plain; charset=utf-8", body) }
+fn ctx_json(ctx_ptr: i64, status: i32, body: []i8)  { ctx_respond(ctx_ptr, status, "application/json", body) }
+fn ctx_html(ctx_ptr: i64, status: i32, body: []i8)  { ctx_respond(ctx_ptr, status, "text/html; charset=utf-8", body) }
 
-// Send an application/json response. Body must be a valid JSON string.
-fn ctx_json(ctx_ptr: i64, status: i32, body: []i8) {
-    ctx_respond(ctx_ptr, status, "application/json", body)
-}
+fn ctx_ok             (ctx_ptr: i64, body: []i8) { ctx_text(ctx_ptr, 200, body) }
+fn ctx_created        (ctx_ptr: i64, body: []i8) { ctx_text(ctx_ptr, 201, body) }
+fn ctx_no_content     (ctx_ptr: i64)              { ctx_respond(ctx_ptr, 204, "", "") }
+fn ctx_bad_request    (ctx_ptr: i64, msg: []i8)  { ctx_text(ctx_ptr, 400, msg) }
+fn ctx_unauthorized   (ctx_ptr: i64)              { ctx_text(ctx_ptr, 401, "Unauthorized") }
+fn ctx_forbidden      (ctx_ptr: i64)              { ctx_text(ctx_ptr, 403, "Forbidden") }
+fn ctx_not_found      (ctx_ptr: i64)              { ctx_text(ctx_ptr, 404, "Not Found") }
+fn ctx_method_not_allowed(ctx_ptr: i64)           { ctx_text(ctx_ptr, 405, "Method Not Allowed") }
+fn ctx_too_many_requests (ctx_ptr: i64)           { ctx_text(ctx_ptr, 429, "Too Many Requests") }
+fn ctx_internal_error (ctx_ptr: i64, msg: []i8)  { ctx_text(ctx_ptr, 500, msg) }
 
-// Send a text/html response.
-fn ctx_html(ctx_ptr: i64, status: i32, body: []i8) {
-    ctx_respond(ctx_ptr, status, "text/html; charset=utf-8", body)
-}
-
-// 200 OK text/plain shorthand.
-fn ctx_ok(ctx_ptr: i64, body: []i8) {
-    ctx_text(ctx_ptr, 200, body)
-}
-
-// 204 No Content.
-fn ctx_no_content(ctx_ptr: i64) {
-    ctx_respond(ctx_ptr, 204, "", "")
-}
-
-// 302 redirect to url.
-fn ctx_redirect(ctx_ptr: i64, url: []i8) {
+fn ctx_redirect     (ctx_ptr: i64, url: []i8) {
     ctx_set_header(ctx_ptr, "Location", url)
     ctx_respond(ctx_ptr, 302, "", "")
 }
-
-// 400 Bad Request.
-fn ctx_bad_request(ctx_ptr: i64, msg: []i8) {
-    ctx_text(ctx_ptr, 400, msg)
+fn ctx_redirect_perm(ctx_ptr: i64, url: []i8) {
+    ctx_set_header(ctx_ptr, "Location", url)
+    ctx_respond(ctx_ptr, 301, "", "")
 }
 
-// 401 Unauthorized.
-fn ctx_unauthorized(ctx_ptr: i64) {
-    ctx_text(ctx_ptr, 401, "Unauthorized")
+// =============================================================================
+// Template rendering
+// =============================================================================
+fn ctx_render(ctx_ptr: i64, status: i32, tmpl: []i8, vars: &i64) {
+    let out: &i8 = alloc_pages(4)    // 16 KB output buffer
+    let len = erb_render(tmpl, tmpl.len, vars, out, 16384)
+    ctx_html(ctx_ptr, status, out[0..len])
 }
 
-// 403 Forbidden.
-fn ctx_forbidden(ctx_ptr: i64) {
-    ctx_text(ctx_ptr, 403, "Forbidden")
+// =============================================================================
+// Static file serving
+// =============================================================================
+fn forge_content_type(path: []i8) -> []i8 {
+    // Find last '.'
+    let dot = -1i64
+    loop i in 0..path.len { if path[i] == '.' { dot = i } }
+    if dot < 0 { ret "application/octet-stream" }
+    let ext = path[dot+1..]
+    if forge_slice_eq(ext, "html") or forge_slice_eq(ext, "htm") { ret "text/html; charset=utf-8" }
+    if forge_slice_eq(ext, "css")  { ret "text/css" }
+    if forge_slice_eq(ext, "js")   { ret "application/javascript" }
+    if forge_slice_eq(ext, "json") { ret "application/json" }
+    if forge_slice_eq(ext, "png")  { ret "image/png" }
+    if forge_slice_eq(ext, "jpg")  or forge_slice_eq(ext, "jpeg") { ret "image/jpeg" }
+    if forge_slice_eq(ext, "gif")  { ret "image/gif" }
+    if forge_slice_eq(ext, "svg")  { ret "image/svg+xml" }
+    if forge_slice_eq(ext, "ico")  { ret "image/x-icon" }
+    if forge_slice_eq(ext, "txt")  { ret "text/plain" }
+    if forge_slice_eq(ext, "pdf")  { ret "application/pdf" }
+    if forge_slice_eq(ext, "wasm") { ret "application/wasm" }
+    ret "application/octet-stream"
 }
 
-// 404 Not Found.
-fn ctx_not_found(ctx_ptr: i64) {
-    ctx_text(ctx_ptr, 404, "Not Found")
+fn forge_serve_static(ctx_ptr: i64, url_prefix: []i8, fs_root: []i8) {
+    let c: &ForgeCtx = ctx_ptr
+    // Strip url_prefix from path to get the file subpath
+    let sub = c.req.path[url_prefix.len..]
+
+    // Build null-terminated filesystem path: fs_root + "/" + sub
+    let path_buf = [1024]i8
+    let pos = 0i64
+    loop i in 0..fs_root.len { path_buf[pos] = fs_root[i]  pos = pos + 1 }
+    path_buf[pos] = '/'  pos = pos + 1
+    loop i in 0..sub.len    { path_buf[pos] = sub[i]       pos = pos + 1 }
+    path_buf[pos] = 0        // null-terminate for fs_read_file
+
+    // Read the file
+    let file_buf: &i8 = alloc_pages(256)   // 1 MB max
+    let n = fs_read_file(path_buf, file_buf, 1048576)
+    if n < 0 {
+        ctx_not_found(ctx_ptr)
+        ret
+    }
+    let ct = forge_content_type(c.req.path)
+    ctx_respond(ctx_ptr, 200, ct, file_buf[0..n])
 }
 
-// 405 Method Not Allowed.
-fn ctx_method_not_allowed(ctx_ptr: i64) {
-    ctx_text(ctx_ptr, 405, "Method Not Allowed")
+// =============================================================================
+// WebSocket support
+// Upgrade an HTTP connection to WebSocket.
+// After ctx_upgrade_ws returns true, the connection is NOT auto-closed.
+// The handler owns the fd and must call forge_ws_close when done.
+// =============================================================================
+
+// Write exactly n bytes to fd
+fn forge_tcp_write_all(fd: i32, buf: &i8, n: i64) {
+    let sent = 0i64
+    loop sent < n {
+        let wrote = syscall(1, fd, buf + sent, n - sent, 0, 0, 0) as i64
+        if wrote > 0 { sent = sent + wrote }
+        else         { ret }
+    }
 }
 
-// 500 Internal Server Error.
-fn ctx_internal_error(ctx_ptr: i64, msg: []i8) {
-    ctx_text(ctx_ptr, 500, msg)
+fn forge_ws_handshake(fd: i32, key: []i8) {
+    // Compute Sec-WebSocket-Accept = base64(sha1(key + GUID))
+    let guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+    let concat = [128]i8
+    let pos = 0i64
+    loop i in 0..key.len  { concat[pos] = key[i]   pos = pos + 1 }
+    loop i in 0..guid.len { concat[pos] = guid[i]  pos = pos + 1 }
+    let sha_out = [20]i8
+    sha1(concat, pos, sha_out)
+    let accept = [32]i8
+    let alen = b64_encode(sha_out, 20, accept)
+    // Send 101 response
+    let resp = [256]i8
+    let rp = 0i64
+    let line1 = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
+    loop i in 0..line1.len { resp[rp] = line1[i]   rp = rp + 1 }
+    loop i in 0..alen      { resp[rp] = accept[i]  rp = rp + 1 }
+    resp[rp] = '\r'  rp = rp + 1
+    resp[rp] = '\n'  rp = rp + 1
+    resp[rp] = '\r'  rp = rp + 1
+    resp[rp] = '\n'  rp = rp + 1
+    forge_tcp_write_all(fd, resp, rp)
+}
+
+// Upgrade HTTP connection to WebSocket. Returns true on success.
+fn ctx_upgrade_ws(ctx_ptr: i64) -> bool {
+    let c: &ForgeCtx = ctx_ptr
+    let upgrade = c.req.header("Upgrade")
+    let key     = c.req.header("Sec-WebSocket-Key")
+    if key.len == 0 { ret false }
+    if not forge_slice_eq(upgrade, "websocket") { ret false }
+    forge_ws_handshake(c.fd, key)
+    c.sent  = true    // prevent forge from sending an HTTP response
+    c.is_ws = true    // prevent forge from closing the fd
+    ret true
+}
+
+// Send a text frame (server → client, unmasked)
+fn forge_ws_send_text(fd: i32, msg: []i8) {
+    let hdr = [10]i8
+    let hn = 0i64
+    hdr[hn] = 0x81   hn = hn + 1   // FIN + TEXT opcode
+    let mlen = msg.len
+    if mlen < 126 {
+        hdr[hn] = mlen   hn = hn + 1
+    } else {
+        hdr[hn] = 126    hn = hn + 1
+        hdr[hn] = (mlen >> 8) as i8   hn = hn + 1
+        hdr[hn] = (mlen & 0xFF) as i8 hn = hn + 1
+    }
+    forge_tcp_write_all(fd, hdr, hn)
+    forge_tcp_write_all(fd, msg, mlen)
+}
+
+// Send a binary frame (server → client, unmasked)
+fn forge_ws_send_binary(fd: i32, data: []i8) {
+    let hdr = [10]i8
+    let hn = 0i64
+    hdr[hn] = 0x82   hn = hn + 1   // FIN + BINARY opcode
+    let dlen = data.len
+    if dlen < 126 {
+        hdr[hn] = dlen   hn = hn + 1
+    } else {
+        hdr[hn] = 126    hn = hn + 1
+        hdr[hn] = (dlen >> 8) as i8    hn = hn + 1
+        hdr[hn] = (dlen & 0xFF) as i8  hn = hn + 1
+    }
+    forge_tcp_write_all(fd, hdr, hn)
+    forge_tcp_write_all(fd, data, dlen)
+}
+
+// Receive one WebSocket frame into buf. Returns payload length, 0 on close, < 0 on error.
+fn forge_ws_recv(fd: i32, buf: &i8, max: i64) -> i64 {
+    let hdr = [14]i8
+    // Read first 2 bytes
+    let n = syscall(FORGE_SYS_RECVFROM, fd, hdr, 2, 0, 0, 0) as i64
+    if n < 2 { ret -1 }
+    let opcode = hdr[0] as i64 and 0x0F
+    let masked = (hdr[1] as i64 and 0x80) != 0
+    let len7   = hdr[1] as i64 and 0x7F
+    if opcode == 0x8 { ret 0 }   // Close frame
+    // Extended length
+    let payload_len = len7
+    if len7 == 126 {
+        let n2 = syscall(FORGE_SYS_RECVFROM, fd, hdr, 2, 0, 0, 0) as i64
+        if n2 < 2 { ret -1 }
+        payload_len = ((hdr[0] as i64 and 0xFF) << 8) or (hdr[1] as i64 and 0xFF)
+    }
+    // Masking key
+    let mask = [4]i8
+    if masked {
+        let nm = syscall(FORGE_SYS_RECVFROM, fd, mask, 4, 0, 0, 0) as i64
+        if nm < 4 { ret -1 }
+    }
+    // Read payload
+    if payload_len > max { payload_len = max }
+    let total = 0i64
+    loop total < payload_len {
+        let got = syscall(FORGE_SYS_RECVFROM, fd, buf + total, payload_len - total, 0, 0, 0) as i64
+        if got <= 0 { ret -1 }
+        total = total + got
+    }
+    // Unmask payload (client→server always masked)
+    if masked {
+        loop i in 0..total {
+            buf[i] = buf[i] as i64 ^ mask[i - (i / 4) * 4] as i64
+        }
+    }
+    ret total
+}
+
+fn forge_ws_close(fd: i32) {
+    let frame = [2]i8
+    frame[0] = 0x88   // FIN + CLOSE opcode
+    frame[1] = 0
+    forge_tcp_write_all(fd, frame, 2)
+    syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
 }
 
 // =============================================================================
 // Built-in middleware
 // =============================================================================
 
-// forge_logger: writes "[forge] METHOD /path\n" to stdout before each request.
+// Logger: "[forge] METHOD /path (ms)\n"
 fn forge_logger(ctx_ptr: i64) {
-    let ctx: &ForgeCtx = ctx_ptr
+    let c: &ForgeCtx = ctx_ptr
     let buf = [512]i8
     let pos = 0i64
     let pre = "[forge] "
-    loop i in 0..pre.len { buf[pos] = pre[i]            pos = pos + 1 }
-    loop i in 0..ctx.req.method.len { buf[pos] = ctx.req.method[i]  pos = pos + 1 }
-    buf[pos] = ' '    pos = pos + 1
-    loop i in 0..ctx.req.path.len   { buf[pos] = ctx.req.path[i]    pos = pos + 1 }
-    buf[pos] = '\n'   pos = pos + 1
+    loop i in 0..pre.len           { buf[pos] = pre[i]            pos = pos + 1 }
+    loop i in 0..c.req.method.len  { buf[pos] = c.req.method[i]   pos = pos + 1 }
+    buf[pos] = ' '   pos = pos + 1
+    loop i in 0..c.req.path.len    { buf[pos] = c.req.path[i]     pos = pos + 1 }
+    buf[pos] = '\n'  pos = pos + 1
     syscall(FORGE_SYS_WRITE, 1, buf, pos, 0, 0)
 }
 
-// forge_cors: adds permissive CORS response headers.
-// Also handles preflight OPTIONS requests automatically (204 No Content).
+// CORS: permissive headers + auto-handle OPTIONS preflight
 fn forge_cors(ctx_ptr: i64) {
     ctx_set_header(ctx_ptr, "Access-Control-Allow-Origin",  "*")
     ctx_set_header(ctx_ptr, "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-    ctx_set_header(ctx_ptr, "Access-Control-Allow-Headers", "Content-Type, Authorization")
-    let ctx: &ForgeCtx = ctx_ptr
-    if forge_slice_eq(ctx.req.method, "OPTIONS") {
-        ctx_no_content(ctx_ptr)
+    ctx_set_header(ctx_ptr, "Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+    ctx_set_header(ctx_ptr, "Access-Control-Max-Age", "86400")
+    let c: &ForgeCtx = ctx_ptr
+    if forge_slice_eq(c.req.method, "OPTIONS") { ctx_no_content(ctx_ptr) }
+}
+
+// Recover: catch unhandled errors and return 500
+fn forge_recover(ctx_ptr: i64) {
+    // Jadn does not have panic/recover like Go, but we mark this as a
+    // no-op placeholder.  Real crash protection lives at the OS process level.
+    // Users can override app.error_h for custom error pages.
+}
+
+// Request ID: generate X-Request-ID header using timestamp + fd
+fn forge_request_id(ctx_ptr: i64) {
+    let c: &ForgeCtx = ctx_ptr
+    let buf = [32]i8
+    let t = time_now_ms()
+    let fd = c.fd as i64
+    // Build hex ID: timestamp in hex + fd
+    let pos = 0i64
+    let tmp = [20]i8
+    let tl = fmt_i64(tmp, t)
+    loop i in 0..tl { buf[pos] = tmp[i]   pos = pos + 1 }
+    buf[pos] = '-'   pos = pos + 1
+    let fl = fmt_i64(tmp, fd)
+    loop i in 0..fl { buf[pos] = tmp[i]   pos = pos + 1 }
+    ctx_set_header(ctx_ptr, "X-Request-ID", buf[0..pos])
+    ctx_set(ctx_ptr, "request_id", buf as i64)
+}
+
+// No-cache: prevent response caching
+fn forge_no_cache(ctx_ptr: i64) {
+    ctx_set_header(ctx_ptr, "Cache-Control", "no-store, no-cache, must-revalidate")
+    ctx_set_header(ctx_ptr, "Pragma", "no-cache")
+}
+
+// Secure headers: add common security headers
+fn forge_secure_headers(ctx_ptr: i64) {
+    ctx_set_header(ctx_ptr, "X-Content-Type-Options",    "nosniff")
+    ctx_set_header(ctx_ptr, "X-Frame-Options",           "DENY")
+    ctx_set_header(ctx_ptr, "X-XSS-Protection",          "1; mode=block")
+    ctx_set_header(ctx_ptr, "Referrer-Policy",           "strict-origin-when-cross-origin")
+    ctx_set_header(ctx_ptr, "Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+}
+
+// Rate limiter state (global — shared across all workers via atomic ops)
+let g_forge_rl_count:  i64 = 0
+let g_forge_rl_window: i64 = 0
+const FORGE_RL_LIMIT = 600    // requests per window (10 req/sec × 60s)
+const FORGE_RL_WINDOW_MS = 60000
+
+// Rate limit: simple global token bucket (600 req/min across all clients)
+fn forge_rate_limit(ctx_ptr: i64) {
+    let now = time_now_ms()
+    let win = atomic_load(&g_forge_rl_window)
+    if now - win > FORGE_RL_WINDOW_MS {
+        // New window
+        atomic_store(&g_forge_rl_window, now)
+        atomic_store(&g_forge_rl_count, 0)
+    }
+    let count = atomic_fetch_add(&g_forge_rl_count, 1)
+    if count > FORGE_RL_LIMIT {
+        ctx_set_header(ctx_ptr, "Retry-After", "60")
+        ctx_too_many_requests(ctx_ptr)
+    }
+}
+
+// Basic Auth middleware — expects Authorization: Basic <base64(user:pass)>
+// Set expected credentials via global constants before calling app_listen.
+let g_forge_ba_user: []i8 = ""
+let g_forge_ba_pass: []i8 = ""
+
+fn forge_set_basic_auth(user: []i8, pass: []i8) {
+    g_forge_ba_user = user
+    g_forge_ba_pass = pass
+}
+
+fn forge_basic_auth(ctx_ptr: i64) {
+    let hdr = ctx_header(ctx_ptr, "Authorization")
+    let basic = "Basic "
+    if hdr.len <= basic.len {
+        ctx_set_header(ctx_ptr, "WWW-Authenticate", "Basic realm=\"forge\"")
+        ctx_unauthorized(ctx_ptr)
+        ret
+    }
+    if not forge_starts_with(hdr, basic) {
+        ctx_set_header(ctx_ptr, "WWW-Authenticate", "Basic realm=\"forge\"")
+        ctx_unauthorized(ctx_ptr)
+        ret
+    }
+    // Decode base64
+    let encoded = hdr[basic.len..]
+    let decoded  = [256]i8
+    let dlen = b64_decode(encoded, encoded.len, decoded)
+    // Find ':'
+    let colon = -1i64
+    loop i in 0..dlen { if decoded[i] == ':' { colon = i   break } }
+    if colon < 0 {
+        ctx_unauthorized(ctx_ptr)
+        ret
+    }
+    let user = decoded[0..colon]
+    let pass = decoded[colon+1..dlen]
+    if forge_slice_eq(user, g_forge_ba_user) and forge_slice_eq(pass, g_forge_ba_pass) {
+        ctx_set(ctx_ptr, "basic_user", user as i64)
+        ret   // authenticated — continue
+    }
+    ctx_set_header(ctx_ptr, "WWW-Authenticate", "Basic realm=\"forge\"")
+    ctx_unauthorized(ctx_ptr)
+}
+
+// =============================================================================
+// JWT verification middleware
+// Call forge_set_jwt_secret("my-secret") once before app_listen.
+// On success, stores parsed "sub" claim as ctx_get(ctx, "jwt_sub").
+// =============================================================================
+let g_forge_jwt_secret: []i8 = ""
+
+fn forge_set_jwt_secret(secret: []i8) {
+    g_forge_jwt_secret = secret
+}
+
+fn forge_jwt_b64url_decode(src: []i8, dst: &i8) -> i64 {
+    // Convert base64url → base64: replace - with +, _ with /
+    let tmp: &i8 = alloc_pages(1)
+    let n = src.len
+    loop i in 0..n {
+        let c = src[i]
+        if c == '-' { tmp[i] = '+' }
+        else if c == '_' { tmp[i] = '/' }
+        else { tmp[i] = c }
+    }
+    // Add padding
+    let pad = (4 - n % 4) % 4
+    loop i in 0..pad { tmp[n + i] = '=' }
+    ret b64_decode(tmp, n + pad, dst)
+}
+
+fn forge_jwt_auth(ctx_ptr: i64) {
+    let hdr = ctx_header(ctx_ptr, "Authorization")
+    let bearer = "Bearer "
+    if hdr.len <= bearer.len or not forge_starts_with(hdr, bearer) {
+        ctx_unauthorized(ctx_ptr)
+        ret
+    }
+    let token = hdr[bearer.len..]
+
+    // Split token into header.payload.signature
+    let dot1 = -1i64
+    let dot2 = -1i64
+    loop i in 0..token.len {
+        if token[i] == '.' {
+            if dot1 < 0 { dot1 = i } else { dot2 = i   break }
+        }
+    }
+    if dot1 < 0 or dot2 < 0 {
+        ctx_unauthorized(ctx_ptr)
+        ret
+    }
+    let header_b64  = token[0..dot1]
+    let payload_b64 = token[dot1+1..dot2]
+    let sig_b64     = token[dot2+1..]
+
+    // Verify signature: HMAC-SHA256(secret, header + "." + payload)
+    let msg = [512]i8
+    let mp = 0i64
+    loop i in 0..dot2 { msg[mp] = token[i]   mp = mp + 1 }
+    let expected = [32]i8
+    let secret = g_forge_jwt_secret
+    hmac_sha256(secret, secret.len, msg, mp, expected)
+    let actual = [32]i8
+    forge_jwt_b64url_decode(sig_b64, actual)
+
+    // Constant-time compare (prevent timing attacks)
+    let ok = 1i64
+    loop i in 0..32 { if expected[i] != actual[i] { ok = 0 } }
+    if ok == 0 {
+        ctx_unauthorized(ctx_ptr)
+        ret
+    }
+
+    // Decode payload and extract "sub" claim
+    let payload_json = [512]i8
+    let plen = forge_jwt_b64url_decode(payload_b64, payload_json)
+    match json_parse(payload_json[0..plen]) {
+        ok(val) => {
+            match val.get("sub") {
+                ok(sub_val) => {
+                    match sub_val.as_str() {
+                        ok(sub) => { ctx_set(ctx_ptr, "jwt_sub", sub as i64) }
+                        err(_)  => {}
+                    }
+                }
+                err(_) => {}
+            }
+        }
+        err(_) => {}
     }
 }
