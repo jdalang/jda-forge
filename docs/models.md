@@ -851,7 +851,9 @@ fn post_model_init() {
 }
 ```
 
-`forge generate model` scaffolds this pattern automatically — it emits the init function with `forge_assoc_belongs_to` for any `references` field, commented-out callback stubs, and `forge_field` lines for all validatable columns.
+`forge generate model` scaffolds this pattern automatically: the init function with `forge_assoc_belongs_to` for any `references` field, commented-out callback stubs, and `forge_field` lines for all validatable columns.
+
+Typed accessor functions (`post_user`, `post_comments`, etc.) are **not** hand-written — `forge compile-models` reads the `forge_assoc_*` declarations in your model file and generates them into `_build/models.jda` on every build. Add a `forge_assoc_*` line, run `forge build`, and the accessor is ready.
 
 Call the init function once at startup — typically in `main.jda` before `routes(app)`:
 
@@ -1120,7 +1122,7 @@ fn user_validate(email: []i8, password: []i8, confirm: []i8, role: []i8, age: []
 
 ## Associations
 
-Declare associations at the model level so the complete relationship graph is visible in one place. `forge generate model` emits typed accessor stubs for each declared association.
+Declare associations at the model level so the complete relationship graph is visible in one place. `forge compile-models` reads these declarations on every build and auto-generates typed accessor functions into `_build/models.jda` — no manual stubs needed.
 
 ### Declaring associations (model-level)
 

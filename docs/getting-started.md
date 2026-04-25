@@ -417,13 +417,21 @@ Run `forge server`. The full CRUD interface for posts is now live:
 
 **`db/migrate/001_create_posts.sql`** — the schema. Runs automatically on `forge server`. Generated migrations include `-- migrate:up` and `-- migrate:down` sections so `forge db:rollback` can reverse them.
 
-**`app/models/post.jda`** — only what you write: validations and custom scopes.
+**`app/models/post.jda`** — only what you write: associations, callbacks, validations, and custom scopes.
 
 ```jda
 // app/models/post.jda
 
 fn post_model_init() {
     forge_model("posts")
+
+    // Associations — typed accessors (post_comments, etc.) are auto-generated
+    // into _build/models.jda when you run forge build
+    forge_assoc_belongs_to("user",     "users",    "user_id")
+    forge_assoc_has_many  ("comments", "comments", "post_id")
+
+    // forge_callback(FORGE_CB_BEFORE_SAVE, fn_addr(post_before_save))
+
     forge_field       ("title, body, author", FORGE_V_PRESENCE)
     forge_field_length("title",               2, 255)
     forge_field_min   ("body",                10)
@@ -434,9 +442,9 @@ fn post_published() -> &ForgeResult {
 }
 ```
 
-Validations are declared once at startup (call `post_model_init()` in `main.jda`) and fire automatically before every insert and update. That's the entire model file.
+Call `post_model_init()` once in `main.jda` before `routes(app)`. Associations, callbacks, and validations all register at startup — nothing in controllers needs to repeat them.
 
-Every time you run `forge build`, Forge reads the migration and emits `_build/models.jda` automatically:
+Every time you run `forge build`, Forge reads the migrations and model files and emits `_build/models.jda` automatically — CRUD functions from the schema, association accessors from the `forge_assoc_*` declarations:
 
 ```jda
 // _build/models.jda  — auto-generated, do not edit
@@ -480,9 +488,13 @@ fn post_update(id: []i8, title: []i8, body: []i8, author: []i8) -> bool {
 }
 fn post_create_from(attrs: &ForgeAttrs) -> bool { ret forge_attrs_insert(attrs, "posts") }
 fn post_update_from(id: []i8, attrs: &ForgeAttrs) -> bool { ret forge_attrs_update(attrs, "posts", id) }
+
+// Association accessors — from forge_assoc_* in post_model_init
+fn post_user(fk_val: []i8)        -> &ForgeResult { ret forge_assoc_query("posts", "user",     fk_val) }
+fn post_comments(owner_id: []i8)  -> &ForgeResult { ret forge_assoc_query("posts", "comments", owner_id) }
 ```
 
-You never write or touch this file.
+You never write or touch this file. Add a `forge_assoc_*` line in your model init and the corresponding accessor appears after the next build.
 
 `post_q()` and the other generated finders automatically exclude soft-deleted rows. To include them, use the generated escape hatches:
 

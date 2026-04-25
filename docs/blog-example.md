@@ -162,7 +162,7 @@ post_comment_path(post_id, id)          // "/posts/42/comments/7"
 
 ## app/models/post.jda — associations, validations, custom scopes
 
-`post_q`, `post_all`, `post_find`, `post_create`, `post_update`, `post_delete`, etc. are auto-generated into `_build/models.jda` from the migration. The model file only contains what you write:
+`post_q`, `post_all`, `post_find`, `post_create`, `post_update`, `post_delete`, `post_comments`, etc. are all auto-generated into `_build/models.jda` — CRUD from the migration schema, association accessors from the `forge_assoc_*` declarations. The model file only contains what you write:
 
 ```jda
 fn post_model_init() {
