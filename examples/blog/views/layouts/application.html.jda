@@ -1,5 +1,5 @@
 // =============================================================================
-// Views: shared layout, flash, and row partials
+// Layout: application
 // =============================================================================
 
 fn tmpl_layout(title: []i8, body: []i8) -> []i8 {
@@ -15,7 +15,8 @@ fn tmpl_layout(title: []i8, body: []i8) -> []i8 {
     buf.write(".flash-notice{background:#d4edda;border:1px solid #c3e6cb;padding:10px;border-radius:4px;margin-bottom:16px}")
     buf.write(".flash-alert{background:#f8d7da;border:1px solid #f5c6cb;padding:10px;border-radius:4px;margin-bottom:16px}")
     buf.write("</style></head><body>")
-    buf.write("<nav><a href=/posts>Blog</a> &nbsp;|&nbsp; <a href=/posts/new>New Post</a></nav>")
+    buf.write("<nav><a href=")  buf.write(posts_path)  buf.write(">Blog</a>")
+    buf.write(" &nbsp;|&nbsp; <a href=")  buf.write(new_post_path)  buf.write(">New Post</a></nav>")
     buf.write(body)
     buf.write("</body></html>")
     ret buf.done()
@@ -27,31 +28,5 @@ fn tmpl_flash(ctx: i64) -> []i8 {
     let alert  = ctx_flash_get(ctx, "alert")
     if notice.len > 0 { buf.write("<div class=flash-notice>")  buf.write(notice)  buf.write("</div>") }
     if alert.len  > 0 { buf.write("<div class=flash-alert>")   buf.write(alert)   buf.write("</div>") }
-    ret buf.done()
-}
-
-fn tmpl_post_row(title: []i8, author: []i8, date: []i8, id: []i8) -> []i8 {
-    let buf = forge_buf_new(1)
-    buf.write("<div class=post><h2><a href=")
-    buf.write(post_path(id))
-    buf.write(">")
-    buf.write(forge_h(title))
-    buf.write("</a></h2><p class=meta>by ")
-    buf.write(forge_h(author))
-    buf.write(" on ")
-    buf.write(date)
-    buf.write("</p></div>")
-    ret buf.done()
-}
-
-fn tmpl_comment_row(author: []i8, body: []i8, date: []i8) -> []i8 {
-    let buf = forge_buf_new(1)
-    buf.write("<div class=comment><strong>")
-    buf.write(forge_h(author))
-    buf.write("</strong> <span class=meta>")
-    buf.write(date)
-    buf.write("</span><p>")
-    buf.write(forge_h(body))
-    buf.write("</p></div>")
     ret buf.done()
 }

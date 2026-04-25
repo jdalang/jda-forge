@@ -1,0 +1,15 @@
+// Partial: single post row (used in index)
+
+fn tmpl_post_row(title: []i8, author: []i8, date: []i8, id: []i8) -> []i8 {
+    let buf = forge_buf_new(1)
+    buf.write("<div class=post><h2><a href=")
+    buf.write(post_path(id))
+    buf.write(">")
+    buf.write(forge_h(title))
+    buf.write("</a></h2><p class=meta>by ")
+    buf.write(forge_h(author))
+    buf.write(" on ")
+    buf.write(date)
+    buf.write("</p></div>")
+    ret buf.done()
+}

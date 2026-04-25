@@ -807,14 +807,60 @@ gen_migration() {
     ok "created $out"
 }
 
-gen_view() {
+# ---------------------------------------------------------------------------
+# Convention validation — raise errors for wrong naming
+# ---------------------------------------------------------------------------
+
+check_naming_conventions() {
+    local errors=0
+    # controllers must be *_controller.jda
+    for f in controllers/*.jda 2>/dev/null; do
+        [[ "$f" == *_controller.jda ]] || { warn "Bad name: $f — must be <resource>_controller.jda"; errors=$((errors+1)); }
+    done
+    # views must live in views/<resource>/ and be *.html.jda
+    find views -name "*.jda" 2>/dev/null | while read -r f; do
+        [[ "$f" == *.html.jda ]] || echo "WARN: $f — view files must be named *.html.jda"
+        [[ "$(dirname "$f")" == "views" ]] && echo "WARN: $f — view files must live in views/<resource>/, not views/ directly"
+    done
+    [ $errors -gt 0 ] && err "Fix naming convention errors before continuing."
+}
+
+gen_views() {
     local name="$1"
     local snake; snake=$(snake_case "$name")
     local table; table=$(plural "$snake")
-    mkdir -p views
-    local out="views/${snake}.jda"
-    cat > "$out" <<JDA
-// Views: ${name}
+    mkdir -p "views/${table}" "views/layouts"
+
+    # Ensure application layout exists
+    if [ ! -f "views/layouts/application.html.jda" ]; then
+        cat > "views/layouts/application.html.jda" <<JDA
+// Layout: application
+
+fn tmpl_layout(title: []i8, body: []i8) -> []i8 {
+    let buf = forge_buf_new(4)
+    buf.write("<!DOCTYPE html><html><head><meta charset=utf-8><title>")
+    buf.write(title)
+    buf.write("</title></head><body>")
+    buf.write("<nav><a href=/>Home</a></nav>")
+    buf.write(body)
+    buf.write("</body></html>")
+    ret buf.done()
+}
+
+fn tmpl_flash(ctx: i64) -> []i8 {
+    let buf    = forge_buf_new(1)
+    let notice = ctx_flash_get(ctx, "notice")
+    let alert  = ctx_flash_get(ctx, "alert")
+    if notice.len > 0 { buf.write("<div class=flash-notice>")  buf.write(notice)  buf.write("</div>") }
+    if alert.len  > 0 { buf.write("<div class=flash-alert>")   buf.write(alert)   buf.write("</div>") }
+    ret buf.done()
+}
+JDA
+        ok "created views/layouts/application.html.jda"
+    fi
+
+    cat > "views/${table}/index.html.jda" <<JDA
+// View: ${snake}s#index
 
 fn view_${table}_index(ctx: i64, rows: &ForgeResult) -> []i8 {
     let buf = forge_buf_new(8)
@@ -824,14 +870,15 @@ fn view_${table}_index(ctx: i64, rows: &ForgeResult) -> []i8 {
     if rows.count == 0 { buf.write("<p>No ${table} yet.</p>") }
     loop r in 0..rows.count {
         let id = forge_result_col(rows, r, "id")
-        buf.write("<div><a href=")
-        buf.write(${snake}_path(id))
-        buf.write(">")
-        buf.write(id)
-        buf.write("</a></div>")
+        buf.write("<div><a href=")  buf.write(${snake}_path(id))  buf.write(">")
+        buf.write(id)  buf.write("</a></div>")
     }
     ret tmpl_layout("${name}s", buf.done())
 }
+JDA
+
+    cat > "views/${table}/show.html.jda" <<JDA
+// View: ${snake}s#show
 
 fn view_${snake}_show(ctx: i64, row: &ForgeResult) -> []i8 {
     let id  = forge_result_col(row, 0, "id")
@@ -839,10 +886,14 @@ fn view_${snake}_show(ctx: i64, row: &ForgeResult) -> []i8 {
     let buf = forge_buf_new(4)
     buf.write(tmpl_flash(ctx))
     buf.write("<h1>${name} #")  buf.write(id)  buf.write("</h1>")
-    buf.write(" <a href=")  buf.write(edit_${snake}_path(id))  buf.write(">Edit</a> &nbsp;")
+    buf.write("<a href=")  buf.write(edit_${snake}_path(id))  buf.write(">Edit</a> &nbsp;")
     buf.write(forge_link_to_delete("Delete", ${snake}_path(id), tok))
     ret tmpl_layout("${name}", buf.done())
 }
+JDA
+
+    cat > "views/${table}/new.html.jda" <<JDA
+// View: ${snake}s#new
 
 fn view_${snake}_new(ctx: i64) -> []i8 {
     let buf = forge_buf_new(2)
@@ -853,6 +904,10 @@ fn view_${snake}_new(ctx: i64) -> []i8 {
     buf.write("<button>Create</button> <a href=")  buf.write(${table}_path)  buf.write(">Cancel</a></form>")
     ret tmpl_layout("New ${name}", buf.done())
 }
+JDA
+
+    cat > "views/${table}/edit.html.jda" <<JDA
+// View: ${snake}s#edit
 
 fn view_${snake}_edit(ctx: i64, row: &ForgeResult) -> []i8 {
     let id  = forge_result_col(row, 0, "id")
@@ -865,7 +920,8 @@ fn view_${snake}_edit(ctx: i64, row: &ForgeResult) -> []i8 {
     ret tmpl_layout("Edit ${name}", buf.done())
 }
 JDA
-    ok "created $out"
+
+    ok "created views/${table}/{index,show,new,edit}.html.jda"
 }
 
 gen_controller() {
@@ -873,9 +929,10 @@ gen_controller() {
     local snake; snake=$(snake_case "$name")
     local table; table=$(plural "$snake")
     mkdir -p controllers
-    local out="controllers/${snake}.jda"
+    # Rails convention: controllers/<resource>_controller.jda
+    local out="controllers/${snake}_controller.jda"
     cat > "$out" <<JDA
-// Controller: ${name}
+// Controller: ${name}sController
 
 fn ${table}_index(ctx: i64) {
     ctx_render(ctx, view_${table}_index(ctx, forge_all("${table}")))
@@ -918,18 +975,22 @@ JDA
 
 gen_scaffold() {
     local name="$1"; shift; local fields=("$@")
+    # Enforce PascalCase resource name — same rule as Rails
+    if [[ ! "$name" =~ ^[A-Z][a-zA-Z0-9]*$ ]]; then
+        err "Resource name must be PascalCase (e.g. Post, BlogPost). Got: $name"
+    fi
     local snake; snake=$(snake_case "$name")
     local table; table=$(plural "$snake")
     info "Generating scaffold for ${name}..."
     gen_migration "create_${table}" "${fields[@]:-}"
     gen_model "$name" "${fields[@]:-}"
-    gen_view "$name"
+    gen_views "$name"
     gen_controller "$name"
     mkdir -p routes
     cat > "routes/${snake}.jda" <<JDA
-// Routes: ${name}
+// Routes: ${name}s
 
-let ${table}_path: []i8    = "/${table}"
+let ${table}_path: []i8     = "/${table}"
 let new_${snake}_path: []i8 = "/${table}/new"
 fn ${snake}_path(id: []i8) -> []i8      { ret forge_path_id("${table}", id) }
 fn edit_${snake}_path(id: []i8) -> []i8 { ret forge_path_edit("${table}", id) }
@@ -956,7 +1017,17 @@ fn test_${snake}_not_found() {
 JDA
     ok "created test/test_${snake}s.jda"
     echo ""
-    echo "  Add to main(): register_${snake}_routes(app)"
+    info "Generated files:"
+    echo "  models/${snake}.jda"
+    echo "  controllers/${snake}_controller.jda"
+    echo "  views/${table}/index.html.jda"
+    echo "  views/${table}/show.html.jda"
+    echo "  views/${table}/new.html.jda"
+    echo "  views/${table}/edit.html.jda"
+    echo "  routes/${snake}.jda"
+    echo "  test/test_${snake}s.jda"
+    echo ""
+    echo "  Add to main.jda:  register_${snake}_routes(app)"
 }
 
 # ---------------------------------------------------------------------------
@@ -1102,6 +1173,7 @@ case "$CMD" in
             scaffold|s)    gen_scaffold   "$NAME" "${FIELDS[@]:-}" ;;
             model|m)       gen_model      "$NAME" "${FIELDS[@]:-}" ;;
             controller|c)  gen_controller "$NAME" ;;
+            view|v)        gen_views      "$NAME" ;;
             migration|mig) gen_migration  "$NAME" "${FIELDS[@]:-}" ;;
             *) err "Unknown generator: $SUB" ;;
         esac

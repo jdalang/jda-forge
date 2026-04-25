@@ -1,0 +1,24 @@
+// View: posts#edit
+
+fn view_posts_edit(ctx: i64, post: &ForgeResult) -> []i8 {
+    let id    = forge_result_col(post, 0, "id")
+    let title = forge_result_col(post, 0, "title")
+    let body  = forge_result_col(post, 0, "body")
+    let buf   = forge_buf_new(4)
+    buf.write("<h1>Edit Post</h1>")
+    buf.write("<form method=POST action=")
+    buf.write(post_path(id))
+    buf.write("><input type=hidden name=_method value=PUT>")
+    buf.write("<label>Title<br><input name=title value=\"")
+    buf.write(forge_h(title))
+    buf.write("\" style='width:100%'></label><br><br>")
+    buf.write("<label>Body<br><textarea name=body rows=10 style='width:100%'>")
+    buf.write(forge_h(body))
+    buf.write("</textarea></label><br><br>")
+    buf.write("<input type=hidden name=_csrf value=\"")
+    buf.write(forge_csrf_token(ctx))
+    buf.write("\"><button>Update</button> <a href=")
+    buf.write(post_path(id))
+    buf.write(">Cancel</a></form>")
+    ret tmpl_layout("Edit Post", buf.done())
+}

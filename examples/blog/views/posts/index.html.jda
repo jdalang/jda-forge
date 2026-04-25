@@ -1,0 +1,20 @@
+// View: posts#index
+
+fn view_posts_index(ctx: i64, posts: &ForgeResult) -> []i8 {
+    let buf = forge_buf_new(8)
+    buf.write(tmpl_flash(ctx))
+    buf.write("<h1>Blog Posts</h1>")
+    if posts.count == 0 {
+        buf.write("<p>No posts yet. <a href=")
+        buf.write(new_post_path)
+        buf.write(">Write the first one.</a></p>")
+    }
+    loop r in 0..posts.count {
+        buf.write(tmpl_post_row(
+            forge_result_col(posts, r, "title"),
+            forge_result_col(posts, r, "author"),
+            forge_result_col(posts, r, "created_at"),
+            forge_result_col(posts, r, "id")))
+    }
+    ret tmpl_layout("Posts", buf.done())
+}

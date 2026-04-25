@@ -3,15 +3,15 @@ FORGE = ../../forge.jda
 OUT   = _build/$(APP).jda
 
 CONFIG      = config.jda
-MODELS      = $(wildcard models/*.jda)
-VIEWS       = $(wildcard views/*.jda)
-CONTROLLERS = $(wildcard controllers/*.jda)
-ROUTES      = $(wildcard routes/*.jda)
+MODELS      = $(shell find models      -name "*.jda"      | sort)
+VIEWS       = $(shell find views       -name "*.html.jda" | sort)
+CONTROLLERS = $(shell find controllers -name "*_controller.jda" | sort)
+ROUTES      = $(shell find routes      -name "*.jda"      | sort)
 MAIN        = main.jda
 
 SRC = $(CONFIG) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) $(MAIN)
 
-TEST_SRC = $(CONFIG) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) $(wildcard test/*.jda)
+TEST_SRC = $(CONFIG) $(MODELS) $(VIEWS) $(CONTROLLERS) $(ROUTES) $(shell find test -name "*.jda" | sort)
 TEST_OUT = _build/test.jda
 
 .PHONY: all build run watch test clean

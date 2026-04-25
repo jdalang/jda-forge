@@ -1,0 +1,13 @@
+// Partial: single comment row
+
+fn tmpl_comment_row(author: []i8, body: []i8, date: []i8) -> []i8 {
+    let buf = forge_buf_new(1)
+    buf.write("<div class=comment><strong>")
+    buf.write(forge_h(author))
+    buf.write("</strong> <span class=meta>")
+    buf.write(date)
+    buf.write("</span><p>")
+    buf.write(forge_h(body))
+    buf.write("</p></div>")
+    ret buf.done()
+}
