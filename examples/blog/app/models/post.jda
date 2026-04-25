@@ -1,6 +1,19 @@
-// =============================================================================
-// Model: Post
-// =============================================================================
+fn post_q() -> &ForgeQuery { ret forge_q("posts") }
+
+fn post_find(id: []i8) -> &ForgeResult {
+    ret forge_find("posts", id)
+}
+
+fn post_all() -> &ForgeResult {
+    ret forge_q("posts").order_desc("created_at").exec()
+}
+
+fn post_published() -> &ForgeResult {
+    ret forge_q("posts").where_eq("published", "true").order_desc("created_at").exec()
+}
+
+fn post_count() -> i64    { ret forge_q("posts").count() }
+fn post_exists(id: []i8) -> bool { ret forge_q("posts").where_eq("id", id).exists() }
 
 fn post_validate(title: []i8, body: []i8, author: []i8) -> &ForgeErrors {
     let e = forge_errors_new()
@@ -12,76 +25,28 @@ fn post_validate(title: []i8, body: []i8, author: []i8) -> &ForgeErrors {
     ret e
 }
 
-fn post_find(id: []i8) -> &ForgeResult {
-    ret forge_find("posts", id)
-}
-
-fn post_q() -> &ForgeQuery {
-    ret forge_q("posts")
-}
-
-fn post_published() -> &ForgeResult {
-    ret forge_q("posts").where_eq("published", "true").order_desc("created_at").exec()
-}
-
-fn post_all() -> &ForgeResult {
-    ret forge_q("posts").order_desc("created_at").exec()
-}
-
-fn post_count() -> i64 {
-    ret forge_q("posts").count()
-}
-
-fn post_exists(id: []i8) -> bool {
-    ret forge_q("posts").where_eq("id", id).exists()
-}
-
-fn post_comments(post_id: []i8) -> &ForgeResult {
-    ret forge_has_many("comments", "post_id", post_id)
-}
-
 fn post_create(title: []i8, body: []i8, author: []i8) -> bool {
-    let buf: &i8 = alloc_pages(1)
-    let pos = 0i64
-    let sql = "INSERT INTO posts (title, body, author) VALUES ('"
-    let sep = "', '"
-    let end = "')"
-    loop i in 0..sql.len { buf[pos] = sql[i]  pos = pos + 1 }
-    let n = forge_db_escape_str(title, buf + pos)   pos = pos + n
-    loop i in 0..sep.len { buf[pos] = sep[i]  pos = pos + 1 }
-    n = forge_db_escape_str(body, buf + pos)         pos = pos + n
-    loop i in 0..sep.len { buf[pos] = sep[i]  pos = pos + 1 }
-    n = forge_db_escape_str(author, buf + pos)       pos = pos + n
-    loop i in 0..end.len { buf[pos] = end[i]  pos = pos + 1 }
-    ret forge_db_exec(buf[0..pos])
+    let buf = forge_buf_new(1)
+    buf.write("INSERT INTO posts (title, body, author) VALUES ('")
+       .write_esc(title).write("', '")
+       .write_esc(body).write("', '")
+       .write_esc(author).write("')")
+    ret forge_db_exec(buf.done())
 }
 
 fn post_update(id: []i8, title: []i8, body: []i8) -> bool {
-    let buf: &i8 = alloc_pages(1)
-    let pos = 0i64
-    let s1 = "UPDATE posts SET title = '"
-    let s2 = "', body = '"
-    let s3 = "', updated_at = NOW() WHERE id = '"
-    let s4 = "'"
-    loop i in 0..s1.len { buf[pos] = s1[i]  pos = pos + 1 }
-    let n = forge_db_escape_str(title, buf + pos)  pos = pos + n
-    loop i in 0..s2.len { buf[pos] = s2[i]  pos = pos + 1 }
-    n = forge_db_escape_str(body, buf + pos)        pos = pos + n
-    loop i in 0..s3.len { buf[pos] = s3[i]  pos = pos + 1 }
-    n = forge_db_escape_str(id, buf + pos)          pos = pos + n
-    loop i in 0..s4.len { buf[pos] = s4[i]  pos = pos + 1 }
-    ret forge_db_exec(buf[0..pos])
+    let buf = forge_buf_new(1)
+    buf.write("UPDATE posts SET title = '").write_esc(title)
+       .write("', body = '").write_esc(body)
+       .write("', updated_at = NOW() WHERE id = '").write_esc(id).write("'")
+    ret forge_db_exec(buf.done())
 }
 
 fn post_publish(id: []i8) -> bool {
-    let buf: &i8 = alloc_pages(1)
-    let pos = 0i64
-    let s1 = "UPDATE posts SET published = true, updated_at = NOW() WHERE id = '"
-    let s2 = "'"
-    loop i in 0..s1.len { buf[pos] = s1[i]  pos = pos + 1 }
-    let n = forge_db_escape_str(id, buf + pos)  pos = pos + n
-    loop i in 0..s2.len { buf[pos] = s2[i]  pos = pos + 1 }
-    ret forge_db_exec(buf[0..pos])
+    let buf = forge_buf_new(1)
+    buf.write("UPDATE posts SET published = true, updated_at = NOW() WHERE id = '")
+       .write_esc(id).write("'")
+    ret forge_db_exec(buf.done())
 }
 
 fn post_delete(id: []i8) -> bool {

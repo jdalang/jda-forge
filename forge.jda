@@ -355,6 +355,12 @@ fn forge_buf_write(b: &ForgeBuf, s: []i8) -> &ForgeBuf {
 
 fn forge_buf_done(b: &ForgeBuf) -> []i8 { ret b.data[0..b.pos] }
 
+fn forge_buf_write_esc(b: &ForgeBuf, val: []i8) -> &ForgeBuf {
+    let n = forge_db_escape_str(val, b.data + b.pos)
+    b.pos = b.pos + n
+    ret b
+}
+
 // =============================================================================
 // Route scopes — namespace and nested resource grouping
 //

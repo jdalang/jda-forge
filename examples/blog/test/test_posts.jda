@@ -1,8 +1,11 @@
-// =============================================================================
-// Tests: Blog
-// =============================================================================
+fn test_setup() {
+    forge_exec_sql("DELETE FROM comments")
+    forge_exec_sql("DELETE FROM posts")
+    forge_exec_sql("INSERT INTO posts (id, title, body, author) VALUES (1, 'Hello World', 'This is the body text here', 'Alice')")
+}
 
 fn test_posts_index() {
+    test_setup()
     forge_get(posts_path).ok(200).has("Blog Posts")
 }
 
@@ -12,45 +15,33 @@ fn test_post_create_valid() {
 }
 
 fn test_post_create_missing_title() {
-    let body = "title=&body=Some+body+text&author=Alice"
-    forge_post(posts_path, body).redirect()
+    forge_post(posts_path, "title=&body=Some+body+text&author=Alice").redirect()
 }
 
 fn test_post_create_short_body() {
-    let body = "title=Hi&body=short&author=Alice"
-    forge_post(posts_path, body).redirect()
+    forge_post(posts_path, "title=Hi&body=short&author=Alice").redirect()
+}
+
+fn test_post_show() {
+    test_setup()
+    forge_get(post_path("1")).ok(200).has("Hello World")
 }
 
 fn test_post_show_not_found() {
     forge_get(post_path("99999")).ok(404)
 }
 
-fn test_comment_create_valid() {
-    let body = "author=Bob&body=Great+post+thanks"
-    forge_post(post_comments_path("1"), body).redirect()
-}
-
-fn test_comment_create_missing_body() {
-    let body = "author=Bob&body="
-    forge_post(post_comments_path("1"), body).redirect()
-}
-
 fn test_post_delete() {
+    test_setup()
     forge_delete(post_path("1")).redirect()
 }
 
-fn main() {
-    forge_dotenv_load(".env.test")
-    forge_test_init()
+fn test_comment_create_valid() {
+    test_setup()
+    forge_post(post_comments_path("1"), "author=Bob&body=Great+post+thanks").redirect()
+}
 
-    forge_test("GET /posts",                        fn_addr(test_posts_index))
-    forge_test("POST /posts valid",                 fn_addr(test_post_create_valid))
-    forge_test("POST /posts missing title",         fn_addr(test_post_create_missing_title))
-    forge_test("POST /posts body too short",        fn_addr(test_post_create_short_body))
-    forge_test("GET /posts/99999 not found",        fn_addr(test_post_show_not_found))
-    forge_test("POST /posts/1/comments valid",      fn_addr(test_comment_create_valid))
-    forge_test("POST /posts/1/comments empty body", fn_addr(test_comment_create_missing_body))
-    forge_test("DELETE /posts/1",                   fn_addr(test_post_delete))
-
-    forge_test_run()
+fn test_comment_create_missing_body() {
+    test_setup()
+    forge_post(post_comments_path("1"), "author=Bob&body=").redirect()
 }
