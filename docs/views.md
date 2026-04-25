@@ -1,6 +1,58 @@
 # Views
 
-JDA Forge does not have a template engine or a separate file format for views. Views are plain Jda functions that return `[]i8` HTML strings. This means the full language — loops, conditionals, function calls, helper functions — is available wherever you need it.
+JDA Forge uses ERB-style `.html.jda` templates — HTML with embedded JDA code between `<% %>` tags. `forge compile-views` compiles them into plain JDA functions in `_build/views.jda`, which means the full language (loops, conditionals, function calls) is available, and there is zero runtime template overhead.
+
+---
+
+## Template syntax
+
+```html
+<% fn view_posts_index(ctx: i64, posts: &ForgeResult) %>
+<%layout "Posts" %>
+
+<%== tmpl_flash(ctx) %>
+<h1>Blog Posts</h1>
+
+<% loop r in 0..posts.count { %>
+  <%== render_post_row(posts, r) %>
+<% } %>
+```
+
+| Tag | Meaning | Generated code |
+|---|---|---|
+| `<% fn name(params) %>` | Function signature (first tag in file) | `fn name(params) -> []i8 {` |
+| `<% code %>` | JDA statement — loops, if, let, ret | emitted verbatim |
+| `<%= expr %>` | **HTML-escaped** output (user content) | `buf.write(forge_h(expr))` |
+| `<%== expr %>` | **Raw** output (paths, partials, HTML) | `buf.write(expr)` |
+| `<%layout expr %>` | Wrap in layout function | `ret tmpl_layout(expr, buf.done())` |
+| `<%# comment %>` | Comment — ignored | — |
+
+**One function per file.** Files starting with `_` are partials and may be called from any other template.
+
+### `<%= %>` vs `<%== %>`
+
+- Use `<%= %>` for **user-supplied content**: titles, body text, author names, form values. It calls `forge_h()` which escapes `&`, `<`, `>`, `"`, `'`.
+- Use `<%== %>` for **HTML-safe values**: path helpers, partial calls, pre-built HTML strings, system-generated content like dates or IDs.
+
+### Rendering a partial
+
+Partials are just regular JDA functions. Call them with `<%== %>`:
+
+```html
+<%== tmpl_post_row(forge_result_col(posts, r, "title"), forge_result_col(posts, r, "id")) %>
+```
+
+To pass a variable from the caller, declare it in the partial's function signature:
+
+```html
+<%# app/views/posts/_post.html.jda %>
+<% fn tmpl_post_row(title: []i8, id: []i8) %>
+<div class="post">
+  <h2><a href="<%== post_path(id) %>"><%= title %></a></h2>
+</div>
+```
+
+Call it as a normal JDA function call inside `<%== %>`.
 
 ---
 

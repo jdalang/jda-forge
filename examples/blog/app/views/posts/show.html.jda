@@ -1,40 +1,29 @@
-// View: posts#show
+<% fn view_posts_show(ctx: i64, post: &ForgeResult, comments: &ForgeResult) %>
+<% let id     = forge_result_col(post, 0, "id") %>
+<% let title  = forge_result_col(post, 0, "title") %>
+<% let author = forge_result_col(post, 0, "author") %>
+<% let body   = forge_result_col(post, 0, "body") %>
+<% let date   = forge_result_col(post, 0, "created_at") %>
+<% let tok    = forge_csrf_token(ctx) %>
+<%layout title %>
+<%== tmpl_flash(ctx) %>
+<h1><%= title %></h1>
+<p class="meta">by <%= author %> on <%== date %></p>
+<div class="body"><p><%= body %></p></div>
+<a href="<%== edit_post_path(id) %>">Edit</a> &nbsp;
+<%== forge_link_to_delete("Delete", post_path(id), tok) %>
 
-fn view_posts_show(ctx: i64, post: &ForgeResult, comments: &ForgeResult) -> []i8 {
-    let id     = forge_result_col(post, 0, "id")
-    let title  = forge_result_col(post, 0, "title")
-    let author = forge_result_col(post, 0, "author")
-    let body   = forge_result_col(post, 0, "body")
-    let date   = forge_result_col(post, 0, "created_at")
-    let tok    = forge_csrf_token(ctx)
+<hr>
+<h2>Comments (<%= i64_to_str(comments.count) %>)</h2>
+<% loop r in 0..comments.count { %>
+<%== tmpl_comment_row(forge_result_col(comments, r, "author"), forge_result_col(comments, r, "body"), forge_result_col(comments, r, "created_at")) %>
+<% } %>
 
-    let buf = forge_buf_new(8)
-    buf.write(tmpl_flash(ctx))
-    buf.write("<h1>")  buf.write(forge_h(title))  buf.write("</h1>")
-    buf.write("<p class=meta>by ")  buf.write(forge_h(author))
-    buf.write(" on ")  buf.write(date)  buf.write("</p>")
-    buf.write("<div class=body><p>")  buf.write(forge_h(body))  buf.write("</p></div>")
-    buf.write("<a href=")  buf.write(edit_post_path(id))  buf.write(">Edit</a> &nbsp;")
-    buf.write(forge_link_to_delete("Delete", post_path(id), tok))
-
-    buf.write("<hr><h2>Comments (")
-    buf.write(i64_to_str(comments.count))
-    buf.write(")</h2>")
-    loop r in 0..comments.count {
-        buf.write(tmpl_comment_row(
-            forge_result_col(comments, r, "author"),
-            forge_result_col(comments, r, "body"),
-            forge_result_col(comments, r, "created_at")))
-    }
-
-    buf.write("<hr><h3>Leave a comment</h3>")
-    buf.write("<form method=POST action=")
-    buf.write(post_comments_path(id))
-    buf.write("><label>Name<br><input name=author></label><br><br>")
-    buf.write("<label>Comment<br><textarea name=body rows=4 style='width:100%'></textarea></label><br><br>")
-    buf.write("<input type=hidden name=_csrf value=\"")
-    buf.write(tok)
-    buf.write("\"><button>Post Comment</button></form>")
-
-    ret tmpl_layout(title, buf.done())
-}
+<hr>
+<h3>Leave a comment</h3>
+<form method="POST" action="<%== post_comments_path(id) %>">
+  <label>Name<br><input name="author"></label><br><br>
+  <label>Comment<br><textarea name="body" rows="4"></textarea></label><br><br>
+  <input type="hidden" name="_csrf" value="<%= tok %>">
+  <button>Post Comment</button>
+</form>

@@ -854,7 +854,8 @@ examples/blog/
       comment.jda                  # validations + custom scopes (CRUD auto-generated)
     views/
       layouts/
-        application.html.jda       # tmpl_layout, tmpl_flash
+        application.html.jda       # tmpl_layout
+        _flash.html.jda            # tmpl_flash partial
       posts/
         index.html.jda             # view_posts_index
         show.html.jda              # view_posts_show
@@ -1041,23 +1042,38 @@ Controllers use path helper constants (`posts_path`, `new_post_path`) rather tha
 
 ---
 
-## app/views/posts/index.html.jda — view function
+## app/views/posts/index.html.jda — ERB template
 
-```jda
-fn view_posts_index(posts: &ForgeResult) -> []i8 {
-    let buf = forge_buf_new(8)
-    buf.write("<h1>Posts</h1>")
-       .write(link_to("New Post", new_post_path, "button"))
-       .write("<ul>")
-    loop r in 0..posts.count {
-        buf.write(tmpl_post_row(posts, r))
-    }
-    buf.write("</ul>")
-    ret tmpl_layout("Posts", buf.done())
-}
+```html
+<% fn view_posts_index(ctx: i64, posts: &ForgeResult) %>
+<%layout "Posts" %>
+<%== tmpl_flash(ctx) %>
+<h1>Blog Posts</h1>
+<a href="<%== new_post_path %>">New Post</a>
+<hr>
+<% if posts.count == 0 { %>
+<p>No posts yet. <a href="<%== new_post_path %>">Write the first one.</a></p>
+<% } %>
+<% loop r in 0..posts.count { %>
+<%== tmpl_post_row(forge_result_col(posts, r, "title"), forge_result_col(posts, r, "author"), forge_result_col(posts, r, "created_at"), forge_result_col(posts, r, "id")) %>
+<% } %>
 ```
 
-View functions return `[]i8` (a string). Controllers call them via `ctx_render(ctx, view_posts_index(posts))`. `ForgeBuf` eliminates manual loop-copy boilerplate — `buf.write(s)` returns `&ForgeBuf` so calls chain.
+`forge compile-views` compiles this into a JDA function in `_build/views.jda`. Controllers call `ctx_render(ctx, view_posts_index(ctx, posts))` — the compiled function signature matches exactly.
+
+- `<%= expr %>` — HTML-escapes user content via `forge_h(expr)`
+- `<%== expr %>` — emits raw HTML (paths, partial calls, pre-built HTML)
+- `<%layout "Posts" %>` — wraps the output in `tmpl_layout("Posts", buf.done())`
+
+Partial call with arguments — `tmpl_post_row` is defined in `app/views/posts/_post.html.jda`:
+
+```html
+<% fn tmpl_post_row(title: []i8, author: []i8, date: []i8, id: []i8) %>
+<div class="post">
+  <h2><a href="<%== post_path(id) %>"><%= title %></a></h2>
+  <p class="meta">by <%= author %> on <%== date %></p>
+</div>
+```
 
 ---
 
@@ -4133,7 +4149,59 @@ fn post_serialize_with_comments(res: &ForgeResult, r: i64) -> []i8 {
 | `a.done()` | Close and return the JSON array `[]i8` |
 # Views
 
-JDA Forge does not have a template engine or a separate file format for views. Views are plain Jda functions that return `[]i8` HTML strings. This means the full language — loops, conditionals, function calls, helper functions — is available wherever you need it.
+JDA Forge uses ERB-style `.html.jda` templates — HTML with embedded JDA code between `<% %>` tags. `forge compile-views` compiles them into plain JDA functions in `_build/views.jda`, which means the full language (loops, conditionals, function calls) is available, and there is zero runtime template overhead.
+
+---
+
+## Template syntax
+
+```html
+<% fn view_posts_index(ctx: i64, posts: &ForgeResult) %>
+<%layout "Posts" %>
+
+<%== tmpl_flash(ctx) %>
+<h1>Blog Posts</h1>
+
+<% loop r in 0..posts.count { %>
+  <%== render_post_row(posts, r) %>
+<% } %>
+```
+
+| Tag | Meaning | Generated code |
+|---|---|---|
+| `<% fn name(params) %>` | Function signature (first tag in file) | `fn name(params) -> []i8 {` |
+| `<% code %>` | JDA statement — loops, if, let, ret | emitted verbatim |
+| `<%= expr %>` | **HTML-escaped** output (user content) | `buf.write(forge_h(expr))` |
+| `<%== expr %>` | **Raw** output (paths, partials, HTML) | `buf.write(expr)` |
+| `<%layout expr %>` | Wrap in layout function | `ret tmpl_layout(expr, buf.done())` |
+| `<%# comment %>` | Comment — ignored | — |
+
+**One function per file.** Files starting with `_` are partials and may be called from any other template.
+
+### `<%= %>` vs `<%== %>`
+
+- Use `<%= %>` for **user-supplied content**: titles, body text, author names, form values. It calls `forge_h()` which escapes `&`, `<`, `>`, `"`, `'`.
+- Use `<%== %>` for **HTML-safe values**: path helpers, partial calls, pre-built HTML strings, system-generated content like dates or IDs.
+
+### Rendering a partial
+
+Partials are just regular JDA functions. Call them with `<%== %>`:
+
+```html
+<%== tmpl_post_row(forge_result_col(posts, r, "title"), forge_result_col(posts, r, "id")) %>
+```
+
+To pass a variable from the caller, declare it in the partial's function signature:
+
+```html
+<%# app/views/posts/_post.html.jda %>
+<% fn tmpl_post_row(title: []i8, id: []i8) %>
+<div class="post">
+  <h2><a href="<%== post_path(id) %>"><%= title %></a></h2>
+</div>
+```
+
+Call it as a normal JDA function call inside `<%== %>`.
 
 ---
 

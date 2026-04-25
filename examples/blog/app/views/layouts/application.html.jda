@@ -1,29 +1,15 @@
-// =============================================================================
-// Layout: application
-// =============================================================================
-
-fn tmpl_layout(title: []i8, body: []i8) -> []i8 {
-    let buf = forge_buf_new(4)
-    buf.write("<!DOCTYPE html><html><head><meta charset=utf-8>")
-    buf.write("<meta name=viewport content=\"width=device-width,initial-scale=1\">")
-    buf.write("<title>")
-    buf.write(title)
-    buf.write(" — Blog</title>")
-    buf.write(forge_stylesheet_tag("application.css"))
-    buf.write("</head><body>")
-    buf.write("<nav><a href=")  buf.write(posts_path)  buf.write(">Blog</a>")
-    buf.write(" &nbsp;|&nbsp; <a href=")  buf.write(new_post_path)  buf.write(">New Post</a></nav>")
-    buf.write(body)
-    buf.write(forge_javascript_tag("application.js"))
-    buf.write("</body></html>")
-    ret buf.done()
-}
-
-fn tmpl_flash(ctx: i64) -> []i8 {
-    let buf    = forge_buf_new(1)
-    let notice = ctx_flash_get(ctx, "notice")
-    let alert  = ctx_flash_get(ctx, "alert")
-    if notice.len > 0 { buf.write("<div class=flash-notice>")  buf.write(notice)  buf.write("</div>") }
-    if alert.len  > 0 { buf.write("<div class=flash-alert>")   buf.write(alert)   buf.write("</div>") }
-    ret buf.done()
-}
+<% fn tmpl_layout(title: []i8, body: []i8) %>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title><%= title %> — Blog</title>
+  <%== forge_stylesheet_tag("application.css") %>
+</head>
+<body>
+<nav><a href="<%== posts_path %>">Blog</a> &nbsp;|&nbsp; <a href="<%== new_post_path %>">New Post</a></nav>
+<%== body %>
+<%== forge_javascript_tag("application.js") %>
+</body>
+</html>

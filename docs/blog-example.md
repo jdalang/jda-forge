@@ -34,7 +34,8 @@ examples/blog/
       comment.jda                  # validations + custom scopes (CRUD auto-generated)
     views/
       layouts/
-        application.html.jda       # tmpl_layout, tmpl_flash
+        application.html.jda       # tmpl_layout
+        _flash.html.jda            # tmpl_flash partial
       posts/
         index.html.jda             # view_posts_index
         show.html.jda              # view_posts_show
@@ -221,23 +222,38 @@ Controllers use path helper constants (`posts_path`, `new_post_path`) rather tha
 
 ---
 
-## app/views/posts/index.html.jda — view function
+## app/views/posts/index.html.jda — ERB template
 
-```jda
-fn view_posts_index(posts: &ForgeResult) -> []i8 {
-    let buf = forge_buf_new(8)
-    buf.write("<h1>Posts</h1>")
-       .write(link_to("New Post", new_post_path, "button"))
-       .write("<ul>")
-    loop r in 0..posts.count {
-        buf.write(tmpl_post_row(posts, r))
-    }
-    buf.write("</ul>")
-    ret tmpl_layout("Posts", buf.done())
-}
+```html
+<% fn view_posts_index(ctx: i64, posts: &ForgeResult) %>
+<%layout "Posts" %>
+<%== tmpl_flash(ctx) %>
+<h1>Blog Posts</h1>
+<a href="<%== new_post_path %>">New Post</a>
+<hr>
+<% if posts.count == 0 { %>
+<p>No posts yet. <a href="<%== new_post_path %>">Write the first one.</a></p>
+<% } %>
+<% loop r in 0..posts.count { %>
+<%== tmpl_post_row(forge_result_col(posts, r, "title"), forge_result_col(posts, r, "author"), forge_result_col(posts, r, "created_at"), forge_result_col(posts, r, "id")) %>
+<% } %>
 ```
 
-View functions return `[]i8` (a string). Controllers call them via `ctx_render(ctx, view_posts_index(posts))`. `ForgeBuf` eliminates manual loop-copy boilerplate — `buf.write(s)` returns `&ForgeBuf` so calls chain.
+`forge compile-views` compiles this into a JDA function in `_build/views.jda`. Controllers call `ctx_render(ctx, view_posts_index(ctx, posts))` — the compiled function signature matches exactly.
+
+- `<%= expr %>` — HTML-escapes user content via `forge_h(expr)`
+- `<%== expr %>` — emits raw HTML (paths, partial calls, pre-built HTML)
+- `<%layout "Posts" %>` — wraps the output in `tmpl_layout("Posts", buf.done())`
+
+Partial call with arguments — `tmpl_post_row` is defined in `app/views/posts/_post.html.jda`:
+
+```html
+<% fn tmpl_post_row(title: []i8, author: []i8, date: []i8, id: []i8) %>
+<div class="post">
+  <h2><a href="<%== post_path(id) %>"><%= title %></a></h2>
+  <p class="meta">by <%= author %> on <%== date %></p>
+</div>
+```
 
 ---
 
