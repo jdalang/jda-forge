@@ -263,10 +263,10 @@ Expected speedup: **reduced memory pressure, fewer TLB misses for small result s
 
 | # | Issue | Per-request cost | Fix complexity | Status |
 |---|-------|-----------------|----------------|--------|
-| 1 | New DB connection per query | 40–240ms | Low — persistent global fd | **Done** — `g_forge_pg_fd` + `forge_pg_get_fd()` |
-| 2 | Single-threaded server | 0 concurrency | Medium — compiler `spawn` + pthread | Pending — `if pid == 0` inside a loop does not short-circuit in JDA; need compiler fix. Workaround: run `for i in 1 2 3 4; do ./server & done` |
-| 3 | mmap per string alloc | ~50µs, memory waste | Medium — arena allocator | **Done** — `g_forge_scratch_*` globals + `forge_scratch_alloc/reset`, hot paths replaced |
-| 4 | No HTTP keep-alive | TCP overhead per request | Low — loop in forge_handle_fd | **Done** — `forge_handle_fd` loops with `forge_hdr_has_close` check |
-| 5 | 2MB alloc per query | Memory pressure | Low — reduce alloc_pages(512) | **Done** — `alloc_pages(204)` (50 rows), body buffer moved outside loop |
+| 1 | New DB connection per query | 40–240ms | Low — persistent global fd | ✅ `g_forge_pg_fd` + `forge_pg_get_fd()` |
+| 2 | Single-threaded server | 0 concurrency | Medium — compiler `spawn` + pthread | ⏳ Pending — `if pid == 0` inside a loop does not short-circuit in JDA; need compiler fix. Workaround: run `for i in 1 2 3 4; do ./server & done` |
+| 3 | mmap per string alloc | ~50µs, memory waste | Medium — arena allocator | ✅ `g_forge_scratch_*` globals + `forge_scratch_alloc/reset`, hot paths replaced |
+| 4 | No HTTP keep-alive | TCP overhead per request | Low — loop in forge_handle_fd | ✅ `forge_handle_fd` loops with `forge_hdr_has_close` check |
+| 5 | 2MB alloc per query | Memory pressure | Low — reduce alloc_pages(512) | ✅ `alloc_pages(204)` (50 rows), body buffer moved outside loop |
 
 Fix issue 1 first — it will give the biggest single speedup. Fix issues 2 and 4 together to handle concurrent users. Fix issue 3 for memory efficiency and to reduce syscall count.
