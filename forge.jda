@@ -832,12 +832,12 @@ fn forge_match_path(pattern: []i8, path: []i8, ctx: &ForgeCtx) -> bool {
             if n < FORGE_MAX_PARAMS {
                 // Copy key and val into null-terminated buffers so .len = strlen
                 // returns the segment length, not the rest of the string.
-                let kbuf: &i8 = alloc_pages(1)
+                let kbuf: &i8 = forge_scratch_alloc(pseglen + 1)
                 let klen = pseglen - 1
                 loop ii in 0..klen { kbuf[ii] = pattern[ps + 1 + ii] }
                 kbuf[klen] = 0
                 ctx.params[n].key = kbuf
-                let vbuf: &i8 = alloc_pages(1)
+                let vbuf: &i8 = forge_scratch_alloc(rseglen + 1)
                 loop ii in 0..rseglen { vbuf[ii] = path[rs + ii] }
                 vbuf[rseglen] = 0
                 ctx.params[n].val = vbuf
@@ -940,42 +940,79 @@ fn forge_dispatch(app: &ForgeApp, ctx_ptr: i64) {
 }
 
 // =============================================================================
+// Per-request scratch arena -- one mmap at startup, bump-allocate, reset per request.
+// Eliminates ~50 mmap syscalls per request for small transient buffers.
+// =============================================================================
+let g_forge_scratch_base: &i8 = 0
+let g_forge_scratch_pos:  i64 = 0
+let g_forge_scratch_cap:  i64 = 0
+
+fn forge_scratch_ensure() {
+    if g_forge_scratch_base != 0 { ret }
+    g_forge_scratch_base = alloc_pages(32)   // 128KB slab
+    g_forge_scratch_cap  = 32 * 4096
+    g_forge_scratch_pos  = 0
+}
+
+fn forge_scratch_reset() {
+    forge_scratch_ensure()
+    g_forge_scratch_pos = 0
+}
+
+fn forge_scratch_alloc(n: i64) -> &i8 {
+    forge_scratch_ensure()
+    let aligned = (n + 7) and (0 - 8)
+    if g_forge_scratch_pos + aligned > g_forge_scratch_cap {
+        ret alloc_pages((aligned + 4095) / 4096)   // overflow fallback
+    }
+    let p = g_forge_scratch_base + g_forge_scratch_pos
+    g_forge_scratch_pos = g_forge_scratch_pos + aligned
+    ret p
+}
+
+// =============================================================================
 // Connection handler
 // =============================================================================
+fn forge_hdr_has_close(ctx_ptr: i64) -> bool {
+    let conn = ctx_header(ctx_ptr, "Connection")
+    if conn.len < 5 { ret false }
+    ret conn[0] == 'c' and conn[1] == 'l' and conn[2] == 'o' and conn[3] == 's' and conn[4] == 'e'
+}
+
 fn forge_handle_fd(fd: i32) {
+    forge_scratch_reset()
     let app: &ForgeApp = g_forge_app
-    let req_buf = [FORGE_REQ_SIZE]i8
     let max = app.config.max_body
     if max <= 0 { max = 1048576 }
     if max > FORGE_REQ_SIZE { max = FORGE_REQ_SIZE }
-    let n = syscall(FORGE_SYS_RECVFROM, fd, req_buf, max, 0, 0, 0) as i64
-    if n <= 0 {
-        syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
-        ret
-    }
-    match parse_request(req_buf[0..n]) {
-        ok(req) => {
-            let ctx = ForgeCtx {}
-            ctx.req         = req
-            ctx.fd          = fd
-            ctx.param_count = 0
-            ctx.out_hcount  = 0
-            ctx.store_count = 0
-            ctx.sent        = false
-            ctx.is_ws       = false
-            let app2: &ForgeApp = g_forge_app
-            forge_dispatch(app2, &ctx)
-            // Only close if NOT upgraded to WebSocket (WS handler owns the fd)
-            if not ctx.is_ws {
-                syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+    let req_buf = [FORGE_REQ_SIZE]i8
+    loop {
+        let n = syscall(FORGE_SYS_RECVFROM, fd, req_buf, max, 0, 0, 0) as i64
+        if n <= 0 { break }
+        match parse_request(req_buf[0..n]) {
+            ok(req) => {
+                let ctx = ForgeCtx {}
+                ctx.req         = req
+                ctx.fd          = fd
+                ctx.param_count = 0
+                ctx.out_hcount  = 0
+                ctx.store_count = 0
+                ctx.sent        = false
+                ctx.is_ws       = false
+                let app2: &ForgeApp = g_forge_app
+                forge_dispatch(app2, &ctx)
+                if ctx.is_ws { ret }   // WebSocket owns the fd now
+                if forge_hdr_has_close((&ctx) as i64) { break }
+                forge_scratch_reset()   // reclaim arena for next request on this connection
+            }
+            err(_) => {
+                let bad = HttpResponse { status: 400, headers: "", body: "Bad Request" }
+                send_response(fd, bad)
+                break
             }
         }
-        err(_) => {
-            let bad = HttpResponse { status: 400, headers: "", body: "Bad Request" }
-            send_response(fd, bad)
-            syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
-        }
     }
+    syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
 }
 
 // =============================================================================
@@ -993,12 +1030,12 @@ fn app_listen(app: &ForgeApp, port: i32) {
     g_forge_app = app
     app.config.port = port
 
+    let lfd = TcpListener__bind("0.0.0.0", port)
+    if lfd < 0 { print("forge: bind failed\n")  ret }
+
     print("forge: listening on :")
     print_int(port)
     print("\n")
-
-    let lfd = TcpListener__bind("0.0.0.0", port)
-    if lfd < 0 { print("forge: bind failed\n")  ret }
 
     let sa: &i8 = alloc_pages(1)
     let salen: &i32 = alloc_pages(1)
@@ -1048,7 +1085,7 @@ fn ctx_query(ctx_ptr: i64, key: []i8) -> []i8 {
             let keq = true
             loop ii in 0..klen { if q[ks + ii] != key[ii] { keq = false  break } }
             if keq {
-                let vbuf: &i8 = alloc_pages(1)
+                let vbuf: &i8 = forge_scratch_alloc(vlen + 1)
                 loop ii in 0..vlen { vbuf[ii] = q[vs + ii] }
                 vbuf[vlen] = 0
                 ret vbuf
@@ -1125,7 +1162,7 @@ fn ctx_cookie(ctx_ptr: i64, name: []i8) -> []i8 {
             let keq = true
             loop ii in 0..klen { if raw[ks + ii] != name[ii] { keq = false  break } }
             if keq {
-                let vbuf: &i8 = alloc_pages(1)
+                let vbuf: &i8 = forge_scratch_alloc(vlen + 1)
                 loop ii in 0..vlen { vbuf[ii] = raw[vs + ii] }
                 vbuf[vlen] = 0
                 ret vbuf
@@ -2168,7 +2205,7 @@ fn ctx_form(ctx_ptr: i64, key: []i8) -> []i8 {
         let vlen = pos - vs
         if pos < body.len { pos = pos + 1 }
         // URL-decode key using explicit range and compare
-        let k_buf: &i8 = alloc_pages(1)
+        let k_buf: &i8 = forge_scratch_alloc(klen + 1)
         let kdp = 0i64
         let ksi = 0i64
         loop ksi < klen {
@@ -2187,7 +2224,7 @@ fn ctx_form(ctx_ptr: i64, key: []i8) -> []i8 {
             let keq = true
             loop ii in 0..kdp { if k_buf[ii] != key[ii] { keq = false  break } }
             if keq {
-                let v_buf: &i8 = alloc_pages(1)
+                let v_buf: &i8 = forge_scratch_alloc(vlen + 1)
                 let vdp = 0i64
                 let vsi = 0i64
                 loop vsi < vlen {
@@ -3150,7 +3187,7 @@ fn forge_mail_preview_handler(ctx: i64) {
 //   }
 // =============================================================================
 const FORGE_DB_MAX_COLS    = 32
-const FORGE_DB_MAX_ROWS    = 256
+const FORGE_DB_MAX_ROWS    = 50
 const FORGE_DB_COL_CAP     = 512
 const FORGE_DB_COL_STRIDE  = 520   // sizeof(ForgeDbCell): 512+8
 const FORGE_DB_ROW_STRIDE  = 16648 // 32 x 520 + 8 (count)
@@ -3351,6 +3388,9 @@ let g_forge_db_port: i32  = 5432
 let g_forge_db_user: []i8 = ""
 let g_forge_db_pass: []i8 = ""
 let g_forge_db_name: []i8 = ""
+
+// Persistent connection -- one open TCP fd per worker process, reused across queries.
+let g_forge_pg_fd: i32 = -1
 
 fn forge_db_config(host: []i8, port: i32, user: []i8, pass: []i8, name: []i8) {
     g_forge_db_host = host
@@ -3640,11 +3680,18 @@ fn forge_db_connect() -> i32 {
     ret forge_pg_connect(g_forge_db_host, g_forge_db_port, g_forge_db_user, g_forge_db_pass, g_forge_db_name)
 }
 
+// Returns a cached open PG fd, connecting if needed. One persistent connection per worker process.
+fn forge_pg_get_fd() -> i32 {
+    if g_forge_pg_fd >= 0 { ret g_forge_pg_fd }
+    g_forge_pg_fd = forge_pg_connect(g_forge_db_host, g_forge_db_port, g_forge_db_user, g_forge_db_pass, g_forge_db_name)
+    ret g_forge_pg_fd
+}
+
 fn forge_pg_query(host: []i8, port: i32, user: []i8, pass: []i8, dbname: []i8, sql: []i8) -> &ForgeResult {
     let result: &ForgeResult = alloc_pages(1)
     result.count    = 0
     result.affected = 0
-    let fd = forge_pg_connect(host, port, user, pass, dbname)
+    let fd = forge_pg_get_fd()
     if fd < 0 { ret result }
 
     // Send simple query: 'Q' + int32(len+5) + sql + '\0'
@@ -3656,16 +3703,16 @@ fn forge_pg_query(host: []i8, port: i32, user: []i8, pass: []i8, dbname: []i8, s
     forge_tcp_write_all(fd, qmsg, 6 + sql.len)
 
     // Allocate row storage
-    let rows: &i8 = alloc_pages(512)   // up to 256 rows
+    let rows: &i8 = alloc_pages(204)   // up to 50 rows (50 x 16648 = ~816KB)
     result.rows = rows as &ForgeDbRow
 
     let hdr = [5]i8
     let ncols = 0i64
+    let body: &i8 = alloc_pages(16)   // 64KB body buffer, reused per message
     loop {
-        if not forge_db_recv_n(fd, hdr, 5) { break }
+        if not forge_db_recv_n(fd, hdr, 5) { g_forge_pg_fd = -1  break }
         let mtype = hdr[0]
         let mlen  = forge_db_read_i32(hdr, 1) - 4
-        let body: &i8 = alloc_pages(16)   // 64 KB body buffer
         if mlen > 0 { forge_db_recv_n(fd, body, mlen) }
 
         if mtype == 'T' {
@@ -3735,7 +3782,7 @@ fn forge_pg_query(host: []i8, port: i32, user: []i8, pass: []i8, dbname: []i8, s
         }
     }
 
-    syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)
+    // Do NOT close fd — it is the persistent connection (g_forge_pg_fd).
     ret result
 }
 
@@ -3926,7 +3973,7 @@ fn forge_mysql_query(conn: &ForgeDBConn, sql: []i8) -> &ForgeResult {
     }
     forge_mysql_recv_pkt(fd, buf, 65536)   // consume EOF after columns
 
-    let rows: &i8 = alloc_pages(512)
+    let rows: &i8 = alloc_pages(204)
     result.rows = rows as &ForgeDbRow
 
     loop {
@@ -6308,15 +6355,15 @@ fn forge_tx_query(fd: i32, sql: []i8) -> &ForgeResult {
     loop i in 0..sql.len { msg[5 + i] = sql[i] }
     msg[5 + sql.len] = 0
     forge_tcp_write_all(fd, msg, 6 + sql.len as i64)
-    let rows: &i8 = alloc_pages(512)
+    let rows: &i8 = alloc_pages(204)
     result.rows = rows as &ForgeDbRow
     let hdr = [5]i8
     let ncols = 0i64
+    let body: &i8 = alloc_pages(16)   // reused per message
     loop {
         if not forge_db_recv_n(fd, hdr, 5) { break }
         let mtype = hdr[0]
         let blen  = forge_db_read_i32(hdr, 1) - 4
-        let body: &i8 = alloc_pages(16)
         if blen > 0 { forge_db_recv_n(fd, body, blen) }
         if mtype == 'T' {
             ncols = forge_db_read_i16(body, 0)
@@ -7384,7 +7431,7 @@ fn ctx_permit(ctx: i64, fields: []i8) -> &ForgeAttrs {
             loop k in 0..64 { if fa < fb and fields[fa] == ' ' { fa = fa + 1 } }
             loop k in 0..64 { if fb > fa and fields[fb - 1] == ' ' { fb = fb - 1 } }
             if fb > fa {
-                let kbuf: &i8 = alloc_pages(1)
+                let kbuf: &i8 = forge_scratch_alloc(fb - fa + 1)
                 let kn = fb - fa
                 loop ki in 0..kn { kbuf[ki] = fields[fa + ki] }
                 kbuf[kn] = 0
@@ -7397,7 +7444,7 @@ fn ctx_permit(ctx: i64, fields: []i8) -> &ForgeAttrs {
     loop k in 0..64 { if fa < fb and fields[fa] == ' ' { fa = fa + 1 } }
     loop k in 0..64 { if fb > fa and fields[fb - 1] == ' ' { fb = fb - 1 } }
     if fb > fa {
-        let kbuf: &i8 = alloc_pages(1)
+        let kbuf: &i8 = forge_scratch_alloc(fb - fa + 1)
         let kn = fb - fa
         loop ki in 0..kn { kbuf[ki] = fields[fa + ki] }
         kbuf[kn] = 0

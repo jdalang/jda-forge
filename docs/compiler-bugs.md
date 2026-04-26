@@ -190,6 +190,46 @@ This would make `.where_not_deleted()` on a `&ForgeQuery` receiver emit `bl _For
 
 ---
 
+## Bug 4 — `if cond { loop { ... } }` falls through in forked child
+
+### What happens
+
+When a forked child process executes:
+```jda
+let pid = syscall(2, 0,0,0,0,0,0) as i32   // fork()
+if pid == 0 {
+    loop {
+        let cfd = syscall(30, lfd, sa, salen, 0,0,0) as i32
+        if cfd >= 0 { forge_handle_fd(cfd) }
+    }
+}
+// expected: child stays above; parent continues here
+```
+
+The child does not stay trapped in the inner `loop { }`. Instead it exits the `if` block and continues executing code after it — including the outer loop body — causing an exponential fork cascade (2^N processes for N fork iterations).
+
+### What breaks
+
+Any pre-fork worker model that uses `if pid == 0 { loop { ... } }` to keep children in a service loop. With N=3 fork iterations, 8 processes are created and all reach the code after the if block.
+
+### Suspected cause
+
+The `arm64_gen_stmt` for `if` may not correctly handle an inner infinite `loop { }` as a terminator — it may fall through after generating the loop body's branch back, without recognizing that no code path exits. The branch target at the end of the `if` block then gets executed unconditionally.
+
+### Workaround applied
+
+Pre-fork removed from `app_listen`. Users wanting multi-process concurrency should launch multiple server instances with the shell:
+```sh
+for i in 1 2 3 4; do APP_PORT=8080 ./server & done
+```
+Each process binds independently (with `SO_REUSEADDR` already set), but only one will succeed on macOS without `SO_REUSEPORT`. A proper fix requires either the compiler fix above or adding `SO_REUSEPORT` to `TcpListener__bind` and launching processes independently.
+
+### Compiler fix
+
+After generating the body of `if cond { ... }`, the compiler should check whether the last statement in the body is a `loop { }` (no break) — a provably non-terminating statement. If so, it should not emit a branch past the if block's closing label for the true branch.
+
+---
+
 ## Summary
 
 | # | Bug | Severity | Status |
@@ -197,5 +237,6 @@ This would make `.where_not_deleted()` on a `&ForgeQuery` receiver emit `bl _For
 | 1 | `s[a..b]` discards `end`, `.len` calls strlen of full string | Critical | Worked around in forge.jda |
 | 2 | `let x: [N]type` without `=` steals next statement | Critical | Worked around (use `=` form) |
 | 3 | Missing UFCS shims cause linker errors for unknown method names | Medium | Worked around in forge.jda |
+| 4 | `if cond { loop { ... } }` does not trap child in loop — all code paths fall through | High | Blocks pre-fork worker model; workaround: run multiple server processes manually |
 
-All three bugs have runtime workarounds already in place. The compiler fixes are the proper long-term solution.
+All four bugs have runtime workarounds already in place. The compiler fixes are the proper long-term solution.
