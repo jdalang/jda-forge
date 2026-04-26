@@ -109,6 +109,10 @@ fn posts_delete(ctx: i64) {
     ctx_redirect(ctx, posts_path)
 }
 
+// posts_before_actions is called from main() — not a route action, no ctx: i64
+// signature, so compile-routes leaves it untouched.
+// fn_addr references use bare names; compile-routes rewrites them to the
+// prefixed form (fn_addr(posts_set_post) → fn_addr(posts_set_post)).
 fn posts_before_actions() {
     let ctrl = forge_ctrl_new()
     forge_ctrl_before (ctrl, fn_addr(posts_set_post),   "show, edit, update, delete")
@@ -119,25 +123,27 @@ fn posts_before_actions() {
 
 fn forge__dispatch_comments_create(ctx: i64) { forge_ctrl_run("comments", "create", fn_addr(comments_create), ctx) }
 fn forge__dispatch_comments_delete(ctx: i64) { forge_ctrl_run("comments", "delete", fn_addr(comments_delete), ctx) }
-fn forge__dispatch_posts_rescue(ctx: i64)     { forge_ctrl_run("posts", "rescue",     fn_addr(posts_rescue),     ctx) }
+fn forge__dispatch_posts_rescue(ctx: i64) { forge_ctrl_run("posts", "rescue", fn_addr(posts_rescue), ctx) }
 fn forge__dispatch_posts_log_action(ctx: i64) { forge_ctrl_run("posts", "log_action", fn_addr(posts_log_action), ctx) }
-fn forge__dispatch_posts_set_post(ctx: i64)   { forge_ctrl_run("posts", "set_post",   fn_addr(posts_set_post),   ctx) }
-fn forge__dispatch_posts_index(ctx: i64)      { forge_ctrl_run("posts", "index",      fn_addr(posts_index),      ctx) }
-fn forge__dispatch_posts_new(ctx: i64)        { forge_ctrl_run("posts", "new",        fn_addr(posts_new),        ctx) }
-fn forge__dispatch_posts_create(ctx: i64)     { forge_ctrl_run("posts", "create",     fn_addr(posts_create),     ctx) }
-fn forge__dispatch_posts_show(ctx: i64)       { forge_ctrl_run("posts", "show",       fn_addr(posts_show),       ctx) }
-fn forge__dispatch_posts_edit(ctx: i64)       { forge_ctrl_run("posts", "edit",       fn_addr(posts_edit),       ctx) }
-fn forge__dispatch_posts_update(ctx: i64)     { forge_ctrl_run("posts", "update",     fn_addr(posts_update),     ctx) }
-fn forge__dispatch_posts_delete(ctx: i64)     { forge_ctrl_run("posts", "delete",     fn_addr(posts_delete),     ctx) }
-
+fn forge__dispatch_posts_set_post(ctx: i64) { forge_ctrl_run("posts", "set_post", fn_addr(posts_set_post), ctx) }
+fn forge__dispatch_posts_index(ctx: i64) { forge_ctrl_run("posts", "index", fn_addr(posts_index), ctx) }
+fn forge__dispatch_posts_new(ctx: i64) { forge_ctrl_run("posts", "new", fn_addr(posts_new), ctx) }
+fn forge__dispatch_posts_create(ctx: i64) { forge_ctrl_run("posts", "create", fn_addr(posts_create), ctx) }
+fn forge__dispatch_posts_show(ctx: i64) { forge_ctrl_run("posts", "show", fn_addr(posts_show), ctx) }
+fn forge__dispatch_posts_edit(ctx: i64) { forge_ctrl_run("posts", "edit", fn_addr(posts_edit), ctx) }
+fn forge__dispatch_posts_update(ctx: i64) { forge_ctrl_run("posts", "update", fn_addr(posts_update), ctx) }
+fn forge__dispatch_posts_delete(ctx: i64) { forge_ctrl_run("posts", "delete", fn_addr(posts_delete), ctx) }
 fn forge_controllers_init() {
     forge_action_register("comments", "create", fn_addr(forge__dispatch_comments_create))
     forge_action_register("comments", "delete", fn_addr(forge__dispatch_comments_delete))
-    forge_action_register("posts", "index",      fn_addr(forge__dispatch_posts_index))
-    forge_action_register("posts", "new",        fn_addr(forge__dispatch_posts_new))
-    forge_action_register("posts", "create",     fn_addr(forge__dispatch_posts_create))
-    forge_action_register("posts", "show",       fn_addr(forge__dispatch_posts_show))
-    forge_action_register("posts", "edit",       fn_addr(forge__dispatch_posts_edit))
-    forge_action_register("posts", "update",     fn_addr(forge__dispatch_posts_update))
-    forge_action_register("posts", "delete",     fn_addr(forge__dispatch_posts_delete))
+    forge_action_register("posts", "rescue", fn_addr(forge__dispatch_posts_rescue))
+    forge_action_register("posts", "log_action", fn_addr(forge__dispatch_posts_log_action))
+    forge_action_register("posts", "set_post", fn_addr(forge__dispatch_posts_set_post))
+    forge_action_register("posts", "index", fn_addr(forge__dispatch_posts_index))
+    forge_action_register("posts", "new", fn_addr(forge__dispatch_posts_new))
+    forge_action_register("posts", "create", fn_addr(forge__dispatch_posts_create))
+    forge_action_register("posts", "show", fn_addr(forge__dispatch_posts_show))
+    forge_action_register("posts", "edit", fn_addr(forge__dispatch_posts_edit))
+    forge_action_register("posts", "update", fn_addr(forge__dispatch_posts_update))
+    forge_action_register("posts", "delete", fn_addr(forge__dispatch_posts_delete))
 }

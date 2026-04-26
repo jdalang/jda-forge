@@ -10,10 +10,10 @@ fn on_job_after(arg: i64) {
 
 fn main() {
     load_env()
-    forge_jobs_start(4)
-    forge_job_before_perform(fn_addr(on_job_before))
-    forge_job_after_perform (fn_addr(on_job_after))
-    forge_migration_run("db/migrate")
+    // forge_jobs_start disabled: spawn{} is inline on this platform — workers loop forever
+    // forge_jobs_start(4)
+    // forge_job_before_perform(fn_addr(on_job_before))
+    // forge_job_after_perform (fn_addr(on_job_after))
 
     let app = app_new_config(app_config())
     app_use(app, fn_addr(forge_logger))

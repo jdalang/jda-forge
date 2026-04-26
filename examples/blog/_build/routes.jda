@@ -1,4 +1,4 @@
-// Auto-generated from config/routes.jda — do not edit directly
+// Auto-generated from config/routes.jda -- do not edit directly
 
 let posts_path: []i8    = "/posts"
 let new_post_path: []i8 = "/posts/new"
@@ -10,7 +10,7 @@ fn new_post_comment_path(post_id: []i8) -> []i8           { ret forge_nested_pat
 fn edit_post_comment_path(post_id: []i8, id: []i8) -> []i8 { ret forge_nested_path_edit("posts", post_id, "comments", id) }
 
 fn routes(app: &ForgeApp) {
-    app.root("posts#index")
-    let _s0 = app.resources("posts")
-    _s0.resources("comments")
+    forge_app_root(app, "posts#index")
+    let _s0 = forge_app_resources(app, "posts")
+    forge_scope_resources(_s0, "comments")
 }
