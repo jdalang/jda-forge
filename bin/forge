@@ -140,6 +140,7 @@ compile_routes() {
     local out="_build/routes.jda"
     local fh; fh=$(mktemp)   # path helper declarations
     local fb; fb=$(mktemp)   # routes() body
+    local fi; fi=$(mktemp)   # path global runtime inits (prepended to routes body)
 
     local var_idx=0
 
@@ -198,6 +199,8 @@ compile_routes() {
                 "")
                     printf 'let %s_path: []i8    = "/%s"\n' "$res" "$res" >> "$fh"
                     printf 'let new_%s_path: []i8 = "/%s/new"\n' "$sing" "$res" >> "$fh"
+                    printf '    %s_path     = "/%s"\n' "$res" "$res" >> "$fi"
+                    printf '    new_%s_path = "/%s/new"\n' "$sing" "$res" >> "$fi"
                     printf 'fn %s_path(id: []i8) -> []i8      { ret forge_path_id("%s", id) }\n' "$sing" "$res" >> "$fh"
                     printf 'fn edit_%s_path(id: []i8) -> []i8 { ret forge_path_edit("%s", id) }\n' "$sing" "$res" >> "$fh"
                     ;;
@@ -214,6 +217,8 @@ compile_routes() {
                 "namespace")
                     printf 'let %s_%s_path: []i8    = "/%s/%s"\n' "$par_res" "$res" "$par_res" "$res" >> "$fh"
                     printf 'let new_%s_%s_path: []i8 = "/%s/%s/new"\n' "$par_res" "$sing" "$par_res" "$res" >> "$fh"
+                    printf '    %s_%s_path     = "/%s/%s"\n' "$par_res" "$res" "$par_res" "$res" >> "$fi"
+                    printf '    new_%s_%s_path = "/%s/%s/new"\n' "$par_res" "$sing" "$par_res" "$res" >> "$fi"
                     printf 'fn %s_%s_path(id: []i8) -> []i8      { ret forge_path_id("%s/%s", id) }\n' "$par_res" "$sing" "$par_res" "$res" >> "$fh"
                     printf 'fn edit_%s_%s_path(id: []i8) -> []i8 { ret forge_path_edit("%s/%s", id) }\n' "$par_res" "$sing" "$par_res" "$res" >> "$fh"
                     ;;
@@ -222,6 +227,8 @@ compile_routes() {
                     local sp_bare="${par_res#/}"
                     printf 'let %s_%s_path: []i8    = "%s/%s"\n' "$sp" "$res" "$par_res" "$res" >> "$fh"
                     printf 'let new_%s_%s_path: []i8 = "%s/%s/new"\n' "$sp" "$sing" "$par_res" "$res" >> "$fh"
+                    printf '    %s_%s_path     = "%s/%s"\n' "$sp" "$res" "$par_res" "$res" >> "$fi"
+                    printf '    new_%s_%s_path = "%s/%s/new"\n' "$sp" "$sing" "$par_res" "$res" >> "$fi"
                     printf 'fn %s_%s_path(id: []i8) -> []i8      { ret forge_path_id("%s/%s", id) }\n' "$sp" "$sing" "$sp_bare" "$res" >> "$fh"
                     printf 'fn edit_%s_%s_path(id: []i8) -> []i8 { ret forge_path_edit("%s/%s", id) }\n' "$sp" "$sing" "$sp_bare" "$res" >> "$fh"
                     ;;
@@ -267,6 +274,7 @@ compile_routes() {
                 local full_path="$path"
                 [[ -n "$par_res" && "$par_type" != "resources" ]] && full_path="${par_res}${path}"
                 printf 'let %s_path: []i8 = "%s"\n' "$alias_name" "$full_path" >> "$fh"
+                printf '    %s_path = "%s"\n' "$alias_name" "$full_path" >> "$fi"
             fi
 
             if [[ -z "$par_var" ]]; then
@@ -282,11 +290,12 @@ compile_routes() {
         printf '// Auto-generated from config/routes.jda -- do not edit directly\n\n'
         cat "$fh"
         printf '\nfn routes(app: &ForgeApp) {\n'
+        cat "$fi"
         cat "$fb"
         printf '}\n'
     } > "$out"
 
-    rm -f "$fh" "$fb"
+    rm -f "$fh" "$fb" "$fi"
     ok "compiled config/routes.jda -> _build/routes.jda"
 
     # Auto-generate _build/controllers.jda by scanning app/controllers/*.jda.
