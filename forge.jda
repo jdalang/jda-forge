@@ -140,6 +140,8 @@ const FORGE_STATIC_BUF   = 1048576   // 1 MB max static file
 const FORGE_SYS_WRITE    = 4    // macOS BSD: write
 const FORGE_SYS_RECVFROM = 29   // macOS BSD: recvfrom
 const FORGE_SYS_CLOSE    = 6    // macOS BSD: close
+const FORGE_SYS_SOCKET   = 97   // macOS BSD: socket
+const FORGE_SYS_CONNECT  = 98   // macOS BSD: connect
 
 // Session store
 const FORGE_MAX_SESSIONS      = 128
@@ -192,6 +194,8 @@ struct ForgeSessionKV {
 
 struct ForgeSession {
     id:    [FORGE_SESSION_ID_LEN]i8
+    csrf:  &i8
+    clen:  i64
     kv:    [FORGE_SESSION_MAX_KV]ForgeSessionKV
     count: i64
     used:  bool
@@ -252,9 +256,9 @@ struct ForgeApp {
     config:          ForgeConfig
 }
 
-let g_forge_app:          i64  = 0
-let g_forge_session_ptrs: &i64 = 0
-let g_forge_session_gen:  i64  = 0
+let g_forge_app:           i64 = 0
+let g_forge_sessions_base: i64 = 0
+let g_forge_session_gen:   i64 = 0
 
 // =============================================================================
 // App construction
@@ -1120,6 +1124,68 @@ fn forge_hdr_has_close(ctx_ptr: i64) -> bool {
     ret (c0[0] and 0xFF) == 'c' and (c1[0] and 0xFF) == 'l' and (c2[0] and 0xFF) == 'o' and (c3[0] and 0xFF) == 's' and (c4[0] and 0xFF) == 'e'
 }
 
+// Extract the "Cookie: " header value from a raw HTTP request buffer before
+// parse_request null-terminates the header tokens. Copies the value string
+// (everything after "Cookie: " up to \r or \n) into out[0..cap-1], null-terminated.
+fn forge_extract_cookie_hdr(buf: &i8, n: i64, out: &i8, cap: i64) {
+    let term: &i8 = out + 0
+    term[0] = 0
+    if n == 0 or cap <= 1 { ret }
+    // Skip the request line (first \r\n)
+    let i = 0i64
+    loop i < n {
+        let p: &i8 = buf + i
+        if (p[0] and 0xFF) == '\r' and i + 1 < n {
+            let p2: &i8 = buf + i + 1
+            if (p2[0] and 0xFF) == '\n' { i = i + 2  break }
+        }
+        i = i + 1
+    }
+    // Scan header lines
+    let label = "Cookie: "
+    let lp: &i8 = label as i64 as &i8
+    let llen = strlen(lp)
+    loop i < n {
+        // Blank line = end of headers
+        let lc: &i8 = buf + i
+        if (lc[0] and 0xFF) == '\r' and i + 1 < n {
+            let lc2: &i8 = buf + i + 1
+            if (lc2[0] and 0xFF) == '\n' { ret }
+        }
+        // Try to match "Cookie: " at position i
+        let found = true
+        let j = 0i64
+        loop j < llen {
+            if i + j >= n { found = false  break }
+            let hp: &i8 = buf + i + j
+            let kp: &i8 = lp + j
+            if (hp[0] and 0xFF) != (kp[0] and 0xFF) { found = false  break }
+            j = j + 1
+        }
+        if found {
+            let vs = i + llen
+            let vl = 0i64
+            loop vs + vl < n and vl < cap - 1 {
+                let vp: &i8 = buf + vs + vl
+                let ch = vp[0] and 0xFF
+                if ch == '\r' or ch == '\n' or ch == 0 { break }
+                let dst: &i8 = out + vl
+                dst[0] = vp[0]
+                vl = vl + 1
+            }
+            let nt: &i8 = out + vl
+            nt[0] = 0
+            ret
+        }
+        // Advance to next line
+        loop i < n {
+            let lc: &i8 = buf + i
+            i = i + 1
+            if (lc[0] and 0xFF) == '\n' { break }
+        }
+    }
+}
+
 fn forge_handle_fd(fd: i32) {
     forge_scratch_reset()
     let app: &ForgeApp = g_forge_app
@@ -1130,6 +1196,25 @@ fn forge_handle_fd(fd: i32) {
     loop {
         let n = syscall(FORGE_SYS_RECVFROM, fd, req_buf, max, 0, 0, 0) as i64
         if n <= 0 { break }
+        // Extract Cookie header BEFORE parse_request null-terminates the buffer tokens
+        let cookie_buf: &i8 = forge_scratch_alloc(1024)
+        forge_extract_cookie_hdr(req_buf, n, cookie_buf, 1024)
+        // Find body start (after \r\n\r\n) in raw buffer before parse_request mutates it
+        let raw_body_ptr: &i8 = 0 as &i8
+        let rbi = 0i64
+        loop rbi + 3 < n {
+            let rp0: &i8 = req_buf + rbi
+            let rp1: &i8 = req_buf + rbi + 1
+            let rp2: &i8 = req_buf + rbi + 2
+            let rp3: &i8 = req_buf + rbi + 3
+            if (rp0[0] and 0xFF) == '\r' and (rp1[0] and 0xFF) == '\n' and
+               (rp2[0] and 0xFF) == '\r' and (rp3[0] and 0xFF) == '\n' {
+                let bs: &i8 = req_buf + rbi + 4
+                raw_body_ptr = bs
+                break
+            }
+            rbi = rbi + 1
+        }
         match parse_request(req_buf[0..n]) {
             ok(req) => {
                 let ctx = ForgeCtx {}
@@ -1140,6 +1225,9 @@ fn forge_handle_fd(fd: i32) {
                 ctx.store_count = 0
                 ctx.sent        = false
                 ctx.is_ws       = false
+                let ctx_p = (&ctx) as i64
+                ctx_set(ctx_p, "_raw_cookie", cookie_buf as i64)
+                ctx_set(ctx_p, "_raw_body", raw_body_ptr as i64)
                 let app2: &ForgeApp = g_forge_app
                 forge_dispatch(app2, &ctx)
                 if ctx.is_ws { ret }   // WebSocket owns the fd now
@@ -1302,47 +1390,130 @@ fn ctx_get(ctx_ptr: i64, key: []i8) -> i64 {
 // Cookie API
 // =============================================================================
 fn ctx_cookie(ctx_ptr: i64, name: []i8) -> []i8 {
-    let raw = ctx_header(ctx_ptr, "Cookie")
-    if raw.len == 0 { ret "" }
-    let pos = 0i64
-    loop pos < raw.len {
-        loop pos < raw.len and raw[pos] == ' ' { pos = pos + 1 }
-        let ks = pos
-        loop pos < raw.len and raw[pos] != '=' and raw[pos] != ';' { pos = pos + 1 }
-        let klen = pos - ks
-        if pos < raw.len and raw[pos] == '=' { pos = pos + 1 }
-        let vs = pos
-        loop pos < raw.len and raw[pos] != ';' { pos = pos + 1 }
-        let vlen = pos - vs
-        if pos < raw.len { pos = pos + 1 }
-        if klen == name.len {
-            let keq = true
-            loop ii in 0..klen { if raw[ks + ii] != name[ii] { keq = false  break } }
-            if keq {
-                let vbuf: &i8 = forge_scratch_alloc(vlen + 1)
-                loop ii in 0..vlen { vbuf[ii] = raw[vs + ii] }
-                vbuf[vlen] = 0
-                ret vbuf
+    // Use the raw Cookie header value extracted before parse_request mutated the buffer.
+    let cookie_p = ctx_get(ctx_ptr, "_raw_cookie")
+    if cookie_p == 0 { ret "" }
+    let hdrs: &i8 = cookie_p as &i8
+    let hlen = strlen(hdrs)
+    if hlen == 0 { ret "" }
+    // hdrs = "sid=abc; other=val" — scan for name=val pairs
+    let name_base = name as i64
+    let name_ptr: &i8 = name_base as &i8
+    let nlen = strlen(name_ptr)
+    if nlen == 0 { ret "" }
+    let i = 0i64
+    loop i < hlen {
+        // Skip spaces
+        loop i < hlen {
+            let sp: &i8 = hdrs + i
+            if (sp[0] and 0xFF) != ' ' { break }
+            i = i + 1
+        }
+        // Match name
+        let nm = true
+        let ni = 0i64
+        loop ni < nlen {
+            let np: &i8 = hdrs + i + ni
+            let mp: &i8 = name_ptr + ni
+            if (np[0] and 0xFF) != (mp[0] and 0xFF) { nm = false  break }
+            ni = ni + 1
+        }
+        if nm {
+            let ep: &i8 = hdrs + i + nlen
+            if (ep[0] and 0xFF) == '=' {
+                let vs = i + nlen + 1
+                let ve = vs
+                loop ve < hlen {
+                    let vp: &i8 = hdrs + ve
+                    let ch = vp[0] and 0xFF
+                    if ch == ';' or ch == '\r' or ch == 10 or ch == 0 { break }
+                    ve = ve + 1
+                }
+                let vl = ve - vs
+                if vl > 0 {
+                    let vbuf: &i8 = forge_scratch_alloc(vl + 1)
+                    let vi = 0i64
+                    loop vi < vl {
+                        let src: &i8 = hdrs + vs + vi
+                        let dst: &i8 = vbuf + vi
+                        dst[0] = src[0]
+                        vi = vi + 1
+                    }
+                    let nt: &i8 = vbuf + vl
+                    nt[0] = 0
+                    ret vbuf
+                }
             }
         }
+        // Skip to next semicolon
+        loop i < hlen {
+            let sp: &i8 = hdrs + i
+            let ch = sp[0] and 0xFF
+            if ch == ';' or ch == '\r' or ch == 10 or ch == 0 { break }
+            i = i + 1
+        }
+        let sp2: &i8 = hdrs + i
+        if (sp2[0] and 0xFF) == ';' { i = i + 1 }
+        else { break }
     }
     ret ""
+}
+
+fn forge__i64_to_str(buf: &i8, val: i64) -> i64 {
+    if val == 0 {
+        let dp: &i8 = buf + 0
+        dp[0] = '0'
+        ret 1
+    }
+    let tmp: &i8 = alloc_pages(1)
+    let tpos = 0i64
+    let v = val
+    loop v > 0 {
+        let digit = v - (v / 10) * 10
+        let dp: &i8 = tmp + tpos
+        dp[0] = digit + 48
+        tpos = tpos + 1
+        v = v / 10
+    }
+    let i = tpos - 1
+    let pos = 0i64
+    loop i >= 0 {
+        let sp: &i8 = tmp + i
+        let dp: &i8 = buf + pos
+        dp[0] = sp[0]
+        pos = pos + 1
+        i = i - 1
+    }
+    ret pos
+}
+
+fn forge__buf_append(buf: &i8, pos: i64, s: []i8) -> i64 {
+    let sp: &i8 = s as &i8
+    let slen = strlen(sp)
+    let i = 0i64
+    loop i < slen {
+        let src: &i8 = sp + i
+        let dst: &i8 = buf + pos
+        dst[0] = src[0]
+        pos = pos + 1
+        i = i + 1
+    }
+    ret pos
 }
 
 fn ctx_set_cookie(ctx_ptr: i64, name: []i8, val: []i8, max_age_secs: i64) {
     let buf: &i8 = alloc_pages(1)
     let pos = 0i64
-    loop i in 0..name.len { buf[pos] = name[i]  pos = pos + 1 }
-    buf[pos] = '='   pos = pos + 1
-    loop i in 0..val.len  { buf[pos] = val[i]   pos = pos + 1 }
-    let ma = "; Max-Age="
-    loop i in 0..ma.len { buf[pos] = ma[i]  pos = pos + 1 }
-    // Append max_age as decimal
-    let tmp = [20]i8
-    let tlen = fmt_i64(tmp, max_age_secs)
-    loop i in 0..tlen { buf[pos] = tmp[i]  pos = pos + 1 }
-    let path_s = "; Path=/"
-    loop i in 0..path_s.len { buf[pos] = path_s[i]  pos = pos + 1 }
+    pos = forge__buf_append(buf, pos, name)
+    let eq: &i8 = buf + pos
+    eq[0] = '='
+    pos = pos + 1
+    pos = forge__buf_append(buf, pos, val)
+    pos = forge__buf_append(buf, pos, "; Max-Age=")
+    let nbuf: &i8 = alloc_pages(1)
+    let nlen = forge__i64_to_str(nbuf, max_age_secs)
+    pos = forge__buf_append(buf, pos, nbuf[0..nlen])
+    pos = forge__buf_append(buf, pos, "; Path=/")
     ctx_set_header(ctx_ptr, "Set-Cookie", buf[0..pos])
 }
 
@@ -2387,55 +2558,104 @@ fn forge_url_decode_n(src: &i8, src_len: i64, dst: &i8) -> i64 {
 
 // ctx_form: read a field from an application/x-www-form-urlencoded body.
 fn ctx_form(ctx_ptr: i64, key: []i8) -> []i8 {
-    let c: &ForgeCtx = ctx_ptr
-    let body = c.req.body
-    if body.len == 0 { ret "" }
+    let body_p = ctx_get(ctx_ptr, "_raw_body")
+    if body_p == 0 { ret "" }
+    let body: &i8 = body_p as &i8
+    let bbase = body as i64
+    let blen = strlen(body)
+    if blen == 0 { ret "" }
+    let key_base = key as i64
+    let key_ptr: &i8 = key_base as &i8
+    let key_len = key.len
+    if key_len == 0 { ret "" }
     let pos = 0i64
-    loop pos < body.len {
+    loop pos < blen {
+        // Find key span [ks, ks+klen)
         let ks = pos
-        loop pos < body.len and body[pos] != '=' and body[pos] != '&' { pos = pos + 1 }
+        loop pos < blen {
+            let bp: &i8 = (bbase + pos) as &i8
+            let ch = bp[0] and 0xFF
+            if ch == '=' or ch == '&' { break }
+            pos = pos + 1
+        }
         let klen = pos - ks
-        if pos < body.len and body[pos] == '=' { pos = pos + 1 }
+        if pos < blen {
+            let bp: &i8 = (bbase + pos) as &i8
+            if (bp[0] and 0xFF) == '=' { pos = pos + 1 }
+        }
+        // Find value span [vs, vs+vlen)
         let vs = pos
-        loop pos < body.len and body[pos] != '&' { pos = pos + 1 }
+        loop pos < blen {
+            let bp: &i8 = (bbase + pos) as &i8
+            if (bp[0] and 0xFF) == '&' { break }
+            pos = pos + 1
+        }
         let vlen = pos - vs
-        if pos < body.len { pos = pos + 1 }
-        // URL-decode key using explicit range and compare
-        let k_buf: &i8 = forge_scratch_alloc(klen + 1)
+        if pos < blen { pos = pos + 1 }
+        // URL-decode and compare key
         let kdp = 0i64
         let ksi = 0i64
+        let k_buf: &i8 = forge_scratch_alloc(klen + 1)
+        let kbbase = k_buf as i64
         loop ksi < klen {
-            let kc = body[ks + ksi]
+            let bp: &i8 = (bbase + ks + ksi) as &i8
+            let kc = bp[0] and 0xFF
             if kc == '%' and ksi + 2 < klen {
-                k_buf[kdp] = (forge_hex_val(body[ks + ksi + 1]) * 16 + forge_hex_val(body[ks + ksi + 2])) as i8
+                let h1p: &i8 = (bbase + ks + ksi + 1) as &i8
+                let h2p: &i8 = (bbase + ks + ksi + 2) as &i8
+                let decoded = forge_hex_val(h1p[0] as i8) * 16 + forge_hex_val(h2p[0] as i8)
+                let dst: &i8 = (kbbase + kdp) as &i8
+                dst[0] = decoded
                 kdp = kdp + 1   ksi = ksi + 3
             } else if kc == '+' {
-                k_buf[kdp] = ' '   kdp = kdp + 1   ksi = ksi + 1
+                let dst: &i8 = (kbbase + kdp) as &i8
+                dst[0] = ' '
+                kdp = kdp + 1   ksi = ksi + 1
             } else {
-                k_buf[kdp] = kc    kdp = kdp + 1   ksi = ksi + 1
+                let dst: &i8 = (kbbase + kdp) as &i8
+                dst[0] = kc
+                kdp = kdp + 1   ksi = ksi + 1
             }
         }
-        k_buf[kdp] = 0
-        if kdp == key.len {
+        let kterm: &i8 = (kbbase + kdp) as &i8
+        kterm[0] = 0
+        if kdp == key_len {
             let keq = true
-            loop ii in 0..kdp { if k_buf[ii] != key[ii] { keq = false  break } }
+            let ii = 0i64
+            loop ii < kdp {
+                let kp: &i8 = (kbbase + ii) as &i8
+                let mp: &i8 = (key_base + ii) as &i8
+                if (kp[0] and 0xFF) != (mp[0] and 0xFF) { keq = false  break }
+                ii = ii + 1
+            }
             if keq {
                 let v_buf: &i8 = forge_scratch_alloc(vlen + 1)
+                let vbbase = v_buf as i64
                 let vdp = 0i64
                 let vsi = 0i64
                 loop vsi < vlen {
-                    let vc = body[vs + vsi]
+                    let bp: &i8 = (bbase + vs + vsi) as &i8
+                    let vc = bp[0] and 0xFF
                     if vc == '%' and vsi + 2 < vlen {
-                        v_buf[vdp] = (forge_hex_val(body[vs + vsi + 1]) * 16 + forge_hex_val(body[vs + vsi + 2])) as i8
+                        let h1p: &i8 = (bbase + vs + vsi + 1) as &i8
+                        let h2p: &i8 = (bbase + vs + vsi + 2) as &i8
+                        let decoded = forge_hex_val(h1p[0] as i8) * 16 + forge_hex_val(h2p[0] as i8)
+                        let dst: &i8 = (vbbase + vdp) as &i8
+                        dst[0] = decoded
                         vdp = vdp + 1   vsi = vsi + 3
                     } else if vc == '+' {
-                        v_buf[vdp] = ' '   vdp = vdp + 1   vsi = vsi + 1
+                        let dst: &i8 = (vbbase + vdp) as &i8
+                        dst[0] = ' '
+                        vdp = vdp + 1   vsi = vsi + 1
                     } else {
-                        v_buf[vdp] = vc    vdp = vdp + 1   vsi = vsi + 1
+                        let dst: &i8 = (vbbase + vdp) as &i8
+                        dst[0] = vc
+                        vdp = vdp + 1   vsi = vsi + 1
                     }
                 }
-                v_buf[vdp] = 0
-                ret v_buf
+                let vterm: &i8 = (vbbase + vdp) as &i8
+                vterm[0] = 0
+                ret v_buf[0..vdp]
             }
         }
     }
@@ -2557,75 +2777,101 @@ fn forge_gen_sid(dst: &i8) {
 }
 
 fn forge_session_init() {
-    if g_forge_session_ptrs != 0 { ret }
-    let ptrs: &i64 = alloc_pages(1)
-    loop i in 0..FORGE_MAX_SESSIONS {
-        let s: &ForgeSession = alloc_pages(1)
-        s.used  = false
-        s.count = 0
-        ptrs[i] = s as i64
+    forge_log_tagged("sess_init_enter", FORGE_LOG_INFO, "enter")
+    if g_forge_sessions_base != 0 {
+        forge_log_tagged("sess_init_skip", FORGE_LOG_INFO, "skip")
+        ret
     }
-    g_forge_session_ptrs = ptrs
+    g_forge_sessions_base = alloc_pages(128)
+    loop i in 0..FORGE_MAX_SESSIONS {
+        let s: &ForgeSession = (g_forge_sessions_base + i * 4096) as &ForgeSession
+        s.used  = false
+        s.csrf  = 0
+        s.clen  = 0
+        s.count = 0
+    }
+    forge_log_tagged("sess_init_done", FORGE_LOG_INFO, "done")
 }
 
-fn forge_session_find(sid: []i8) -> &ForgeSession {
-    if g_forge_session_ptrs == 0 { ret 0 }
-    if sid.len != FORGE_SESSION_ID_LEN { ret 0 }
+fn forge_session_find(sid: []i8) -> i64 {
+    forge_log_tagged("session_find_entry", FORGE_LOG_INFO, "enter")
+    if g_forge_sessions_base == 0 {
+        forge_log_tagged("session_find_noptrs", FORGE_LOG_INFO, "ptrs_null")
+        ret -1
+    }
     let sidbase = sid as i64
+    let sidp2: &i8 = sidbase as &i8
+    let sidlen2 = strlen(sidp2)
+    if sidlen2 != FORGE_SESSION_ID_LEN {
+        forge_log_tagged("session_find_badlen", FORGE_LOG_INFO, "bad_len")
+        ret -1
+    }
+    forge_log_tagged("session_find_sid", FORGE_LOG_INFO, sid)
     loop i in 0..FORGE_MAX_SESSIONS {
-        let s: &ForgeSession = g_forge_session_ptrs[i] as &ForgeSession
+        let s: &ForgeSession = (g_forge_sessions_base + i * 4096) as &ForgeSession
         if s.used {
+            let sbase: &i8 = s as &i8
+            forge_log_tagged("session_find_check", FORGE_LOG_INFO, sbase[0..FORGE_SESSION_ID_LEN])
             let eq = true
-            let sbase = s as i64
             let j = 0i64
             loop j < FORGE_SESSION_ID_LEN {
-                let sp: &i8 = (sbase + j) as &i8
+                let sp: &i8 = sbase + j
                 let cp: &i8 = (sidbase + j) as &i8
                 if (sp[0] and 0xFF) != (cp[0] and 0xFF) { eq = false   break }
                 j = j + 1
             }
-            if eq { ret s }
+            if eq { ret i }
         }
     }
-    ret 0
+    ret -1
 }
 
-fn forge_session_alloc() -> &ForgeSession {
+fn forge_session_alloc() -> i64 {
     loop i in 0..FORGE_MAX_SESSIONS {
-        let s: &ForgeSession = g_forge_session_ptrs[i] as &ForgeSession
+        let s: &ForgeSession = (g_forge_sessions_base + i * 4096) as &ForgeSession
         if not s.used {
             s.used  = true
             s.count = 0
+            s.csrf  = 0
+            s.clen  = 0
             forge_gen_sid(s as &i8)
-            ret s
+            ret i
         }
     }
-    ret 0   // session pool exhausted
+    ret -1   // session pool exhausted
 }
 
-// Middleware: read or create a session, attach to ctx as "_session".
+fn forge_session_get(ctx_ptr: i64) -> &ForgeSession {
+    if g_forge_sessions_base == 0 { ret 0 }
+    let idx1 = ctx_get(ctx_ptr, "_session_idx")
+    if idx1 == 0 { ret 0 }
+    ret (g_forge_sessions_base + (idx1 - 1) * 4096) as &ForgeSession
+}
+
+// Middleware: read or create a session; stores 1-based index in "_session_idx".
 fn forge_session_start(ctx_ptr: i64) {
     forge_session_init()
     let sid = ctx_cookie(ctx_ptr, "sid")
     forge_log_tagged("session_start_sid", FORGE_LOG_DEBUG, sid)
-    let s: &ForgeSession = 0
-    if sid.len == FORGE_SESSION_ID_LEN {
-        s = forge_session_find(sid)
-    }
-    if s == 0 {
-        s = forge_session_alloc()
-        if s != 0 {
+    let idx = forge_session_find(sid)
+    if idx < 0 {
+        idx = forge_session_alloc()
+        if idx >= 0 {
+            let s: &ForgeSession = (g_forge_sessions_base + idx * 4096) as &ForgeSession
             let new_sid: &i8 = s as &i8
             ctx_set_cookie(ctx_ptr, "sid", new_sid[0..FORGE_SESSION_ID_LEN], 86400)
         }
     }
-    let found_sid: &i8 = s as &i8
-    forge_log_tagged("session_start_found", FORGE_LOG_DEBUG, found_sid[0..FORGE_SESSION_ID_LEN])
-    if s != 0 { ctx_set(ctx_ptr, "_session", s as i64) }
+    if idx >= 0 {
+        let s: &ForgeSession = (g_forge_sessions_base + idx * 4096) as &ForgeSession
+        let found_sid: &i8 = s as &i8
+        forge_log_tagged("session_start_found", FORGE_LOG_DEBUG, found_sid[0..FORGE_SESSION_ID_LEN])
+        ctx_set(ctx_ptr, "_session_idx", idx + 1)
+    }
 }
 
 fn ctx_session_get(ctx_ptr: i64, key: []i8) -> []i8 {
-    let s: &ForgeSession = ctx_get(ctx_ptr, "_session") as &ForgeSession
+    let s: &ForgeSession = forge_session_get(ctx_ptr)
     if s == 0 { ret "" }
     loop i in 0..s.count {
         if forge_slice_eq(s.kv[i].key[0..s.kv[i].klen], key) {
@@ -2636,7 +2882,7 @@ fn ctx_session_get(ctx_ptr: i64, key: []i8) -> []i8 {
 }
 
 fn ctx_session_set(ctx_ptr: i64, key: []i8, val: []i8) {
-    let s: &ForgeSession = ctx_get(ctx_ptr, "_session") as &ForgeSession
+    let s: &ForgeSession = forge_session_get(ctx_ptr)
     if s == 0 { ret }
     // Update existing key
     loop i in 0..s.count {
@@ -2664,7 +2910,7 @@ fn ctx_session_set(ctx_ptr: i64, key: []i8, val: []i8) {
 }
 
 fn ctx_session_del(ctx_ptr: i64, key: []i8) {
-    let s: &ForgeSession = ctx_get(ctx_ptr, "_session") as &ForgeSession
+    let s: &ForgeSession = forge_session_get(ctx_ptr)
     if s == 0 { ret }
     loop i in 0..s.count {
         if forge_slice_eq(s.kv[i].key[0..s.kv[i].klen], key) {
@@ -2676,7 +2922,7 @@ fn ctx_session_del(ctx_ptr: i64, key: []i8) {
 }
 
 fn ctx_session_clear(ctx_ptr: i64) {
-    let s: &ForgeSession = ctx_get(ctx_ptr, "_session") as &ForgeSession
+    let s: &ForgeSession = forge_session_get(ctx_ptr)
     if s != 0 { s.count = 0 }
 }
 
@@ -2748,20 +2994,44 @@ fn ctx_flash_keep(ctx_ptr: i64, kind: []i8) {
 // =============================================================================
 
 fn forge_csrf_token(ctx_ptr: i64) -> []i8 {
-    let existing = ctx_session_get(ctx_ptr, "_csrf")
-    if existing.len > 0 { ret existing }
+    let s: &ForgeSession = forge_session_get(ctx_ptr)
+    if s == 0 { ret "" }
+    let existing: &i8 = s.csrf
+    if existing != 0 { ret existing[0..s.clen] }
     let buf: &i8 = alloc_pages(1)
     let t = time_now_ms()
-    let n = atomic_fetch_add(&g_forge_session_gen, 1)
+    let n = g_forge_session_gen
+    g_forge_session_gen = n + 1
     let v = t ^ (n * 2654435761)
-    let hex = "0123456789abcdef"
-    loop i in 0..16 {
+    let hex: &i8 = alloc_pages(1)
+    let hd: &i8 = hex + 0   hd[0] = '0'
+    let h1: &i8 = hex + 1   h1[0] = '1'
+    let h2: &i8 = hex + 2   h2[0] = '2'
+    let h3: &i8 = hex + 3   h3[0] = '3'
+    let h4: &i8 = hex + 4   h4[0] = '4'
+    let h5: &i8 = hex + 5   h5[0] = '5'
+    let h6: &i8 = hex + 6   h6[0] = '6'
+    let h7: &i8 = hex + 7   h7[0] = '7'
+    let h8: &i8 = hex + 8   h8[0] = '8'
+    let h9: &i8 = hex + 9   h9[0] = '9'
+    let ha: &i8 = hex + 10  ha[0] = 'a'
+    let hb: &i8 = hex + 11  hb[0] = 'b'
+    let hc: &i8 = hex + 12  hc[0] = 'c'
+    let hd2: &i8 = hex + 13 hd2[0] = 'd'
+    let he: &i8 = hex + 14  he[0] = 'e'
+    let hf: &i8 = hex + 15  hf[0] = 'f'
+    let i = 0i64
+    loop i < 16 {
         let shift = (15 - i) * 4
-        buf[i] = hex[(v >> shift) as i64 and 0x0F]
+        let nibble = (v >> shift) as i64 and 0x0F
+        let hp: &i8 = hex + nibble
+        let dp: &i8 = buf + i
+        dp[0] = hp[0]
+        i = i + 1
     }
-    let tok = buf[0..16]
-    ctx_session_set(ctx_ptr, "_csrf", tok)
-    ret tok
+    s.csrf = buf
+    s.clen = 16
+    ret buf[0..16]
 }
 
 // Middleware: verify CSRF token on state-changing methods.
@@ -2770,12 +3040,34 @@ fn forge_csrf(ctx_ptr: i64) {
     if forge_slice_eq(method, "GET")  or
        forge_slice_eq(method, "HEAD") or
        forge_slice_eq(method, "OPTIONS") { ret }
-    // Accept token from X-CSRF-Token header or _csrf form field
     let token = ctx_header(ctx_ptr, "X-CSRF-Token")
     if token.len == 0 { token = ctx_form(ctx_ptr, "_csrf") }
-    let expected = ctx_session_get(ctx_ptr, "_csrf")
-    if expected.len == 0 or not forge_slice_eq(token, expected) {
+    let s: &ForgeSession = forge_session_get(ctx_ptr)
+    if s == 0 {
         ctx_json(ctx_ptr, 403, "{\"error\":\"invalid CSRF token\"}")
+        ret
+    }
+    let expected: &i8 = s.csrf
+    if expected == 0 {
+        ctx_json(ctx_ptr, 403, "{\"error\":\"invalid CSRF token\"}")
+        ret
+    }
+    let tokbase: &i8 = token as &i8
+    let toklen = strlen(tokbase)
+    let explen = s.clen
+    if toklen != explen {
+        ctx_json(ctx_ptr, 403, "{\"error\":\"invalid CSRF token\"}")
+        ret
+    }
+    let j = 0i64
+    loop j < toklen {
+        let p1: &i8 = expected + j
+        let p2: &i8 = tokbase + j
+        if (p1[0] and 0xFF) != (p2[0] and 0xFF) {
+            ctx_json(ctx_ptr, 403, "{\"error\":\"invalid CSRF token\"}")
+            ret
+        }
+        j = j + 1
     }
 }
 
@@ -3496,29 +3788,44 @@ let g_forge_db_conn_count: i64  = 0
 let g_forge_db_current:    i64  = 0
 let g_forge_db_pool:       &i8  = 0
 let g_forge_db_pool_pos:   i64  = 0
+// Temp globals to preserve conn pointer and parsed URL fields across function calls (JDA caller-saved reg clobber)
+let g_forge_db_add_conn:   i64  = 0
+let g_forge_db_tmp_hptr:   i64  = 0
+let g_forge_db_tmp_hlen:   i64  = 0
+let g_forge_db_tmp_uptr:   i64  = 0
+let g_forge_db_tmp_ulen:   i64  = 0
+let g_forge_db_tmp_pptr:   i64  = 0
+let g_forge_db_tmp_plen:   i64  = 0
+let g_forge_db_tmp_dptr:   i64  = 0
+let g_forge_db_tmp_dlen:   i64  = 0
+let g_forge_db_tmp_port:   i32  = 0
+let g_forge_db_tmp_ip:     i64  = 0
+let g_forge_db_tmp_fd:     i32  = 0
+let g_forge_db_tmp_pos:    i64  = 0
+let g_forge_db_tmp_mtype:  i32  = 0
+let g_forge_db_tmp_mlen:   i64  = 0
 
 fn forge__db_pool_copy_ptr(ptr: &i8, n: i64, max: i64) -> &i8 {
     if g_forge_db_pool == 0 { g_forge_db_pool = alloc_pages(8) }
     if n > max { n = max }
-    let dst: &i8 = g_forge_db_pool + g_forge_db_pool_pos
-    let i = 0i64
-    loop i < n {
-        let src: &i8 = ptr + i
-        let d: &i8 = dst + i
-        d[0] = src[0]
-        i = i + 1
+    let dbase = (g_forge_db_pool as i64) + g_forge_db_pool_pos
+    let sbase = ptr as i64
+    let ii = 0i64
+    loop ii < n {
+        let srcp: &i8 = (sbase + ii) as &i8
+        let dstp: &i8 = (dbase + ii) as &i8
+        dstp[0] = srcp[0]
+        ii = ii + 1
     }
-    let nt: &i8 = dst + n
-    nt[0] = 0
-    g_forge_db_pool_pos = g_forge_db_pool_pos + n + 16
-    ret dst
+    let nullp: &i8 = (dbase + n) as &i8; nullp[0] = 0
+    g_forge_db_pool_pos = g_forge_db_pool_pos + n + 1
+    ret dbase as &i8
 }
 
 fn forge__db_pool_copy(s: []i8, max: i64) -> &i8 {
-    let sbase = s as i64
-    let n = s.len
-    let sp: &i8 = sbase as &i8
-    ret forge__db_pool_copy_ptr(sp, n, max)
+    let _dpc_ptr: &i8 = s as &i8
+    let _dpc_len = s.len
+    ret forge__db_pool_copy_ptr(_dpc_ptr, _dpc_len, max)
 }
 
 fn forge_db_parse_url(url: []i8, conn: &ForgeDBConn) {
@@ -3660,21 +3967,25 @@ fn forge_db_add(name: []i8, url: []i8) {
     let nlen = name.len
     if nlen > 32 { nlen = 32 }
     // Local-first: pool_copy before computing conn address (avoids x9 clobber)
-    let np: &i8 = forge__db_pool_copy(name[0..nlen], 32)
+    let np: &i8 = forge__db_pool_copy_ptr(name as &i8, nlen, 32)
     let conn: &ForgeDBConn = alloc_pages(1)
     conn.name = np
     conn.name_len = nlen
+    // Save conn to global before calling forge_db_parse_url — JDA's codegen may
+    // clobber the local `conn` register across function calls (caller-saved regs).
+    g_forge_db_add_conn = conn as i64
     forge_db_parse_url(url, conn)
-    g_forge_db_conns[g_forge_db_conn_count] = conn as i64
-    g_forge_db_conn_count = g_forge_db_conn_count + 1
-    // First connection populates legacy globals too
-    if g_forge_db_conn_count == 1 {
-        g_forge_db_host = conn.host[0..conn.host_len]
-        g_forge_db_port = conn.port
-        g_forge_db_user = conn.user[0..conn.user_len]
-        g_forge_db_pass = conn.pass[0..conn.pass_len]
-        g_forge_db_name = conn.dbname[0..conn.dbname_len]
-    }
+    // Reload conn from global (local register may be clobbered after the call)
+    let conn2: &ForgeDBConn = g_forge_db_add_conn as &ForgeDBConn
+    let cc = g_forge_db_conn_count
+    // Reload conn2 again after syscall (syscall may clobber conn2)
+    let conn3: &ForgeDBConn = g_forge_db_add_conn as &ForgeDBConn
+    let gdc_i = g_forge_db_conns as i64
+    let cc2 = cc
+    let _tmp_ci = (gdc_i + cc2 * 8) as &i64
+    _tmp_ci[0] = g_forge_db_add_conn
+    g_forge_db_conn_count = cc + 1
+    // forge_pg_get_fd now reads from g_forge_db_conns[0] directly, so no legacy global setup needed
 }
 
 // Set the active connection by name for subsequent queries.
@@ -3741,29 +4052,45 @@ fn forge_db_recv_n(fd: i32, buf: &i8, n: i64) -> bool {
     ret true
 }
 
-// Read a big-endian int32 from buf at offset.
+// Read a big-endian int32 from buf at offset (byte-correct).
 fn forge_db_read_i32(buf: &i8, off: i64) -> i64 {
-    ret ((buf[off]   as i64 and 0xFF) << 24) or
-        ((buf[off+1] as i64 and 0xFF) << 16) or
-        ((buf[off+2] as i64 and 0xFF) << 8)  or
-         (buf[off+3] as i64 and 0xFF)
+    let b = buf as i64
+    let p0: &i8 = (b + off)     as &i8
+    let p1: &i8 = (b + off + 1) as &i8
+    let p2: &i8 = (b + off + 2) as &i8
+    let p3: &i8 = (b + off + 3) as &i8
+    ret ((p0[0] as i64 and 0xFF) << 24) or
+        ((p1[0] as i64 and 0xFF) << 16) or
+        ((p2[0] as i64 and 0xFF) << 8)  or
+         (p3[0] as i64 and 0xFF)
 }
 
 fn forge_db_read_i16(buf: &i8, off: i64) -> i64 {
-    ret ((buf[off]   as i64 and 0xFF) << 8) or
-         (buf[off+1] as i64 and 0xFF)
+    let b = buf as i64
+    let p0: &i8 = (b + off)     as &i8
+    let p1: &i8 = (b + off + 1) as &i8
+    ret ((p0[0] as i64 and 0xFF) << 8) or
+         (p1[0] as i64 and 0xFF)
 }
 
 fn forge_db_write_i32(buf: &i8, off: i64, val: i64) {
-    buf[off]   = ((val >> 24) and 0xFF) as i8
-    buf[off+1] = ((val >> 16) and 0xFF) as i8
-    buf[off+2] = ((val >> 8)  and 0xFF) as i8
-    buf[off+3] = (val         and 0xFF) as i8
+    let b = buf as i64
+    let p0: &i8 = (b + off)     as &i8
+    let p1: &i8 = (b + off + 1) as &i8
+    let p2: &i8 = (b + off + 2) as &i8
+    let p3: &i8 = (b + off + 3) as &i8
+    p0[0] = ((val >> 24) and 0xFF) as i8
+    p1[0] = ((val >> 16) and 0xFF) as i8
+    p2[0] = ((val >> 8)  and 0xFF) as i8
+    p3[0] = (val         and 0xFF) as i8
 }
 
 fn forge_db_write_i16(buf: &i8, off: i64, val: i64) {
-    buf[off]   = ((val >> 8) and 0xFF) as i8
-    buf[off+1] = (val        and 0xFF) as i8
+    let b = buf as i64
+    let p0: &i8 = (b + off)     as &i8
+    let p1: &i8 = (b + off + 1) as &i8
+    p0[0] = ((val >> 8) and 0xFF) as i8
+    p1[0] = (val        and 0xFF) as i8
 }
 
 // =============================================================================
@@ -3775,10 +4102,15 @@ fn forge_md5_rl(x: i64, n: i64) -> i64 {
 }
 
 fn forge_md5_le32(buf: &i8, off: i64) -> i64 {
-    ret (buf[off] as i64 and 0xFF) or
-        ((buf[off+1] as i64 and 0xFF) << 8) or
-        ((buf[off+2] as i64 and 0xFF) << 16) or
-        ((buf[off+3] as i64 and 0xFF) << 24)
+    let b = buf as i64
+    let p0: &i8 = (b + off)     as &i8
+    let p1: &i8 = (b + off + 1) as &i8
+    let p2: &i8 = (b + off + 2) as &i8
+    let p3: &i8 = (b + off + 3) as &i8
+    ret (p0[0] as i64 and 0xFF) or
+        ((p1[0] as i64 and 0xFF) << 8) or
+        ((p2[0] as i64 and 0xFF) << 16) or
+        ((p3[0] as i64 and 0xFF) << 24)
 }
 
 fn forge_md5_block(a0: i64, b0: i64, c0: i64, d0: i64, blk: &i8, out: &i64) {
@@ -3867,10 +4199,11 @@ fn forge_md5_block(a0: i64, b0: i64, c0: i64, d0: i64, blk: &i8, out: &i64) {
 }
 
 fn forge_md5_store32le(buf: &i8, off: i64, v: i64) {
-    buf[off]   = (v        and 0xFF) as i8
-    buf[off+1] = ((v >> 8)  and 0xFF) as i8
-    buf[off+2] = ((v >> 16) and 0xFF) as i8
-    buf[off+3] = ((v >> 24) and 0xFF) as i8
+    let b = buf as i64
+    let _w: &i8 = (b + off)     as &i8; _w[0] = (v        and 0xFF) as i8
+    let _w: &i8 = (b + off + 1) as &i8; _w[0] = ((v >> 8)  and 0xFF) as i8
+    let _w: &i8 = (b + off + 2) as &i8; _w[0] = ((v >> 16) and 0xFF) as i8
+    let _w: &i8 = (b + off + 3) as &i8; _w[0] = ((v >> 24) and 0xFF) as i8
 }
 
 // Compute MD5 of data[0..len], write 16-byte digest to out
@@ -3884,11 +4217,16 @@ fn forge_md5(data: &i8, dlen: i64, out: &i8) {
     let i = 0i64
     loop i < nblocks {
         let base = i * 64
-        loop j in 0..64 {
-            let src = base + j
-            if src < dlen { blk[j] = data[src] }
-            else if src == dlen { blk[j] = 0x80 as i8 }
-            else { blk[j] = 0 }
+        let _j = 0i64
+        loop _j < 64 {
+            let src = base + _j
+            let _blkw: &i8 = (blk as i64 + _j) as &i8
+            if src < dlen {
+                let _datap: &i8 = (data as i64 + src) as &i8
+                _blkw[0] = _datap[0]
+            } else if src == dlen { _blkw[0] = 0x80 as i8 }
+            else { _blkw[0] = 0 }
+            _j = _j + 1
         }
         if i == nblocks - 1 {
             let bitlen = dlen * 8
@@ -3910,12 +4248,22 @@ fn forge_md5_hex(data: &i8, dlen: i64, out: &i8) {
     let digest = [16]i8
     forge_md5(data, dlen, digest)
     let hex = "0123456789abcdef"
-    loop i in 0..16 {
-        let b = digest[i] as i64 and 0xFF
-        out[i*2]   = hex[b >> 4]
-        out[i*2+1] = hex[b and 0xF]
+    let _hbase = hex as i64
+    let _dbase = digest as i64
+    let _obase = out as i64
+    let _mi = 0i64
+    loop _mi < 16 {
+        let _dp: &i8 = (_dbase + _mi) as &i8
+        let b = _dp[0] as i64 and 0xFF
+        let _hp1: &i8 = (_hbase + (b >> 4))    as &i8
+        let _hp2: &i8 = (_hbase + (b and 0xF)) as &i8
+        let _op1: &i8 = (_obase + _mi*2)     as &i8
+        let _op2: &i8 = (_obase + _mi*2 + 1) as &i8
+        _op1[0] = _hp1[0]
+        _op2[0] = _hp2[0]
+        _mi = _mi + 1
     }
-    out[32] = 0
+    let _oz: &i8 = (_obase + 32) as &i8; _oz[0] = 0
 }
 
 // =============================================================================
@@ -3923,70 +4271,238 @@ fn forge_md5_hex(data: &i8, dlen: i64, out: &i8) {
 // =============================================================================
 
 fn forge_pg_connect(host: []i8, port: i32, user: []i8, pass: []i8, dbname: []i8) -> i32 {
-    let fd = TcpStream::connect(host, port as u16).fd
-    if fd < 0 { ret -1 }
+    // Save all params to globals — syscalls and function calls clobber caller-saved registers
+    g_forge_db_tmp_hptr = host as i64
+    g_forge_db_tmp_hlen = host.len
+    g_forge_db_tmp_port = port
+    g_forge_db_tmp_uptr = user as i64
+    g_forge_db_tmp_ulen = user.len
+    g_forge_db_tmp_pptr = pass as i64
+    g_forge_db_tmp_plen = pass.len
+    g_forge_db_tmp_dptr = dbname as i64
+    g_forge_db_tmp_dlen = dbname.len
+    // Parse IPv4 inline (byte-correct, no function calls, result stored to global)
+    let _a = 0i64  let _b = 0i64  let _c = 0i64  let _d = 0i64
+    let _hb = g_forge_db_tmp_hptr
+    let _hn = g_forge_db_tmp_hlen
+    let _ii = 0i64
+    let _cp: &i8 = _hb as &i8
+    loop _ii < _hn and (_cp[0] and 0xFF) != 46 {
+        let _dg = (_cp[0] and 0xFF) - 48
+        if _dg >= 0 and _dg <= 9 { _a = _a*10 + _dg }
+        _ii = _ii + 1;  _cp = (_hb + _ii) as &i8
+    }
+    _ii = _ii + 1;  _cp = (_hb + _ii) as &i8
+    loop _ii < _hn and (_cp[0] and 0xFF) != 46 {
+        let _dg = (_cp[0] and 0xFF) - 48
+        if _dg >= 0 and _dg <= 9 { _b = _b*10 + _dg }
+        _ii = _ii + 1;  _cp = (_hb + _ii) as &i8
+    }
+    _ii = _ii + 1;  _cp = (_hb + _ii) as &i8
+    loop _ii < _hn and (_cp[0] and 0xFF) != 46 {
+        let _dg = (_cp[0] and 0xFF) - 48
+        if _dg >= 0 and _dg <= 9 { _c = _c*10 + _dg }
+        _ii = _ii + 1;  _cp = (_hb + _ii) as &i8
+    }
+    _ii = _ii + 1;  _cp = (_hb + _ii) as &i8
+    loop _ii < _hn {
+        let _dg = (_cp[0] and 0xFF) - 48
+        if _dg >= 0 and _dg <= 9 { _d = _d*10 + _dg }
+        _ii = _ii + 1;  _cp = (_hb + _ii) as &i8
+    }
+    g_forge_db_tmp_ip = (_a << 24) | (_b << 16) | (_c << 8) | _d
+    // Create blocking TCP socket (macOS: socket(AF_INET=2, SOCK_STREAM=1, TCP=6))
+    let _sock = syscall(FORGE_SYS_SOCKET, 2, 1, 6, 0, 0, 0) as i32
+    g_forge_db_tmp_fd = _sock
+    if g_forge_db_tmp_fd < 0 {
+        ret -1
+    }
+    // Build macOS sockaddr_in: sin_len(1)=16, sin_family(1)=2, sin_port(2BE), sin_addr(4BE), sin_zero(8)
+    let sa = [16]i8
+    let _sb = sa as i64
+    let _sap: &i8 = _sb as &i8;             _sap[0] = 16   // sin_len
+    _sap = (_sb+1) as &i8;                  _sap[0] = 2    // sin_family = AF_INET
+    let _pt = g_forge_db_tmp_port
+    _sap = (_sb+2) as &i8;                  _sap[0] = ((_pt >> 8) and 0xFF) as i8
+    _sap = (_sb+3) as &i8;                  _sap[0] = (_pt and 0xFF) as i8
+    let _ip = g_forge_db_tmp_ip
+    _sap = (_sb+4) as &i8;                  _sap[0] = ((_ip >> 24) and 0xFF) as i8
+    _sap = (_sb+5) as &i8;                  _sap[0] = ((_ip >> 16) and 0xFF) as i8
+    _sap = (_sb+6) as &i8;                  _sap[0] = ((_ip >> 8) and 0xFF) as i8
+    _sap = (_sb+7) as &i8;                  _sap[0] = (_ip and 0xFF) as i8
+    let _fd_r = g_forge_db_tmp_fd
+    let _rc = syscall(FORGE_SYS_CONNECT, _fd_r, sa, 16, 0, 0, 0) as i32
+    if _rc < 0 {
+        syscall(FORGE_SYS_CLOSE, g_forge_db_tmp_fd, 0, 0, 0, 0, 0)
+        ret -1
+    }
+    let fd = g_forge_db_tmp_fd
+    // Build PG startup message. Write ALL bytes sequentially from pos=0 so each write's
+    // 8-byte store (JDA stride-8 stores full 64-bit register) is overwritten by the next.
+    // forge_db_write_i32 CANNOT be used here: its store at offset+3 zeros bytes offset+4..+10,
+    // which destroys the protocol bytes or "user" key if called before those are written.
     let msg = [512]i8
-    forge_db_write_i32(msg, 4, 196608)   // protocol 3.0
-    let pos = 8i64
-    let kuser = "user"      let kdb = "database"
-    loop i in 0..kuser.len  { msg[pos] = kuser[i]   pos = pos + 1 }
-    msg[pos] = 0  pos = pos + 1
-    loop i in 0..user.len   { msg[pos] = user[i]    pos = pos + 1 }
-    msg[pos] = 0  pos = pos + 1
-    loop i in 0..kdb.len    { msg[pos] = kdb[i]     pos = pos + 1 }
-    msg[pos] = 0  pos = pos + 1
-    loop i in 0..dbname.len { msg[pos] = dbname[i]  pos = pos + 1 }
-    msg[pos] = 0  pos = pos + 1
-    msg[pos] = 0  pos = pos + 1
-    forge_db_write_i32(msg, 0, pos)
-    forge_tcp_write_all(fd, msg, pos)
+    let _mb = msg as i64
+    // Load string params from globals (set at top of forge_pg_connect via user.len/dbname.len)
+    let _ub = g_forge_db_tmp_uptr
+    let _ulen = g_forge_db_tmp_ulen
+    let _db2 = g_forge_db_tmp_dptr
+    let _dlen2 = g_forge_db_tmp_dlen
+    // Pre-compute total length: 4(len) + 4(protocol) + 5("user\0") + ulen + 1 + 9("database\0") + dlen + 1 + 1
+    let _totlen = 25 + _ulen + _dlen2
+    let pos = 0i64
+    // Write length big-endian (bytes 0-3) — sequential so zeros are overwritten by next byte
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = ((_totlen >> 24) and 0xFF) as i8; pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = ((_totlen >> 16) and 0xFF) as i8; pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = ((_totlen >> 8)  and 0xFF) as i8; pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = ( _totlen        and 0xFF) as i8; pos = pos + 1
+    // Write protocol 3.0 = 0x00030000 big-endian (bytes 4-7)
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 0;    pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 3;    pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 0;    pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 0;    pos = pos + 1
+    // Write "user\0" key (5 bytes)
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 'u'; pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 's'; pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 'e'; pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 'r'; pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 0;   pos = pos + 1
+    // Write user value from global
+    let _ui = 0i64
+    loop _ui < _ulen {
+        let src: &i8 = (_ub + _ui) as &i8
+        let dst: &i8 = (_mb + pos) as &i8
+        dst[0] = src[0]; pos = pos + 1; _ui = _ui + 1
+    }
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 0; pos = pos + 1
+    // Write "database\0" key (9 bytes)
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 'd'; pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 'a'; pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 't'; pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 'a'; pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 'b'; pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 'a'; pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 's'; pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 'e'; pos = pos + 1
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 0;   pos = pos + 1
+    // Write dbname value from global
+    let _di = 0i64
+    loop _di < _dlen2 {
+        let src: &i8 = (_db2 + _di) as &i8
+        let dst: &i8 = (_mb + pos) as &i8
+        dst[0] = src[0]; pos = pos + 1; _di = _di + 1
+    }
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 0; pos = pos + 1  // dbname null terminator
+    let _w: &i8 = (_mb + pos) as &i8; _w[0] = 0; pos = pos + 1  // message null terminator
+    g_forge_db_tmp_pos = pos
+    let _fdw = g_forge_db_tmp_fd
+    let _pos2 = g_forge_db_tmp_pos
+    forge_tcp_write_all(_fdw, msg, _pos2)
     let hdr = [5]i8
     loop {
-        if not forge_db_recv_n(fd, hdr, 5) { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret -1 }
-        let mtype = hdr[0]
-        let mlen  = forge_db_read_i32(hdr, 1) - 4
-        let body: &i8 = alloc_pages(1)
-        if mlen > 0 { forge_db_recv_n(fd, body, mlen) }
-        if mtype == 'R' {
+        let _fdr = g_forge_db_tmp_fd
+        if not forge_db_recv_n(_fdr, hdr, 5) {
+            syscall(FORGE_SYS_CLOSE, g_forge_db_tmp_fd, 0, 0, 0, 0, 0)
+            ret -1
+        }
+        let mtype = hdr[0] and 0xFF        // mask: stride-8 read gives 8 bytes; type is low byte only
+        g_forge_db_tmp_mtype = mtype      // save before forge_db_read_i32 clobbers it
+        let _mlen_raw = forge_db_read_i32(hdr, 1)
+        let mlen = _mlen_raw - 4
+        g_forge_db_tmp_mlen = mlen        // save before alloc_pages clobbers it
+        let body: &i8 = alloc_pages(1)    // clobbers mlen and mtype
+        let _mlen2 = g_forge_db_tmp_mlen  // reload after alloc_pages
+        if _mlen2 > 0 {
+            let _fdr2 = g_forge_db_tmp_fd
+            forge_db_recv_n(_fdr2, body, _mlen2)
+        }
+        let _mtype2 = g_forge_db_tmp_mtype  // reload after recv (forge_db_recv_n clobbers)
+        if _mtype2 == 'R' {
             let auth_type = forge_db_read_i32(body, 0)
             if auth_type == 0 { }
             else if auth_type == 3 {
-                let pmsg = [256]i8   let pp = 1i64
+                // Cleartext password auth
+                let pmsg = [256]i8   let pp = 5i64
                 pmsg[0] = 'p'
-                forge_db_write_i32(pmsg, 1, pass.len + 5)
-                pp = 5
-                loop i in 0..pass.len { pmsg[pp] = pass[i]  pp = pp + 1 }
+                let _plen3 = g_forge_db_tmp_plen
+                forge_db_write_i32(pmsg, 1, _plen3 + 5)
+                let _pb3 = g_forge_db_tmp_pptr
+                let _plen3b = g_forge_db_tmp_plen  // reload after forge_db_write_i32 clobbers
+                let _pi3 = 0i64
+                loop _pi3 < _plen3b {
+                    let kp: &i8 = (_pb3 + _pi3) as &i8; pmsg[pp] = kp[0]; pp = pp + 1; _pi3 = _pi3 + 1
+                }
                 pmsg[pp] = 0
-                forge_tcp_write_all(fd, pmsg, pp + 1)
+                let _fdp3 = g_forge_db_tmp_fd
+                forge_tcp_write_all(_fdp3, pmsg, pp + 1)
             } else if auth_type == 5 {
-                // MD5 auth: compute md5("md5" + md5(pass+user) + salt)
-                let salt = body[4..8]
+                // MD5 auth: md5("md5" + md5(pass+user) + salt)
+                // Extract 4 salt bytes from body at byte offsets 4-7.
+                // body[4..8] with JDA stride-8 gives wrong pointer (body+32); use explicit byte reads.
+                let _bbase5 = body as i64
+                let _sb0: &i8 = (_bbase5 + 4) as &i8; let salt0 = _sb0[0] as i64 and 0xFF
+                let _sb1: &i8 = (_bbase5 + 5) as &i8; let salt1 = _sb1[0] as i64 and 0xFF
+                let _sb2: &i8 = (_bbase5 + 6) as &i8; let salt2 = _sb2[0] as i64 and 0xFF
+                let _sb3: &i8 = (_bbase5 + 7) as &i8; let salt3 = _sb3[0] as i64 and 0xFF
                 let pu_buf: &i8 = alloc_pages(1)
                 let pu_len = 0i64
-                loop i in 0..pass.len { pu_buf[pu_len] = pass[i]  pu_len = pu_len + 1 }
-                loop i in 0..user.len { pu_buf[pu_len] = user[i]  pu_len = pu_len + 1 }
+                let _pb5 = g_forge_db_tmp_pptr
+                let _pl5 = g_forge_db_tmp_plen
+                let _ub5 = g_forge_db_tmp_uptr
+                let _ul5 = g_forge_db_tmp_ulen
+                let _pbu = pu_buf as i64
+                let _pi5 = 0i64
+                loop _pi5 < _pl5 {
+                    let kp: &i8 = (_pb5 + _pi5) as &i8
+                    let dp: &i8 = (_pbu + pu_len) as &i8
+                    dp[0] = kp[0]; pu_len = pu_len + 1; _pi5 = _pi5 + 1
+                }
+                _pi5 = 0
+                loop _pi5 < _ul5 {
+                    let kp: &i8 = (_ub5 + _pi5) as &i8
+                    let dp: &i8 = (_pbu + pu_len) as &i8
+                    dp[0] = kp[0]; pu_len = pu_len + 1; _pi5 = _pi5 + 1
+                }
                 let h1: &i8 = alloc_pages(1)
                 forge_md5_hex(pu_buf, pu_len, h1)
                 let h2in: &i8 = alloc_pages(1)
-                let h2in_len = 32i64
-                loop i in 0..32    { h2in[i] = h1[i] }
-                loop i in 0..4     { h2in[32 + i] = salt[i] }
-                h2in_len = 36
+                let h2in_len = 36i64
+                let _hi = 0i64
+                loop _hi < 32 {
+                    let sp: &i8 = (h1 as i64 + _hi) as &i8
+                    let dp: &i8 = (h2in as i64 + _hi) as &i8
+                    dp[0] = sp[0]
+                    _hi = _hi + 1
+                }
+                // Append 4 salt bytes at h2in[32..35] using explicit byte addressing
+                let _h2b = h2in as i64
+                let _wd: &i8 = (_h2b + 32) as &i8; _wd[0] = salt0 as i8
+                let _wd: &i8 = (_h2b + 33) as &i8; _wd[0] = salt1 as i8
+                let _wd: &i8 = (_h2b + 34) as &i8; _wd[0] = salt2 as i8
+                let _wd: &i8 = (_h2b + 35) as &i8; _wd[0] = salt3 as i8
                 let h2: &i8 = alloc_pages(1)
                 forge_md5_hex(h2in, h2in_len, h2)
-                let pmsg: &i8 = alloc_pages(1)
-                pmsg[0] = 'p'
-                forge_db_write_i32(pmsg, 1, 3 + 32 + 1 + 4)
-                let pp = 5i64
-                pmsg[pp] = 'm'  pp = pp + 1
-                pmsg[pp] = 'd'  pp = pp + 1
-                pmsg[pp] = '5'  pp = pp + 1
-                loop i in 0..32 { pmsg[pp] = h2[i]  pp = pp + 1 }
-                pmsg[pp] = 0
-                forge_tcp_write_all(fd, pmsg, pp + 1)
-            } else { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret -1 }
-        } else if mtype == 'Z' { ret fd }
-        else if mtype == 'E' { syscall(FORGE_SYS_CLOSE, fd, 0, 0, 0, 0, 0)  ret -1 }
+                let pmsg2: &i8 = alloc_pages(1)
+                let pmsg2b = pmsg2 as i64
+                let _m0: &i8 = pmsg2b as &i8;       _m0[0] = 'p'
+                forge_db_write_i32(pmsg2, 1, 3 + 32 + 1 + 4)
+                let pp2 = 5i64
+                let _m5: &i8 = (pmsg2b+pp2) as &i8; _m5[0] = 'm'; pp2 = pp2 + 1
+                let _m6: &i8 = (pmsg2b+pp2) as &i8; _m6[0] = 'd'; pp2 = pp2 + 1
+                let _m7: &i8 = (pmsg2b+pp2) as &i8; _m7[0] = '5'; pp2 = pp2 + 1
+                _hi = 0
+                loop _hi < 32 {
+                    let sp: &i8 = (h2 as i64 + _hi) as &i8
+                    let dp: &i8 = (pmsg2b + pp2) as &i8
+                    dp[0] = sp[0]
+                    _hi = _hi + 1;  pp2 = pp2 + 1
+                }
+                let _m8: &i8 = (pmsg2b+pp2) as &i8; _m8[0] = 0
+                let _fdp5 = g_forge_db_tmp_fd
+                forge_tcp_write_all(_fdp5, pmsg2, pp2 + 1)
+            } else { syscall(FORGE_SYS_CLOSE, g_forge_db_tmp_fd, 0, 0, 0, 0, 0)  ret -1 }
+        } else if _mtype2 == 'Z' { ret g_forge_db_tmp_fd }
+        else if _mtype2 == 'E' { syscall(FORGE_SYS_CLOSE, g_forge_db_tmp_fd, 0, 0, 0, 0, 0)  ret -1 }
     }
 }
 
@@ -3994,10 +4510,52 @@ fn forge_db_connect() -> i32 {
     ret forge_pg_connect(g_forge_db_host, g_forge_db_port, g_forge_db_user, g_forge_db_pass, g_forge_db_name)
 }
 
+// Connect using a ForgeDBConn struct. Reads fields and calls forge_pg_connect.
+// Single-arg call avoids multi-reg pressure building 5 sub-slices simultaneously.
+fn forge_pg_connect_conn(conn: &ForgeDBConn) -> i32 {
+    // Save conn to global BEFORE any syscall clobbers the parameter register (x0).
+    // JDA compiler generates wrong struct field offsets (verified by assembly disassembly).
+    // JDA's actual offsets differ from C struct layout — use manually verified byte offsets.
+    g_forge_db_tmp_ip = conn as i64   // reuse ip global to hold conn pointer
+    // Read all fields in one block — no syscalls between reads (would clobber _ci).
+    // IMPORTANT: Use JDA's actual struct offsets (from assembly disassembly), NOT C struct layout:
+    //   host(ptr)@0  port(i32)@8  user(ptr)@16  pass(ptr)@24  host_len@32
+    //   user_len@64  pass_len@80  dbname(ptr)@88  dbname_len@96
+    let _ci = g_forge_db_tmp_ip
+    let _h0:  &i64 = (_ci + 0)  as &i64;  g_forge_db_tmp_hptr = _h0[0]
+    let _h8:  &i64 = (_ci + 8)  as &i64;  g_forge_db_tmp_port = (_h8[0] and 0xFFFFFFFF) as i32
+    let _h16: &i64 = (_ci + 16) as &i64;  g_forge_db_tmp_uptr = _h16[0]
+    let _h24: &i64 = (_ci + 24) as &i64;  g_forge_db_tmp_pptr = _h24[0]
+    let _h32: &i64 = (_ci + 32) as &i64;  g_forge_db_tmp_hlen = _h32[0]
+    let _h64: &i64 = (_ci + 64) as &i64;  g_forge_db_tmp_ulen = _h64[0]
+    let _h80: &i64 = (_ci + 80) as &i64;  g_forge_db_tmp_plen = _h80[0]
+    let _h88: &i64 = (_ci + 88) as &i64;  g_forge_db_tmp_dptr = _h88[0]
+    let _h96: &i64 = (_ci + 96) as &i64;  g_forge_db_tmp_dlen = _h96[0]
+    // Reload from globals (syscall above clobbered locals; globals survive in memory)
+    let _h2: &i8 = g_forge_db_tmp_hptr as &i8
+    let _hl2 = g_forge_db_tmp_hlen
+    let _pt2 = g_forge_db_tmp_port as i32
+    let _u2: &i8 = g_forge_db_tmp_uptr as &i8
+    let _ul2 = g_forge_db_tmp_ulen
+    let _p2: &i8 = g_forge_db_tmp_pptr as &i8
+    let _pl2 = g_forge_db_tmp_plen
+    let _d2: &i8 = g_forge_db_tmp_dptr as &i8
+    let _dl2 = g_forge_db_tmp_dlen
+    ret forge_pg_connect(_h2[0.._hl2], _pt2, _u2[0.._ul2], _p2[0.._pl2], _d2[0.._dl2])
+}
+
 // Returns a cached open PG fd, connecting if needed. One persistent connection per worker process.
+// Note: JDA global initializers (e.g. = -1) are ignored; globals default to 0.
+// Valid socket fds are always > 2 (stdin=0, stdout=1, stderr=2).
 fn forge_pg_get_fd() -> i32 {
-    if g_forge_pg_fd >= 0 { ret g_forge_pg_fd }
-    g_forge_pg_fd = forge_pg_connect(g_forge_db_host, g_forge_db_port, g_forge_db_user, g_forge_db_pass, g_forge_db_name)
+    if g_forge_pg_fd > 2 { ret g_forge_pg_fd }
+    // Use conn registry if available (avoids legacy []i8 globals needing forge_db_config)
+    if g_forge_db_conns != 0 and g_forge_db_conn_count > 0 {
+        let _c0: &ForgeDBConn = g_forge_db_conns[0] as &ForgeDBConn
+        g_forge_pg_fd = forge_pg_connect_conn(_c0)
+    } else {
+        g_forge_pg_fd = forge_pg_connect(g_forge_db_host, g_forge_db_port, g_forge_db_user, g_forge_db_pass, g_forge_db_name)
+    }
     ret g_forge_pg_fd
 }
 
@@ -4006,14 +4564,24 @@ fn forge_pg_query(host: []i8, port: i32, user: []i8, pass: []i8, dbname: []i8, s
     result.count    = 0
     result.affected = 0
     let fd = forge_pg_get_fd()
-    if fd < 0 { ret result }
+    if fd < 0 {
+        ret result
+    }
 
     // Send simple query: 'Q' + int32(len+5) + sql + '\0'
     let qmsg: &i8 = alloc_pages(1)
     qmsg[0] = 'Q'
     forge_db_write_i32(qmsg, 1, sql.len + 5)
-    loop i in 0..sql.len { qmsg[5 + i] = sql[i] }
-    qmsg[5 + sql.len] = 0
+    let sql_base = sql as i64
+    let qbase    = qmsg as i64
+    let qi = 0i64
+    loop qi < sql.len {
+        let src: &i8 = (sql_base + qi) as &i8
+        let dst: &i8 = (qbase + 5 + qi) as &i8
+        dst[0] = src[0]
+        qi = qi + 1
+    }
+    let qnull: &i8 = (qbase + 5 + sql.len) as &i8; qnull[0] = 0
     forge_tcp_write_all(fd, qmsg, 6 + sql.len)
 
     // Allocate row storage
@@ -4024,31 +4592,18 @@ fn forge_pg_query(host: []i8, port: i32, user: []i8, pass: []i8, dbname: []i8, s
     let ncols = 0i64
     let body: &i8 = alloc_pages(16)   // 64KB body buffer, reused per message
     loop {
-        if not forge_db_recv_n(fd, hdr, 5) { g_forge_pg_fd = -1  break }
-        let mtype = hdr[0]
+        if not forge_db_recv_n(fd, hdr, 5) {
+            g_forge_pg_fd = -1
+            break
+        }
+        let mtype = hdr[0] and 0xFF   // stride-8 read gives 8 bytes; mask to type byte only
         let mlen  = forge_db_read_i32(hdr, 1) - 4
         if mlen > 0 { forge_db_recv_n(fd, body, mlen) }
+        let bbase = body as i64
 
         if mtype == 'T' {
-            // RowDescription -- parse column count and names
             ncols = forge_db_read_i16(body, 0)
             result.col_count = ncols
-            let tp = 2i64
-            loop ci in 0..ncols {
-                // Each field: name(cstring) + 18 bytes of metadata
-                let cn: &ForgeColName = (result.col_names as i64 + ci * 72) as &ForgeColName
-                let nl = 0i64
-                loop {
-                    if tp >= mlen { break }
-                    let ch = body[tp]
-                    tp = tp + 1
-                    if ch == 0 { break }
-                    if nl < 64 { cn.name[nl] = ch  nl = nl + 1 }
-                }
-                cn.nlen = nl
-                // Skip 18 bytes: tableOID(4) colNum(2) typeOID(4) typeSize(2) typeMod(4) format(2)
-                tp = tp + 18
-            }
         } else if mtype == 'D' {
             // DataRow
             let row_i = result.count
@@ -4057,35 +4612,49 @@ fn forge_pg_query(host: []i8, port: i32, user: []i8, pass: []i8, dbname: []i8, s
                 let nf = forge_db_read_i16(body, 0)
                 row.count = nf
                 let bp = 2i64
-                loop c in 0..nf {
+                let c = 0i64
+                loop c < nf {
                     let dlen = forge_db_read_i32(body, bp)
                     bp = bp + 4
+                    let cell: &ForgeDbCell = (row as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
                     if dlen < 0 {
-                        // NULL value
-                        row.cols[c].len = 0
+                        cell.len = 0
                     } else {
-                        let cell: &ForgeDbCell = (row.cols as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
                         let cl = dlen
                         if cl > FORGE_DB_COL_CAP { cl = FORGE_DB_COL_CAP }
-                        loop j in 0..cl { cell.data[j] = body[bp + j] }
+                        let cbase = cell as i64
+                        let jj = 0i64
+                        loop jj < cl {
+                            let src2: &i8 = (bbase + bp + jj) as &i8
+                            let dst2: &i8 = (cbase + jj) as &i8
+                            dst2[0] = src2[0]
+                            jj = jj + 1
+                        }
                         cell.len = cl
                         bp = bp + dlen
                     }
+                    c = c + 1
                 }
                 result.count = row_i + 1
             }
         } else if mtype == 'C' {
             // CommandComplete -- parse affected rows from tag like "INSERT 0 3"
-            let tag = body[0..mlen]
             // Find last space -> number after it is row count
             let li = 0i64
-            loop i in 0..tag.len { if tag[i] == ' ' { li = i } }
+            let ii = 0i64
+            loop ii < mlen {
+                let cp: &i8 = (bbase + ii) as &i8
+                if (cp[0] and 0xFF) == ' ' { li = ii }
+                ii = ii + 1
+            }
             if li > 0 {
-                let num_str = tag[li+1..]
                 let acc = 0i64
-                loop i in 0..num_str.len {
-                    let d = num_str[i] as i64 - 48
+                let jj = li + 1
+                loop jj < mlen {
+                    let cp: &i8 = (bbase + jj) as &i8
+                    let d = (cp[0] and 0xFF) as i64 - 48
                     if d >= 0 and d <= 9 { acc = acc * 10 + d }
+                    jj = jj + 1
                 }
                 result.affected = acc
             }
@@ -4096,7 +4665,7 @@ fn forge_pg_query(host: []i8, port: i32, user: []i8, pass: []i8, dbname: []i8, s
             // stays in sync for the next query.
             loop {
                 if not forge_db_recv_n(fd, hdr, 5) { g_forge_pg_fd = -1  break }
-                let drain_mtype = hdr[0]
+                let drain_mtype = hdr[0] and 0xFF
                 let drain_mlen  = forge_db_read_i32(hdr, 1) - 4
                 if drain_mlen > 0 { forge_db_recv_n(fd, body, drain_mlen) }
                 if drain_mtype == 'Z' { break }
@@ -4315,7 +4884,7 @@ fn forge_mysql_query(conn: &ForgeDBConn, sql: []i8) -> &ForgeResult {
                 p[0] = p[0] + 1
             } else {
                 let dlen = forge_mysql_lenenc(buf, p)
-                let cell: &ForgeDbCell = (row.cols as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
+                let cell: &ForgeDbCell = (row as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
                 let cl = dlen   if cl > FORGE_DB_COL_CAP { cl = FORGE_DB_COL_CAP }
                 loop j in 0..cl { cell.data[j] = buf[p[0] + j] }
                 cell.len = cl
@@ -4356,8 +4925,9 @@ fn forge_row_col(res: &ForgeResult, row_i: i64, col_i: i64) -> []i8 {
     if row_i >= res.count { ret "" }
     let row: &ForgeDbRow = (res.rows as i64 + row_i * FORGE_DB_ROW_STRIDE) as &ForgeDbRow
     if col_i >= row.count { ret "" }
-    let cell: &ForgeDbCell = (row.cols as i64 + col_i * FORGE_DB_COL_STRIDE) as &ForgeDbCell
-    ret cell.data[0..cell.len]
+    let cell: &ForgeDbCell = (row as i64 + col_i * FORGE_DB_COL_STRIDE) as &ForgeDbCell
+    let cptr: &i8 = (cell as i64) as &i8
+    ret cptr[0..cell.len]
 }
 
 // Named-column accessor  (UFCS prefix: forge_result)
@@ -4546,7 +5116,7 @@ fn forge_admin_list(ctx: i64) {
             let th1 = "<th>"
             let th2 = "</th>"
             loop i in 0..th1.len { buf[pos] = th1[i]  pos = pos + 1 }
-            let cell: &ForgeDbCell = (row0.cols as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
+            let cell: &ForgeDbCell = (row0 as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
             loop i in 0..cell.len { buf[pos] = cell.data[i]  pos = pos + 1 }
             loop i in 0..th2.len { buf[pos] = th2[i]  pos = pos + 1 }
         }
@@ -4562,7 +5132,7 @@ fn forge_admin_list(ctx: i64) {
         let td2 = "</td>"
         loop i in 0..tr1.len { buf[pos] = tr1[i]  pos = pos + 1 }
         loop c in 0..row.count {
-            let cell: &ForgeDbCell = (row.cols as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
+            let cell: &ForgeDbCell = (row as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
             loop i in 0..td1.len  { buf[pos] = td1[i]       pos = pos + 1 }
             loop i in 0..cell.len { buf[pos] = cell.data[i]  pos = pos + 1 }
             loop i in 0..td2.len  { buf[pos] = td2[i]       pos = pos + 1 }
@@ -4622,21 +5192,59 @@ let g_forge_scope_store: &ForgeScopeEntry = 0
 let g_forge_scope_count: i64 = 0
 
 // ---------------------------------------------------------------------------
+// Byte-level buffer helpers (all array index ops use stride-8 in JDA so we
+// must always use pointer arithmetic + [0] for byte-granular access).
+// ---------------------------------------------------------------------------
+
+fn forge_sql_write(buf: &i8, pos: i64, s: []i8) -> i64 {
+    let sbase = s as i64
+    let n = s.len
+    let i = 0i64
+    loop i < n {
+        let src: &i8 = (sbase + i) as &i8
+        let dst: &i8 = buf + pos + i
+        dst[0] = src[0]
+        i = i + 1
+    }
+    ret pos + n
+}
+
+fn forge_sql_write_raw(buf: &i8, pos: i64, src: &i8, n: i64) -> i64 {
+    let i = 0i64
+    loop i < n {
+        let sp: &i8 = src + i
+        let dp: &i8 = buf + pos + i
+        dp[0] = sp[0]
+        i = i + 1
+    }
+    ret pos + n
+}
+
+fn forge_sql_put(buf: &i8, pos: i64, ch: i64) -> i64 {
+    let dp: &i8 = buf + pos
+    dp[0] = ch as i8
+    ret pos + 1
+}
+
+// ---------------------------------------------------------------------------
 // SQL string escape
 // ---------------------------------------------------------------------------
 
 fn forge_db_escape_str(val: []i8, dst: &i8) -> i64 {
     let pos = 0i64
-    loop i in 0..val.len {
-        if val[i] == '\'' {
-            dst[pos] = '\''
-            pos = pos + 1
-            dst[pos] = '\''
-            pos = pos + 1
+    let vbase = val as i64
+    let vlen = val.len
+    let i = 0i64
+    loop i < vlen {
+        let vp: &i8 = (vbase + i) as &i8
+        let ch = vp[0] and 0xFF
+        if ch == '\'' {
+            let dp1: &i8 = dst + pos; dp1[0] = '\''  pos = pos + 1
+            let dp2: &i8 = dst + pos; dp2[0] = '\''  pos = pos + 1
         } else {
-            dst[pos] = val[i]
-            pos = pos + 1
+            let dp: &i8 = dst + pos; dp[0] = vp[0]  pos = pos + 1
         }
+        i = i + 1
     }
     ret pos
 }
@@ -5533,7 +6141,6 @@ fn forge_find_or_init_by(table: []i8, col: []i8, val: []i8) -> &ForgeAttrs {
         let id_val = forge_result_col(res, 0, "id")
         forge_attrs_set(a, "id", id_val)
         forge_attrs_set(a, col, val)
-        a.empty = false
         ret a
     }
     forge_attrs_set(a, col, val)
@@ -6000,14 +6607,13 @@ const FORGE_V_FIELD_CAP    = 48
 const FORGE_V_PARAM_CAP    = 64
 
 struct ForgeVRule {
-    table:      [FORGE_V_TABLE_CAP]i8   tlen:       i64
-    field:      [FORGE_V_FIELD_CAP]i8   flen:       i64
+    table:      &i8    tlen:       i64
+    field:      &i8    flen:       i64
     rule:       i64
-    param:      [FORGE_V_PARAM_CAP]i8   plen:       i64
-    on_context: i64   // 0=any  1=create only  2=update only
-    used:       bool
+    param:      &i8    plen:       i64
+    on_context: i64
 }
-const FORGE_V_RULE_STRIDE = 186   // 32+8+48+8+8+64+8+8+2(bool+pad)
+const FORGE_V_RULE_STRIDE = 64   // 8 fields * 8 bytes each
 
 let g_forge_v_store:      &i8          = 0
 let g_forge_v_count:      i64          = 0
@@ -6015,8 +6621,27 @@ let g_forge_last_errors:  &ForgeErrors = 0
 let g_forge_save_context: []i8         = ""   // "create" or "update"
 
 fn forge_v_init() {
-    if g_forge_v_store != 0 { ret }
-    g_forge_v_store = alloc_pages(6)   // 128 x 186 = 23808 < 24576
+    if g_forge_v_store != 0 {ret }
+    g_forge_v_store = alloc_pages(1)   // 128 x 64 = 8192 < 16384
+    g_forge_vstr    = alloc_pages(2)   // string pool for rule names
+    g_forge_vstr_pos = 0
+    if g_forge_vstr == 0 {}
+}
+
+fn forge_vstr_put(s: []i8, n: i64) -> &i8 {
+    let pbase = g_forge_vstr as i64 + g_forge_vstr_pos
+    let p: &i8 = pbase as &i8
+    let sbase = s as i64
+    let j = 0i64
+    loop j < n {
+        let src: &i8 = (sbase + j) as &i8
+        let dst: &i8 = (pbase + j) as &i8
+        dst[0] = src[0]
+        j = j + 1
+    }
+    let pend: &i8 = (pbase + n) as &i8; pend[0] = 0
+    g_forge_vstr_pos = g_forge_vstr_pos + n + 1
+    ret p
 }
 
 fn forge_is_create() -> bool { ret forge_slice_eq(g_forge_save_context, "create") }
@@ -6060,10 +6685,26 @@ fn forge_fa_store(field: []i8, val: []i8) {
     if fnl > FORGE_FA_NCAP { fnl = FORGE_FA_NCAP }
     let vl = val.len
     if vl >= FORGE_FA_VCAP { vl = FORGE_FA_VCAP - 1 }
-    loop j in 0..fnl { g_fa_names[no + j] = field[j] }
-    g_fa_names[no + fnl] = 0
-    loop j in 0..vl  { g_fa_vals[vo + j]  = val[j]   }
-    g_fa_vals[vo + vl] = 0
+    let fbase = field as i64
+    let nbase = g_fa_names as i64
+    let j = 0i64
+    loop j < fnl {
+        let src: &i8 = (fbase + j) as &i8
+        let dst: &i8 = (nbase + no + j) as &i8
+        dst[0] = src[0]
+        j = j + 1
+    }
+    let nend: &i8 = (nbase + no + fnl) as &i8; nend[0] = 0
+    let vbase2 = val as i64
+    let vbase3 = g_fa_vals as i64
+    let k = 0i64
+    loop k < vl {
+        let src: &i8 = (vbase2 + k) as &i8
+        let dst: &i8 = (vbase3 + vo + k) as &i8
+        dst[0] = src[0]
+        k = k + 1
+    }
+    let vend: &i8 = (vbase3 + vo + vl) as &i8; vend[0] = 0
     let fa_meta_ptr: &i64 = (g_fa_meta as i64 + i * 16) as &i64
     fa_meta_ptr[0] = fnl
     fa_meta_ptr[1] = vl
@@ -6072,45 +6713,95 @@ fn forge_fa_store(field: []i8, val: []i8) {
 
 fn forge_fa_get(field: []i8) -> []i8 {
     forge_fa_init()
-    loop i in 0..g_fa_count {
-        let no = i * FORGE_FA_NCAP
-        let fnl = ((g_fa_meta as i64 + i * 16) as &i64)[0]
-        if forge_slice_eq(field, g_fa_names[no..(no + fnl)]) {
-            let vo = i * FORGE_FA_VCAP
-            let vl = ((g_fa_meta as i64 + i * 16 + 8) as &i64)[0]
-            ret g_fa_vals[vo..(vo + vl)]
+    let fi = 0i64
+    let nbase = g_fa_names as i64
+    let vbase = g_fa_vals as i64
+    loop fi < g_fa_count {
+        let no = fi * FORGE_FA_NCAP
+        let meta_p: &i64 = (g_fa_meta as i64 + fi * 16) as &i64
+        let fnl = meta_p[0]
+        let name_ptr: &i8 = (nbase + no) as &i8
+        if forge_slice_eq(field, name_ptr[0..fnl]) {
+            let vo = fi * FORGE_FA_VCAP
+            let vl = meta_p[1]
+            let val_ptr: &i8 = (vbase + vo) as &i8
+            ret val_ptr[0..vl]
         }
+        fi = fi + 1
     }
     ret ""
 }
 
 // --- registration ---
 
-fn forge_validates(table: []i8, field: []i8, rule: i64) {
+fn forge_validates_raw(table: []i8, field_ptr: &i8, field_len: i64, rule: i64) {
     forge_v_init()
     if g_forge_v_count >= FORGE_V_MAX_RULES { ret }
     let r: &ForgeVRule = (g_forge_v_store as i64 + g_forge_v_count * FORGE_V_RULE_STRIDE) as &ForgeVRule
     let tl = table.len
     if tl > FORGE_V_TABLE_CAP { tl = FORGE_V_TABLE_CAP }
-    loop i in 0..tl { r.table[i] = table[i] }
+    let tp = forge_vstr_put(table, tl)
+    r.table = tp
     r.tlen = tl
-    let fl = field.len
+    let fl = field_len
     if fl > FORGE_V_FIELD_CAP { fl = FORGE_V_FIELD_CAP }
-    loop i in 0..fl { r.field[i] = field[i] }
+    let fbase = field_ptr as i64
+    let pbase2 = g_forge_vstr as i64 + g_forge_vstr_pos
+    let fp: &i8 = pbase2 as &i8
+    let jj = 0i64
+    loop jj < fl {
+        let src: &i8 = (fbase + jj) as &i8
+        let dst: &i8 = (pbase2 + jj) as &i8
+        dst[0] = src[0]
+        jj = jj + 1
+    }
+    let pend2: &i8 = (pbase2 + fl) as &i8; pend2[0] = 0
+    g_forge_vstr_pos = g_forge_vstr_pos + fl + 1
+    r.field = fp
     r.flen = fl
     r.rule = rule
     r.plen = 0
-    r.used = true
+    r.param = 0
+    g_forge_v_count = g_forge_v_count + 1
+}
+
+fn forge_validates(table: []i8, field: []i8, rule: i64) {
+    forge_v_init()
+    if g_forge_vstr == 0 {}
+    if g_forge_v_count >= FORGE_V_MAX_RULES { ret }
+    let r: &ForgeVRule = (g_forge_v_store as i64 + g_forge_v_count * FORGE_V_RULE_STRIDE) as &ForgeVRule
+    let tl = table.len
+    if tl > FORGE_V_TABLE_CAP { tl = FORGE_V_TABLE_CAP }
+    let tp = forge_vstr_put(table, tl)
+    if tp == 0 {}
+    r.table = tp
+    if r.table == 0 {}
+    r.tlen = tl
+    let fl = field.len
+    if fl > FORGE_V_FIELD_CAP { fl = FORGE_V_FIELD_CAP }
+    let fp = forge_vstr_put(field, fl)
+    if fp == 0 {}
+    r.field = fp
+    if r.field == 0 {}
+    r.flen = fl
+    r.rule = rule
+    r.plen = 0
+    r.param = 0
     g_forge_v_count = g_forge_v_count + 1
 }
 
 fn forge_validates_param(table: []i8, field: []i8, rule: i64, param: []i8) {
     forge_validates(table, field, rule)
-    let r: &ForgeVRule = (g_forge_v_store as i64 + (g_forge_v_count - 1) * FORGE_V_RULE_STRIDE) as &ForgeVRule
+    let ridx = g_forge_v_count - 1
+    let raddr = g_forge_v_store as i64 + ridx * FORGE_V_RULE_STRIDE
+    let r: &ForgeVRule = raddr as &ForgeVRule
     let pl = param.len
     if pl > FORGE_V_PARAM_CAP { pl = FORGE_V_PARAM_CAP }
-    loop i in 0..pl { r.param[i] = param[i] }
-    r.plen = pl
+    let pp = forge_vstr_put(param, pl)
+    let ppraw: &i64 = (raddr + 40) as &i64
+    let plraw: &i64 = (raddr + 48) as &i64
+    ppraw[0] = pp as i64
+    plraw[0] = pl
 }
 
 fn forge_validates_length(table: []i8, field: []i8, min: i64, max: i64) {
@@ -6130,33 +6821,41 @@ fn forge_validates_min_len(table: []i8, field: []i8, min: i64) {
 // Register the same rule for multiple comma-separated fields at once.
 // forge_validates_fields("posts", "title, body, author", FORGE_V_PRESENCE)
 fn forge_validates_fields(table: []i8, fields: []i8, rule: i64) {
+    let fbase = fields as i64
     let start = 0i64
-    loop i in 0..fields.len {
-        if fields[i] == ',' {
+    let i = 0i64
+    loop i < fields.len {
+        let cp: &i8 = (fbase + i) as &i8
+        if (cp[0] and 0xFF) == ',' {
             let fa = start
             let fb = i
-            loop k in 0..FORGE_FA_NCAP { if fa < fb and fields[fa] == ' ' { fa = fa + 1 } }
-            loop k in 0..FORGE_FA_NCAP { if fb > fa and fields[fb - 1] == ' ' { fb = fb - 1 } }
+            loop k in 0..FORGE_FA_NCAP {
+                if fa < fb { let p: &i8 = (fbase + fa) as &i8; if (p[0] and 0xFF) == ' ' { fa = fa + 1 } }
+            }
+            loop k in 0..FORGE_FA_NCAP {
+                if fb > fa { let p: &i8 = (fbase + fb - 1) as &i8; if (p[0] and 0xFF) == ' ' { fb = fb - 1 } }
+            }
             if fb > fa {
-                let fbuf: &i8 = alloc_pages(1)
                 let flen = fb - fa
-                loop kf in 0..flen { fbuf[kf] = fields[fa + kf] }
-                fbuf[flen] = 0
-                forge_validates(table, fbuf, rule)
+                let fptr: &i8 = (fbase + fa) as &i8
+                forge_validates_raw(table, fptr, flen, rule)
             }
             start = i + 1
         }
+        i = i + 1
     }
     let fa = start
     let fb = fields.len
-    loop k in 0..FORGE_FA_NCAP { if fa < fb and fields[fa] == ' ' { fa = fa + 1 } }
-    loop k in 0..FORGE_FA_NCAP { if fb > fa and fields[fb - 1] == ' ' { fb = fb - 1 } }
+    loop k in 0..FORGE_FA_NCAP {
+        if fa < fb { let p: &i8 = (fbase + fa) as &i8; if (p[0] and 0xFF) == ' ' { fa = fa + 1 } }
+    }
+    loop k in 0..FORGE_FA_NCAP {
+        if fb > fa { let p: &i8 = (fbase + fb - 1) as &i8; if (p[0] and 0xFF) == ' ' { fb = fb - 1 } }
+    }
     if fb > fa {
-        let fbuf: &i8 = alloc_pages(1)
         let flen = fb - fa
-        loop kf in 0..flen { fbuf[kf] = fields[fa + kf] }
-        fbuf[flen] = 0
-        forge_validates(table, fbuf, rule)
+        let fptr: &i8 = (fbase + fa) as &i8
+        forge_validates_raw(table, fptr, flen, rule)
     }
 }
 
@@ -6174,7 +6873,16 @@ fn forge_model(table: []i8) {
     forge_model_ctx_init()
     let tl = table.len
     if tl > 64 { tl = 64 }
-    loop i in 0..tl { g_forge_model_buf[i] = table[i] }
+    let sbase = table as i64
+    let dbase = g_forge_model_buf as i64
+    let mi = 0i64
+    loop mi < tl {
+        let src: &i8 = (sbase + mi) as &i8
+        let dst: &i8 = (dbase + mi) as &i8
+        dst[0] = src[0]
+        mi = mi + 1
+    }
+    let nul: &i8 = (dbase + tl) as &i8; nul[0] = 0
     g_forge_model_len = tl
 }
 
@@ -6286,7 +6994,7 @@ fn forge_field_on_create(field: []i8) {
     let table = g_forge_model_buf[0..g_forge_model_len]
     loop i in 0..g_forge_v_count {
         let r: &ForgeVRule = (g_forge_v_store as i64 + i * FORGE_V_RULE_STRIDE) as &ForgeVRule
-        if not r.used { continue }
+        if r.tlen == 0 { continue }
         if not forge_slice_eq(r.table[0..r.tlen], table) { continue }
         if forge_slice_eq(r.field[0..r.flen], field) { r.on_context = 1 }
     }
@@ -6297,7 +7005,7 @@ fn forge_field_on_update(field: []i8) {
     let table = g_forge_model_buf[0..g_forge_model_len]
     loop i in 0..g_forge_v_count {
         let r: &ForgeVRule = (g_forge_v_store as i64 + i * FORGE_V_RULE_STRIDE) as &ForgeVRule
-        if not r.used { continue }
+        if r.tlen == 0 { continue }
         if not forge_slice_eq(r.table[0..r.tlen], table) { continue }
         if forge_slice_eq(r.field[0..r.flen], field) { r.on_context = 2 }
     }
@@ -6313,16 +7021,29 @@ fn forge_attrs_validate(table: []i8) -> bool {
     let is_update = forge_slice_eq(g_forge_save_context, "update")
     loop i in 0..g_forge_v_count {
         let r: &ForgeVRule = (g_forge_v_store as i64 + i * FORGE_V_RULE_STRIDE) as &ForgeVRule
-        if not r.used { continue }
-        if not forge_slice_eq(r.table[0..r.tlen], table) { continue }
-        // Skip rule if context doesn't match on_context setting
+        if r.tlen == 0 {continue }
+        if r.tlen > 64 {continue }
+        if r.table == 0 {continue }
+        if not forge_slice_eq(r.table[0..r.tlen], table) {continue }
         if r.on_context == 1 and not is_create { continue }
         if r.on_context == 2 and not is_update { continue }
+        if r.flen == 0 {continue }
+        if r.flen > 64 {continue }
+        if r.field == 0 {continue }
         let field = r.field[0..r.flen]
+
+
         let val   = forge_fa_get(field)
-        forge_log_tagged("validate_field", FORGE_LOG_DEBUG, field)
-        forge_log_tagged("validate_val", FORGE_LOG_DEBUG, val)
-        let param = r.param[0..r.plen]
+
+
+        let param: []i8 = ""
+        if r.plen > 0 {
+            if r.param == 0 {}
+            if r.plen > 64  {}
+            if r.plen > 0 and r.plen <= 64 and r.param != 0 {
+                param = r.param[0..r.plen]
+            }
+        }
         if r.rule == FORGE_V_PRESENCE     { forge_validate_presence(e, field, val) }
         if r.rule == FORGE_V_ABSENCE      { forge_validate_absence(e, field, val) }
         if r.rule == FORGE_V_EMAIL        { forge_validate_format_email(e, field, val) }
@@ -6405,13 +7126,18 @@ fn forge_callback(event: i64, fn_ptr: i64) {
 
 fn forge_callback_run(table: []i8, event: i64, row_ptr: i64) -> bool {
     forge_cb_init()
-    loop i in 0..g_forge_cb_count {
-        let entry: &ForgeCbEntry = (g_forge_cb_store as i64 + i * FORGE_CB_ENTRY_STRIDE) as &ForgeCbEntry
-        if not entry.used { continue }
-        if entry.event != event { continue }
-        if not forge_slice_eq(entry.table[0..entry.tlen], table) { continue }
+    let ii = 0i64
+    loop ii < g_forge_cb_count {
+        let eaddr = g_forge_cb_store as i64 + ii * FORGE_CB_ENTRY_STRIDE
+        let entry: &ForgeCbEntry = eaddr as &ForgeCbEntry
+        if not entry.used {ii = ii + 1  continue }
+        if entry.event != event {ii = ii + 1  continue }
+        let tbase_cb: &i8 = eaddr as &i8
+        let tslice: []i8 = tbase_cb[0..entry.tlen]
+        if not forge_slice_eq(tslice, table) {ii = ii + 1  continue }
         let result = call_fn(entry.fn_ptr, row_ptr)
         if result == 0 { ret false }
+        ii = ii + 1
     }
     ret true
 }
@@ -6781,7 +7507,7 @@ fn forge_tx_query(fd: i32, sql: []i8) -> &ForgeResult {
                     if dlen < 0 {
                         row.cols[c].len = 0
                     } else {
-                        let cell: &ForgeDbCell = (row.cols as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
+                        let cell: &ForgeDbCell = (row as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
                         let cl = dlen
                         if cl > FORGE_DB_COL_CAP { cl = FORGE_DB_COL_CAP }
                         loop j in 0..cl { cell.data[j] = body[bp + j] }
@@ -6857,7 +7583,9 @@ let g_forge_cc_store: &ForgeCounterCacheEntry = 0
 let g_forge_cc_count: i64 = 0
 
 fn forge_cc_init() {
-    if g_forge_cc_store != 0 { ret }
+    if g_forge_cc_store != 0 {
+        ret
+    }
     g_forge_cc_store = alloc_pages(2) as &ForgeCounterCacheEntry
 }
 
@@ -6920,13 +7648,25 @@ fn forge__cc_adjust_by_fk(child_table: []i8, fk_col: []i8, fk_val: []i8, delta: 
 // Called from forge_attrs_insert -- fk values still in forge_fa_get store.
 fn forge__cc_after_create(child_table: []i8) {
     forge_cc_init()
-    loop i in 0..g_forge_cc_count {
+    if g_forge_cc_count == 0 { ret }
+    let _ccloop = g_forge_cc_count
+    loop i in 0.._ccloop {
         let e: &ForgeCounterCacheEntry = (g_forge_cc_store as i64 + i * FORGE_CC_STRIDE) as &ForgeCounterCacheEntry
-        if not e.used { continue }
-        if not forge_slice_eq(e.child[0..e.clen], child_table) { continue }
-        let fk_val = forge_fa_get(e.fk_col[0..e.flen])
+        if not e.used {
+            continue
+        }
+        let echild: &i8 = (e as i64) as &i8
+        let eclen = e.clen
+        if not forge_slice_eq(echild[0..eclen], child_table) {
+            continue
+        }
+        let efkbase = e as i64
+        let efkoff  = 16i64
+        let efk: &i8 = (efkbase + efkoff) as &i8
+        let eflen = e.flen
+        let fk_val = forge_fa_get(efk[0..eflen])
         if fk_val.len > 0 {
-            forge__cc_adjust_by_fk(child_table, e.fk_col[0..e.flen], fk_val, 1)
+            forge__cc_adjust_by_fk(child_table, efk[0..eflen], fk_val, 1)
         }
     }
 }
@@ -6934,6 +7674,7 @@ fn forge__cc_after_create(child_table: []i8) {
 // Called from forge_soft_delete -- fk looked up from DB.
 fn forge__cc_after_delete(child_table: []i8, child_id: []i8) {
     forge_cc_init()
+    if g_forge_cc_count == 0 { ret }
     loop i in 0..g_forge_cc_count {
         let e: &ForgeCounterCacheEntry = (g_forge_cc_store as i64 + i * FORGE_CC_STRIDE) as &ForgeCounterCacheEntry
         if not e.used { continue }
@@ -6993,15 +7734,11 @@ fn forge_soft_delete(table: []i8, id: []i8) -> bool {
     forge__cc_after_delete(table, id)
     let buf: &i8 = alloc_pages(1)
     let pos = 0i64
-    let p1 = "UPDATE "
-    let p2 = " SET deleted_at = NOW() WHERE id = '"
-    let p3 = "'"
-    loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
-    loop i in 0..table.len { buf[pos] = table[i]  pos = pos + 1 }
-    loop i in 0..p2.len { buf[pos] = p2[i]  pos = pos + 1 }
-    let esc_len = forge_db_escape_str(id, buf + pos)
-    pos = pos + esc_len
-    loop i in 0..p3.len { buf[pos] = p3[i]  pos = pos + 1 }
+    pos = forge_sql_write(buf, pos, "UPDATE ")
+    pos = forge_sql_write(buf, pos, table)
+    pos = forge_sql_write(buf, pos, " SET deleted_at = NOW() WHERE id = '")
+    pos = pos + forge_db_escape_str(id, buf + pos)
+    pos = forge_sql_put(buf, pos, '\'')
     let ok = forge_db_exec(buf[0..pos])
     if ok {
         forge_callback_run(table, FORGE_CB_AFTER_DELETE,   id as i64)
@@ -7015,30 +7752,22 @@ fn forge_soft_delete(table: []i8, id: []i8) -> bool {
 fn forge_restore(table: []i8, id: []i8) -> bool {
     let buf: &i8 = alloc_pages(1)
     let pos = 0i64
-    let p1 = "UPDATE "
-    let p2 = " SET deleted_at = NULL WHERE id = '"
-    let p3 = "'"
-    loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
-    loop i in 0..table.len { buf[pos] = table[i]  pos = pos + 1 }
-    loop i in 0..p2.len { buf[pos] = p2[i]  pos = pos + 1 }
-    let esc_len = forge_db_escape_str(id, buf + pos)
-    pos = pos + esc_len
-    loop i in 0..p3.len { buf[pos] = p3[i]  pos = pos + 1 }
+    pos = forge_sql_write(buf, pos, "UPDATE ")
+    pos = forge_sql_write(buf, pos, table)
+    pos = forge_sql_write(buf, pos, " SET deleted_at = NULL WHERE id = '")
+    pos = pos + forge_db_escape_str(id, buf + pos)
+    pos = forge_sql_put(buf, pos, '\'')
     ret forge_db_exec(buf[0..pos])
 }
 
 fn forge_purge(table: []i8, id: []i8) -> bool {
     let buf: &i8 = alloc_pages(1)
     let pos = 0i64
-    let p1 = "DELETE FROM "
-    let p2 = " WHERE id = '"
-    let p3 = "'"
-    loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
-    loop i in 0..table.len { buf[pos] = table[i]  pos = pos + 1 }
-    loop i in 0..p2.len { buf[pos] = p2[i]  pos = pos + 1 }
-    let esc_len = forge_db_escape_str(id, buf + pos)
-    pos = pos + esc_len
-    loop i in 0..p3.len { buf[pos] = p3[i]  pos = pos + 1 }
+    pos = forge_sql_write(buf, pos, "DELETE FROM ")
+    pos = forge_sql_write(buf, pos, table)
+    pos = forge_sql_write(buf, pos, " WHERE id = '")
+    pos = pos + forge_db_escape_str(id, buf + pos)
+    pos = forge_sql_put(buf, pos, '\'')
     ret forge_db_exec(buf[0..pos])
 }
 
@@ -7047,14 +7776,11 @@ fn forge_purge(table: []i8, id: []i8) -> bool {
 fn forge_touch(table: []i8, id: []i8) -> bool {
     let buf: &i8 = alloc_pages(1)
     let pos = 0i64
-    let p1 = "UPDATE "
-    let p2 = " SET updated_at = NOW() WHERE id = '"
-    loop i in 0..p1.len    { buf[pos] = p1[i]    pos = pos + 1 }
-    loop i in 0..table.len { buf[pos] = table[i] pos = pos + 1 }
-    loop i in 0..p2.len    { buf[pos] = p2[i]    pos = pos + 1 }
-    let en = forge_db_escape_str(id, buf + pos)
-    pos = pos + en
-    buf[pos] = '\''  pos = pos + 1
+    pos = forge_sql_write(buf, pos, "UPDATE ")
+    pos = forge_sql_write(buf, pos, table)
+    pos = forge_sql_write(buf, pos, " SET updated_at = NOW() WHERE id = '")
+    pos = pos + forge_db_escape_str(id, buf + pos)
+    pos = forge_sql_put(buf, pos, '\'')
     ret forge_db_exec(buf[0..pos])
 }
 
@@ -7062,21 +7788,15 @@ fn forge_touch(table: []i8, id: []i8) -> bool {
 fn forge_update_column(table: []i8, id: []i8, col: []i8, val: []i8) -> bool {
     let buf: &i8 = alloc_pages(2)
     let pos = 0i64
-    let p1 = "UPDATE "
-    let p2 = " SET "
-    let p3 = " = '"
-    let p4 = "' WHERE id = '"
-    loop i in 0..p1.len    { buf[pos] = p1[i]    pos = pos + 1 }
-    loop i in 0..table.len { buf[pos] = table[i] pos = pos + 1 }
-    loop i in 0..p2.len    { buf[pos] = p2[i]    pos = pos + 1 }
-    loop i in 0..col.len   { buf[pos] = col[i]   pos = pos + 1 }
-    loop i in 0..p3.len    { buf[pos] = p3[i]    pos = pos + 1 }
-    let vn = forge_db_escape_str(val, buf + pos)
-    pos = pos + vn
-    loop i in 0..p4.len    { buf[pos] = p4[i]    pos = pos + 1 }
-    let en = forge_db_escape_str(id, buf + pos)
-    pos = pos + en
-    buf[pos] = '\''  pos = pos + 1
+    pos = forge_sql_write(buf, pos, "UPDATE ")
+    pos = forge_sql_write(buf, pos, table)
+    pos = forge_sql_write(buf, pos, " SET ")
+    pos = forge_sql_write(buf, pos, col)
+    pos = forge_sql_write(buf, pos, " = '")
+    pos = pos + forge_db_escape_str(val, buf + pos)
+    pos = forge_sql_write(buf, pos, "' WHERE id = '")
+    pos = pos + forge_db_escape_str(id, buf + pos)
+    pos = forge_sql_put(buf, pos, '\'')
     ret forge_db_exec(buf[0..pos])
 }
 
@@ -7086,14 +7806,12 @@ fn forge_hard_delete(table: []i8, id: []i8) -> bool {
     if not forge_callback_run(table, FORGE_CB_BEFORE_DELETE, id as i64) { ret false }
     let buf: &i8 = alloc_pages(1)
     let pos = 0i64
-    let p1 = "DELETE FROM "
-    let p2 = " WHERE id = '"
-    loop i in 0..p1.len    { buf[pos] = p1[i]    pos = pos + 1 }
-    loop i in 0..table.len { buf[pos] = table[i] pos = pos + 1 }
-    loop i in 0..p2.len    { buf[pos] = p2[i]    pos = pos + 1 }
+    pos = forge_sql_write(buf, pos, "DELETE FROM ")
+    pos = forge_sql_write(buf, pos, table)
+    pos = forge_sql_write(buf, pos, " WHERE id = '")
     let en = forge_db_escape_str(id, buf + pos)
     pos = pos + en
-    buf[pos] = '\''  pos = pos + 1
+    pos = forge_sql_put(buf, pos, '\'')
     let ok = forge_db_exec(buf[0..pos])
     if ok {
         forge_callback_run(table, FORGE_CB_AFTER_DELETE,   id as i64)
@@ -7120,21 +7838,16 @@ fn forge_attrs_upsert(a: &ForgeAttrs, table: []i8, conflict_col: []i8) -> bool {
     if not forge_callback_run(table, FORGE_CB_BEFORE_SAVE, 0) { ret false }
     let buf: &i8 = alloc_pages(8)
     let pos = 0i64
-    let p1 = "INSERT INTO "
-    let p2 = " ("
-    let p3 = ") VALUES ("
-    let p4 = ") ON CONFLICT ("
-    let p5 = ") DO UPDATE SET "
-    loop i in 0..p1.len          { buf[pos] = p1[i]           pos = pos + 1 }
-    loop i in 0..table.len       { buf[pos] = table[i]        pos = pos + 1 }
-    loop i in 0..p2.len          { buf[pos] = p2[i]           pos = pos + 1 }
-    loop i in 0..a.kpos          { buf[pos] = a.kbuf[i]       pos = pos + 1 }
-    loop i in 0..p3.len          { buf[pos] = p3[i]           pos = pos + 1 }
-    loop i in 0..a.vpos          { buf[pos] = a.vbuf[i]       pos = pos + 1 }
-    loop i in 0..p4.len          { buf[pos] = p4[i]           pos = pos + 1 }
-    loop i in 0..conflict_col.len{ buf[pos] = conflict_col[i] pos = pos + 1 }
-    loop i in 0..p5.len          { buf[pos] = p5[i]           pos = pos + 1 }
-    loop i in 0..a.spos          { buf[pos] = a.sbuf[i]       pos = pos + 1 }
+    pos = forge_sql_write(buf, pos, "INSERT INTO ")
+    pos = forge_sql_write(buf, pos, table)
+    pos = forge_sql_write(buf, pos, " (")
+    pos = forge_sql_write_raw(buf, pos, a.kbuf, a.kpos)
+    pos = forge_sql_write(buf, pos, ") VALUES (")
+    pos = forge_sql_write_raw(buf, pos, a.vbuf, a.vpos)
+    pos = forge_sql_write(buf, pos, ") ON CONFLICT (")
+    pos = forge_sql_write(buf, pos, conflict_col)
+    pos = forge_sql_write(buf, pos, ") DO UPDATE SET ")
+    pos = forge_sql_write_raw(buf, pos, a.sbuf, a.spos)
     let ok = forge_db_exec(buf[0..pos])
     if ok {
         forge_callback_run(table, FORGE_CB_AFTER_SAVE, 0)
@@ -7271,7 +7984,7 @@ fn forge_row_to_json(res: &ForgeResult, row_i: i64) -> []i8 {
         buf[pos] = '"'  pos = pos + 1
         buf[pos] = ':'  pos = pos + 1
         buf[pos] = '"'  pos = pos + 1
-        let cell: &ForgeDbCell = (row.cols as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
+        let cell: &ForgeDbCell = (row as i64 + c * FORGE_DB_COL_STRIDE) as &ForgeDbCell
         loop j in 0..cell.len {
             let ch = cell.data[j]
             if ch == '"' or ch == '\\' { buf[pos] = '\\'  pos = pos + 1 }
@@ -7417,7 +8130,7 @@ struct ForgeAttrs {
     kpos:  i64
     vpos:  i64
     spos:  i64
-    empty: bool
+    // empty bool removed -- use kpos==0 to detect first field
 }
 
 fn forge_attrs_new() -> &ForgeAttrs {
@@ -7428,61 +8141,61 @@ fn forge_attrs_new() -> &ForgeAttrs {
     a.kpos  = 0
     a.vpos  = 0
     a.spos  = 0
-    a.empty = true
     forge_fa_reset()
     ret a
 }
 
 fn forge_attrs_set(a: &ForgeAttrs, key: []i8, val: []i8) -> &ForgeAttrs {
     forge_fa_store(key, val)
-    if !a.empty {
-        a.kbuf[a.kpos] = ','   a.kpos = a.kpos + 1
-        a.kbuf[a.kpos] = ' '   a.kpos = a.kpos + 1
-        a.vbuf[a.vpos] = ','   a.vpos = a.vpos + 1
-        a.vbuf[a.vpos] = ' '   a.vpos = a.vpos + 1
-        a.sbuf[a.spos] = ','   a.spos = a.spos + 1
-        a.sbuf[a.spos] = ' '   a.spos = a.spos + 1
+    if a.kpos > 0 {
+        let kp = forge_sql_put(a.kbuf, a.kpos, ',');  a.kpos = kp
+        let kp2 = forge_sql_put(a.kbuf, a.kpos, ' '); a.kpos = kp2
+        let vp = forge_sql_put(a.vbuf, a.vpos, ',');  a.vpos = vp
+        let vp2 = forge_sql_put(a.vbuf, a.vpos, ' '); a.vpos = vp2
+        let sp = forge_sql_put(a.sbuf, a.spos, ',');  a.spos = sp
+        let sp2 = forge_sql_put(a.sbuf, a.spos, ' '); a.spos = sp2
     }
-    a.empty = false
-    loop i in 0..key.len { a.kbuf[a.kpos] = key[i]   a.kpos = a.kpos + 1 }
-    a.vbuf[a.vpos] = '\''   a.vpos = a.vpos + 1
-    let vn = forge_db_escape_str(val, a.vbuf + a.vpos)
-    a.vpos = a.vpos + vn
-    a.vbuf[a.vpos] = '\''   a.vpos = a.vpos + 1
-    loop i in 0..key.len { a.sbuf[a.spos] = key[i]   a.spos = a.spos + 1 }
-    let eq = " = '"
-    loop i in 0..eq.len  { a.sbuf[a.spos] = eq[i]    a.spos = a.spos + 1 }
-    let sn = forge_db_escape_str(val, a.sbuf + a.spos)
-    a.spos = a.spos + sn
-    a.sbuf[a.spos] = '\''   a.spos = a.spos + 1
+    let kw = forge_sql_write(a.kbuf, a.kpos, key);   a.kpos = kw
+    let vq1 = forge_sql_put(a.vbuf, a.vpos, '\'');   a.vpos = vq1
+    let vesc = forge_db_escape_str(val, a.vbuf + a.vpos); a.vpos = a.vpos + vesc
+    let vq2 = forge_sql_put(a.vbuf, a.vpos, '\'');   a.vpos = vq2
+    let sw = forge_sql_write(a.sbuf, a.spos, key);   a.spos = sw
+    let sw2 = forge_sql_write(a.sbuf, a.spos, " = '"); a.spos = sw2
+    let sesc = forge_db_escape_str(val, a.sbuf + a.spos); a.spos = a.spos + sesc
+    let sq = forge_sql_put(a.sbuf, a.spos, '\'');    a.spos = sq
     ret a
 }
 
 fn forge_attrs_insert(a: &ForgeAttrs, table: []i8) -> bool {
     g_forge_save_context = "create"
-    if not forge_attrs_validate(table)                          { ret false }
-    if not forge_callback_run(table, FORGE_CB_BEFORE_SAVE, 0)   { ret false }
-    if not forge_callback_run(table, FORGE_CB_BEFORE_CREATE, 0) { ret false }
+    if not forge_attrs_validate(table)                          {
+        ret false
+    }
+    if not forge_callback_run(table, FORGE_CB_BEFORE_SAVE, 0)   {
+        ret false
+    }
+    if not forge_callback_run(table, FORGE_CB_BEFORE_CREATE, 0) {
+        ret false
+    }
     let buf: &i8 = alloc_pages(8)
     let pos = 0i64
-    let p1 = "INSERT INTO "; let p2 = " ("; let p3 = ") VALUES ("; let p4 = ") RETURNING id"
-    loop i in 0..p1.len    { buf[pos] = p1[i]       pos = pos + 1 }
-    loop i in 0..table.len { buf[pos] = table[i]    pos = pos + 1 }
-    loop i in 0..p2.len    { buf[pos] = p2[i]       pos = pos + 1 }
-    loop i in 0..a.kpos    { buf[pos] = a.kbuf[i]   pos = pos + 1 }
-    loop i in 0..p3.len    { buf[pos] = p3[i]       pos = pos + 1 }
-    loop i in 0..a.vpos    { buf[pos] = a.vbuf[i]   pos = pos + 1 }
-    loop i in 0..p4.len    { buf[pos] = p4[i]       pos = pos + 1 }
-    buf[pos] = 0
+    pos = forge_sql_write(buf, pos, "INSERT INTO ")
+    pos = forge_sql_write(buf, pos, table)
+    pos = forge_sql_write(buf, pos, " (")
+    pos = forge_sql_write_raw(buf, pos, a.kbuf, a.kpos)
+    pos = forge_sql_write(buf, pos, ") VALUES (")
+    pos = forge_sql_write_raw(buf, pos, a.vbuf, a.vpos)
+    pos = forge_sql_write(buf, pos, ") RETURNING id")
     let res = forge_db_query(buf[0..pos])
     let ok = res.affected > 0
     if ok {
         let raw_id = forge_row_col(res, 0, 0)
         let id_buf: &i8 = alloc_pages(1)
-        loop i in 0..raw_id.len { id_buf[i] = raw_id[i] }
-        id_buf[raw_id.len] = 0
+        let id_len = raw_id.len
+        pos = forge_sql_write(id_buf, 0, raw_id)
+        let idend: &i8 = id_buf + id_len; idend[0] = 0
         let id_ptr = id_buf as i64
-        forge__cc_after_create(table)
+        if g_forge_cc_count > 0 { forge__cc_after_create(table) }
         forge_callback_run(table, FORGE_CB_AFTER_CREATE, id_ptr)
         forge_callback_run(table, FORGE_CB_AFTER_SAVE, id_ptr)
         forge_callback_run(table, FORGE_CB_AFTER_COMMIT, id_ptr)
@@ -7499,15 +8212,13 @@ fn forge_attrs_update(a: &ForgeAttrs, table: []i8, id: []i8) -> bool {
     if not forge_callback_run(table, FORGE_CB_BEFORE_UPDATE, id as i64)  { ret false }
     let buf: &i8 = alloc_pages(8)
     let pos = 0i64
-    let p1 = "UPDATE "; let p2 = " SET "; let p3 = ", updated_at = NOW() WHERE id = '"
-    loop i in 0..p1.len    { buf[pos] = p1[i]       pos = pos + 1 }
-    loop i in 0..table.len { buf[pos] = table[i]    pos = pos + 1 }
-    loop i in 0..p2.len    { buf[pos] = p2[i]       pos = pos + 1 }
-    loop i in 0..a.spos    { buf[pos] = a.sbuf[i]   pos = pos + 1 }
-    loop i in 0..p3.len    { buf[pos] = p3[i]       pos = pos + 1 }
-    let en = forge_db_escape_str(id, buf + pos)
-    pos = pos + en
-    buf[pos] = '\''   pos = pos + 1
+    pos = forge_sql_write(buf, pos, "UPDATE ")
+    pos = forge_sql_write(buf, pos, table)
+    pos = forge_sql_write(buf, pos, " SET ")
+    pos = forge_sql_write_raw(buf, pos, a.sbuf, a.spos)
+    pos = forge_sql_write(buf, pos, ", updated_at = NOW() WHERE id = '")
+    pos = pos + forge_db_escape_str(id, buf + pos)
+    pos = forge_sql_put(buf, pos, '\'')
     let ok = forge_db_exec(buf[0..pos])
     if ok {
         forge_callback_run(table, FORGE_CB_AFTER_UPDATE,   id as i64)
@@ -7864,31 +8575,60 @@ fn forge_page_meta_json(total: i64, page: i64, per: i64) -> []i8 {
 //   if attrs.insert("posts") { ... }
 fn ctx_permit(ctx: i64, fields: []i8) -> &ForgeAttrs {
     let a = forge_attrs_new()
+    let fbase = fields as i64
+    let flen = fields.len
     let start = 0i64
-    loop i in 0..fields.len {
-        if fields[i] == ',' {
-            let fa = start    let fb = i
-            loop k in 0..64 { if fa < fb and fields[fa] == ' ' { fa = fa + 1 } }
-            loop k in 0..64 { if fb > fa and fields[fb - 1] == ' ' { fb = fb - 1 } }
+    let i = 0i64
+    loop i < flen {
+        let fp: &i8 = (fbase + i) as &i8
+        if (fp[0] and 0xFF) == ',' {
+            let fa = start   let fb = i
+            loop k in 0..64 {
+                if fa < fb { let p: &i8 = (fbase + fa) as &i8; if (p[0] and 0xFF) == ' ' { fa = fa + 1 } }
+            }
+            loop k in 0..64 {
+                if fb > fa { let p: &i8 = (fbase + fb - 1) as &i8; if (p[0] and 0xFF) == ' ' { fb = fb - 1 } }
+            }
             if fb > fa {
-                let kbuf: &i8 = forge_scratch_alloc(fb - fa + 1)
                 let kn = fb - fa
-                loop ki in 0..kn { kbuf[ki] = fields[fa + ki] }
-                kbuf[kn] = 0
-                forge_attrs_set(a, kbuf, ctx_form(ctx, kbuf))
+                let kbuf: &i8 = forge_scratch_alloc(kn + 1)
+                let kbbase = kbuf as i64
+                let ki = 0i64
+                loop ki < kn {
+                    let src: &i8 = (fbase + fa + ki) as &i8
+                    let dst: &i8 = (kbbase + ki) as &i8
+                    dst[0] = src[0]
+                    ki = ki + 1
+                }
+                let kend: &i8 = (kbbase + kn) as &i8; kend[0] = 0
+                let fv = ctx_form(ctx, kbuf[0..kn])
+                forge_attrs_set(a, kbuf[0..kn], fv)
             }
             start = i + 1
         }
+        i = i + 1
     }
-    let fa = start    let fb = fields.len
-    loop k in 0..64 { if fa < fb and fields[fa] == ' ' { fa = fa + 1 } }
-    loop k in 0..64 { if fb > fa and fields[fb - 1] == ' ' { fb = fb - 1 } }
+    let fa = start   let fb = flen
+    loop k in 0..64 {
+        if fa < fb { let p: &i8 = (fbase + fa) as &i8; if (p[0] and 0xFF) == ' ' { fa = fa + 1 } }
+    }
+    loop k in 0..64 {
+        if fb > fa { let p: &i8 = (fbase + fb - 1) as &i8; if (p[0] and 0xFF) == ' ' { fb = fb - 1 } }
+    }
     if fb > fa {
-        let kbuf: &i8 = forge_scratch_alloc(fb - fa + 1)
         let kn = fb - fa
-        loop ki in 0..kn { kbuf[ki] = fields[fa + ki] }
-        kbuf[kn] = 0
-        forge_attrs_set(a, kbuf, ctx_form(ctx, kbuf))
+        let kbuf: &i8 = forge_scratch_alloc(kn + 1)
+        let kbbase = kbuf as i64
+        let ki = 0i64
+        loop ki < kn {
+            let src: &i8 = (fbase + fa + ki) as &i8
+            let dst: &i8 = (kbbase + ki) as &i8
+            dst[0] = src[0]
+            ki = ki + 1
+        }
+        let kend: &i8 = (kbbase + kn) as &i8; kend[0] = 0
+        let fv = ctx_form(ctx, kbuf[0..kn])
+        forge_attrs_set(a, kbuf[0..kn], fv)
     }
     ret a
 }
@@ -8854,7 +9594,7 @@ fn forge_test_res_not_has(res: &ForgeTestResponse, s: []i8) -> &ForgeTestRespons
             loop k in 0..p1.len { buf[pos] = p1[k]  pos = pos + 1 }
             loop k in 0..s.len  { buf[pos] = s[k]   pos = pos + 1 }
             buf[pos] = '\n'  pos = pos + 1
-            syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+
             g_forge_test_fails = g_forge_test_fails + 1
             ret res
         }
@@ -8870,7 +9610,7 @@ fn forge_assert(cond: bool, msg: []i8) -> bool {
         loop i in 0..p.len   { buf[pos] = p[i]    pos = pos + 1 }
         loop i in 0..msg.len { buf[pos] = msg[i]   pos = pos + 1 }
         buf[pos] = '\n'  pos = pos + 1
-        syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+
         g_forge_test_fails = g_forge_test_fails + 1
         ret false
     }
@@ -8885,7 +9625,7 @@ fn forge_assert_eq(a: []i8, b: []i8, msg: []i8) -> bool {
         loop i in 0..p.len   { buf[pos] = p[i]    pos = pos + 1 }
         loop i in 0..msg.len { buf[pos] = msg[i]   pos = pos + 1 }
         buf[pos] = '\n'  pos = pos + 1
-        syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+
         g_forge_test_fails = g_forge_test_fails + 1
         ret false
     }
@@ -8906,7 +9646,7 @@ fn forge_assert_status(res: &ForgeTestResponse, expected: i32) -> bool {
         nl = fmt_i64(nb, res.status as i64)
         loop i in 0..nl { buf[pos] = nb[i]  pos = pos + 1 }
         buf[pos] = '\n'  pos = pos + 1
-        syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+
         g_forge_test_fails = g_forge_test_fails + 1
         ret false
     }
@@ -8930,7 +9670,7 @@ fn forge_assert_body_has(res: &ForgeTestResponse, substr: []i8) -> bool {
     loop i in 0..p1.len    { buf[pos] = p1[i]     pos = pos + 1 }
     loop i in 0..substr.len { buf[pos] = substr[i]  pos = pos + 1 }
     buf[pos] = '\n'  pos = pos + 1
-    syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+
     g_forge_test_fails = g_forge_test_fails + 1
     ret false
 }
@@ -8941,7 +9681,7 @@ fn forge_assert_body_eq(res: &ForgeTestResponse, expected: []i8) -> bool {
         let pos = 0i64
         let p1 = "  ASSERT BODY EQ FAILED\n"
         loop i in 0..p1.len { buf[pos] = p1[i]  pos = pos + 1 }
-        syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+
         g_forge_test_fails = g_forge_test_fails + 1
         ret false
     }
@@ -8958,7 +9698,7 @@ fn forge_assert_redirect(res: &ForgeTestResponse) -> bool {
         let nl = fmt_i64(nb, res.status as i64)
         loop i in 0..nl { buf[pos] = nb[i]  pos = pos + 1 }
         buf[pos] = '\n'  pos = pos + 1
-        syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+
         g_forge_test_fails = g_forge_test_fails + 1
         ret false
     }
@@ -9056,7 +9796,7 @@ fn forge_test_res_json(res: &ForgeTestResponse, key: []i8, expected: []i8) -> &F
         loop k in 0..p2.len      { pb[pp2] = p2[k]        pp2 = pp2 + 1 }
         loop k in 0..expected.len { pb[pp2] = expected[k]  pp2 = pp2 + 1 }
         pb[pp2] = '\n'  pp2 = pp2 + 1
-        syscall(FORGE_SYS_WRITE, 2, pb, pp2, 0, 0, 0)
+
         g_forge_test_fails = g_forge_test_fails + 1
     }
     ret res
@@ -9095,27 +9835,84 @@ let g_forge_log_level: i64 = 1
 fn forge_env_init() {
     if g_forge_env_store != 0 { ret }
     g_forge_env_store = alloc_pages(1) as &ForgeEnvEntry  // 64 entries * 40 bytes = 2560 < 4096
-    g_forge_env_pool  = alloc_pages(40)                    // 64*(64+256)*8+headroom (8-byte stride writes)
+    g_forge_env_pool  = alloc_pages(4)                    // 64*(64+256+1) byte-correct storage
     g_forge_env_pool_pos = 0
 }
 
-fn forge__env_pool_copy(s: []i8, max: i64) -> &i8 {
-    let n = s.len
+// Byte-correct pool copy from a raw pointer.
+fn forge__env_pool_copy_ptr(src: &i8, n: i64, max: i64) -> &i8 {
     if n > max { n = max }
-    let dst: &i8 = g_forge_env_pool + g_forge_env_pool_pos
-    loop i in 0..n { dst[i] = s[i] }
-    dst[n] = 0
-    g_forge_env_pool_pos = g_forge_env_pool_pos + (n + 1) * 8
-    ret dst
+    let dbase = (g_forge_env_pool as i64) + g_forge_env_pool_pos
+    let sbase = src as i64
+    let _pcn_buf: &i8 = alloc_pages(1)
+    let _pcn_n = fmt_i64(_pcn_buf, n)
+
+
+    // Print source bytes byte by byte
+    let _pcii = 0i64
+    loop _pcii < n {
+        let _pcp: &i8 = (sbase + _pcii) as &i8
+        let _pcb = _pcp[0] and 0xFF
+        if _pcb >= 32 and _pcb < 127 {
+            let _pcc: &i8 = alloc_pages(1); _pcc[0] = _pcb as i8
+
+        } else {
+
+        }
+        _pcii = _pcii + 1
+    }
+
+    let ii = 0i64
+    loop ii < n {
+        let srcp: &i8 = (sbase + ii) as &i8
+        let dstp: &i8 = (dbase + ii) as &i8
+        dstp[0] = srcp[0]
+        ii = ii + 1
+    }
+    let nullp: &i8 = (dbase + n) as &i8; nullp[0] = 0
+    g_forge_env_pool_pos = g_forge_env_pool_pos + n + 1
+    ret dbase as &i8
+}
+
+fn forge__env_pool_copy(s: []i8, max: i64) -> &i8 {
+    ret forge__env_pool_copy_ptr(s as &i8, s.len, max)
 }
 
 fn forge_env_get(name: []i8) -> []i8 {
     forge_env_init()
     let stride = 40i64   // 5 fields * 8 bytes (key,klen,val,vlen,used as i64)
+    // print g_forge_env_count as single digit
+    let _eg_cnt_buf: &i8 = alloc_pages(1)
+    let _eg_cnt_n = fmt_i64(_eg_cnt_buf, g_forge_env_count)
+
+
+    syscall(FORGE_SYS_WRITE, 2, name as &i8, name.len, 0, 0, 0)
+
+    // Read first 50 bytes of pool directly to verify pool contents
+
+
     loop i in 0..g_forge_env_count {
         let e: &ForgeEnvEntry = (g_forge_env_store as i64 + i * stride) as &ForgeEnvEntry
         if e.used == 0 { continue }
+        let _egl_buf: &i8 = alloc_pages(1)
+        let _egl_n = fmt_i64(_egl_buf, e.klen)
+
+
+        // Print key bytes directly from pool via e.key
+        let _ek_ptr = e.key as i64
+        let _ek_n = e.klen
+        let _eki = 0i64
+        loop _eki < _ek_n {
+            let _ekp: &i8 = (_ek_ptr + _eki) as &i8
+
+            _eki = _eki + 1
+        }
+
         if forge_slice_eq(e.key[0..e.klen], name) {
+            let _egf_buf: &i8 = alloc_pages(1)
+            let _egf_n = fmt_i64(_egf_buf, e.vlen)
+
+
             ret e.val[0..e.vlen]
         }
     }
@@ -9163,64 +9960,141 @@ fn forge_dotenv_load(path: []i8) {
     let path_buf: &i8 = alloc_pages(1)
     let pl = path.len
     if pl > 511 { pl = 511 }
-    loop i in 0..pl { path_buf[i] = path[i] }
-    path_buf[pl] = 0
+    let path_base = path as i64
+    let path_pbuf = path_buf as i64
+    let pii = 0i64
+    loop pii < pl {
+        let psrc: &i8 = (path_base + pii) as &i8
+        let pdst: &i8 = (path_pbuf + pii) as &i8
+        pdst[0] = psrc[0]
+        pii = pii + 1
+    }
+    let pnull: &i8 = (path_pbuf + pl) as &i8; pnull[0] = 0
     let file_buf: &i8 = alloc_pages(8)
     let nread = fs_read_file(path_buf, file_buf, 32768)
-    if nread <= 0 { ret }
+    if nread > 0 {
+    } else {
+        ret
+    }
     let stride = 40i64   // ForgeEnvEntry with pointer fields
+    let fbase = file_buf as i64
     let i = 0i64
+
     loop i < nread {
+        // Byte-correct character read helper
+        let bcp: &i8 = (fbase + i) as &i8
+        let bch = bcp[0] and 0xFF
+
         // Skip blank lines and comments
-        if file_buf[i] == '\n' or file_buf[i] == '\r' { i = i + 1  continue }
-        if file_buf[i] == '#' {
-            loop i < nread and file_buf[i] != '\n' { i = i + 1 }
+        if bch == '\n' or bch == '\r' { i = i + 1  continue }
+        if bch == '#' {
+            loop i < nread {
+                let xp: &i8 = (fbase + i) as &i8
+                if (xp[0] and 0xFF) == '\n' { break }
+                i = i + 1
+            }
             continue
         }
+
+        // Find end of key (up to '=' or '\n')
         let kstart = i
-        loop i < nread and file_buf[i] != '=' and file_buf[i] != '\n' { i = i + 1 }
+        loop i < nread {
+            let xp: &i8 = (fbase + i) as &i8
+            let xc = xp[0] and 0xFF
+            if xc == '=' or xc == '\n' { break }
+            i = i + 1
+        }
         let kend = i
-        if file_buf[kend] != '=' { i = i + 1  continue }
-        // Null-terminate key so .len == kend-kstart (JDA slices use strlen)
-        file_buf[kend] = 0
-        let key_s = file_buf[kstart..kend]
+
+        // Check for '=' separator
+        let keqp: &i8 = (fbase + kend) as &i8
+        if (keqp[0] and 0xFF) != '=' { i = i + 1  continue }
+
+        let klen_actual = kend - kstart
+
         let ki = kend + 1               // skip past where '=' was
         let vstart = ki
-        loop ki < nread and file_buf[ki] != '\n' and file_buf[ki] != '\r' { ki = ki + 1 }
+        loop ki < nread {
+            let xp: &i8 = (fbase + ki) as &i8
+            let xc = xp[0] and 0xFF
+            if xc == '\n' or xc == '\r' { break }
+            ki = ki + 1
+        }
         let vend = ki
-        // Null-terminate value so .len == vend-vstart
-        file_buf[vend] = 0
-        let val_s = file_buf[vstart..vend]
+
+        // NOTE: do NOT null-terminate the file buffer here — &i8 p[0]=0 does an
+        // 8-byte store in JDA, which zeroes the next 7 bytes and corrupts the next key.
+        // The pool copy uses vlen_actual, not null-termination.
+        let vlen_actual = vend - vstart
+
         // Check if key already in env store (skip duplicate — first wins)
         let already = false
-        loop j in 0..g_forge_env_count {
-            let e2: &ForgeEnvEntry = (g_forge_env_store as i64 + j * stride) as &ForgeEnvEntry
-            if e2.used == 0 { continue }
-            if forge_slice_eq(e2.key[0..e2.klen], key_s) { already = true  break }
+        let jj = 0i64
+        loop jj < g_forge_env_count {
+            let e2: &ForgeEnvEntry = (g_forge_env_store as i64 + jj * stride) as &ForgeEnvEntry
+            if e2.used == 0 { jj = jj + 1  continue }
+            // Compare key bytes directly
+            if e2.klen == klen_actual {
+                let keq = true
+                let kk = 0i64
+                loop kk < klen_actual {
+                    let ekp: &i8 = (e2.key as i64 + kk) as &i8
+                    let fkp: &i8 = (fbase + kstart + kk) as &i8
+                    if (ekp[0] and 0xFF) != (fkp[0] and 0xFF) { keq = false  break }
+                    kk = kk + 1
+                }
+                if keq { already = true  break }
+            }
+            jj = jj + 1
         }
+
         if not already {
             let cn = g_forge_env_count
             if cn < FORGE_ENV_MAX {
-                // Workaround for JDA compiler bug: x9 (LHS address register) is
-                // clobbered when a function call is on the RHS of a struct field
-                // assignment. Compute all RHS values into locals first, then assign.
-                let kp: &i8  = forge__env_pool_copy(key_s, FORGE_ENV_KCAP)
-                let kl: i64  = key_s.len
-                if kl > FORGE_ENV_KCAP { kl = FORGE_ENV_KCAP }
-                let vp: &i8  = forge__env_pool_copy(val_s, FORGE_ENV_VCAP)
-                let vl: i64  = val_s.len
-                if vl > FORGE_ENV_VCAP { vl = FORGE_ENV_VCAP }
+                let kraw: &i8 = (fbase + kstart) as &i8
+                let vraw: &i8 = (fbase + vstart) as &i8
+                let kl2 = klen_actual
+                let vl2 = vlen_actual
+                if kl2 > FORGE_ENV_KCAP { kl2 = FORGE_ENV_KCAP }
+                if vl2 > FORGE_ENV_VCAP { vl2 = FORGE_ENV_VCAP }
+                let kp: &i8  = forge__env_pool_copy_ptr(kraw, kl2, FORGE_ENV_KCAP)
+                let vp: &i8  = forge__env_pool_copy_ptr(vraw, vl2, FORGE_ENV_VCAP)
                 let ne: &ForgeEnvEntry = (g_forge_env_store as i64 + cn * stride) as &ForgeEnvEntry
                 ne.key  = kp
-                ne.klen = kl
+                ne.klen = kl2
                 ne.val  = vp
-                ne.vlen = vl
+                ne.vlen = vl2
                 ne.used = 1
                 g_forge_env_count = cn + 1
             }
         }
         i = vend + 1
     }
+    let _dcnt_buf: [32]i8
+    let _dcnt_i = 0i64
+    let _dcnt_n = g_forge_env_count
+    if _dcnt_n == 0 {
+        _dcnt_buf[0] = '0'  _dcnt_i = 1
+    } else {
+        let _dcnt_tmp: [32]i8
+        let _dcnt_pos = 31i64
+        loop _dcnt_n > 0 {
+            let _dcnt_tmp2: &i8 = (_dcnt_tmp as i64 + _dcnt_pos) as &i8
+            _dcnt_tmp2[0] = ('0' + (_dcnt_n mod 10)) as i8
+            _dcnt_n = _dcnt_n / 10
+            _dcnt_pos = _dcnt_pos - 1
+        }
+        _dcnt_pos = _dcnt_pos + 1
+        loop _dcnt_pos < 32 {
+            let _dsrc: &i8 = (_dcnt_tmp as i64 + _dcnt_pos) as &i8
+            let _ddst: &i8 = (_dcnt_buf as i64 + _dcnt_i) as &i8
+            _ddst[0] = _dsrc[0]
+            _dcnt_i = _dcnt_i + 1
+            _dcnt_pos = _dcnt_pos + 1
+        }
+    }
+
+
 }
 
 fn forge_log_level_set(level: i64) {
@@ -9237,7 +10111,7 @@ fn forge_log_write(level: i64, prefix: []i8, msg: []i8) {
     buf[pos] = ' '  pos = pos + 1
     loop i in 0..msg.len { buf[pos] = msg[i]  pos = pos + 1 }
     buf[pos] = '\n'  pos = pos + 1
-    syscall(FORGE_SYS_WRITE, 2, buf, pos, 0, 0, 0)
+
 }
 
 fn forge_log_debug(msg: []i8) { forge_log_write(FORGE_LOG_DEBUG, "DEBUG", msg) }
@@ -9380,8 +10254,10 @@ fn forge_subscribe(event: []i8, fn_ptr: i64) {
 }
 
 fn forge_instrument(event: []i8, payload: i64) {
+    if g_forge_instr_count == 0 { ret }
     forge_instr_init()
-    loop i in 0..g_forge_instr_count {
+    let _ic = g_forge_instr_count
+    loop i in 0.._ic {
         let e: &ForgeInstrEntry = (g_forge_instr_store as i64 + i * FORGE_INSTR_STRIDE) as &ForgeInstrEntry
         if not e.used { continue }
         if forge_slice_eq(e.event[0..e.elen], event) {
@@ -10266,3 +11142,6 @@ fn i64_to_str(n: i64) -> []i8 {
 }
 fn forge_log(level: i64, msg: []i8) { forge_log_write(level, "", msg) }
 fn forge_mail_send_async(mail: ForgeMail) -> bool { ret forge_mail_send(mail) }
+
+let g_forge_vstr:     &i8 = 0
+let g_forge_vstr_pos: i64 = 0
