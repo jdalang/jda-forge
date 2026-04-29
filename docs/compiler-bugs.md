@@ -230,6 +230,82 @@ After generating the body of `if cond { ... }`, the compiler should check whethe
 
 ---
 
+## Bug 5 — Function call clears `LAST_TYPE`, causing wrong struct field offsets when result is untyped
+
+### What happens
+
+In `arm64_parse_postfix` (lines ~725, ~764), every function call ends with:
+
+```awk
+LAST_TYPE = ""
+```
+
+The compiler never records function return types, so after any call `x = f(...)`, `LAST_TYPE` is empty. When a subsequent field access like `.author` is compiled, `find_field_off("author", "")` is called with an empty type hint and falls back to iterating over **all structs** in arbitrary AWK hash order. The first struct that contains the field wins — which may not be the correct one.
+
+Concretely, with two models declared:
+
+```jda
+struct PostRow    { id, title, body, author, ...  }   // author at offset 24
+struct CommentRow { id, post_id, author, body, ... }   // author at offset 16
+```
+
+`find_field_off("author", "")` returns **16** (CommentRow wins the hash lottery) when the variable actually holds a `&PostRow`. The generated load is `ldr x0, [x0, #16]` — which reads `PostRow.body` instead of `PostRow.author`.
+
+### What breaks
+
+Any variable bound to a function call result **without an explicit type annotation**, whose type is one of multiple structs sharing the same field name:
+
+```jda
+let p = post_row(post, 0)   // p has no type — LAST_TYPE="" after the call
+p.author                    // compiled as p[16] (CommentRow offset) instead of p[24]
+p.created_at                // compiled as p[32] instead of p[40]
+```
+
+Fields that are unique across all structs (e.g. `title`, `post_id`) are unaffected because `find_field_off` finds only one match and returns the right offset regardless of order.
+
+### Runtime workaround applied
+
+Add an explicit type annotation on any `let` that binds a struct-returning function call:
+
+```jda
+// Before (broken when multiple structs share the field name):
+let p = post_row(post, 0)
+
+// After (correct):
+let p: &PostRow = post_row(post, 0)
+```
+
+The let-parser already handles the `&TypeName` annotation (it skips `&` at line ~1117 before reading the type identifier), so no compiler change is needed for the workaround.
+
+Applied in `examples/blog/app/views/posts/show.html.jda` and `edit.html.jda`.
+
+### Compiler fix
+
+During the prescan pass (where structs and consts are collected), also record function return types:
+
+```awk
+} else if (peek_kind() == "kw" && peek_val() == "fn") {
+    advance()
+    fname = peek_val(); advance()          # function name
+    # ... skip parameter list ...
+    if (peek_kind() == "-" && tk_val[POS+1] == ">") {
+        advance(); advance()               # consume ->
+        if (peek_kind() == "&") advance()  # skip &
+        if (peek_kind() == "id") fn_return_type[fname] = peek_val()
+    }
+}
+```
+
+Then in `arm64_parse_postfix`, after every `bl _fname`, set:
+
+```awk
+LAST_TYPE = (fname in fn_return_type) ? fn_return_type[fname] : ""
+```
+
+This also fixes Bug 3's need for UFCS shims, since the receiver type would be correctly preserved across chained calls.
+
+---
+
 ## Summary
 
 | # | Bug | Severity | Status |
@@ -238,5 +314,6 @@ After generating the body of `if cond { ... }`, the compiler should check whethe
 | 2 | `let x: [N]type` without `=` steals next statement | Critical | Worked around (use `=` form) |
 | 3 | Missing UFCS shims cause linker errors for unknown method names | Medium | Worked around in forge.jda |
 | 4 | `if cond { loop { ... } }` does not trap child in loop — all code paths fall through | High | Blocks pre-fork worker model; workaround: run multiple server processes manually |
+| 5 | Function call clears `LAST_TYPE` — untyped call results get wrong struct field offsets | High | Worked around with explicit type annotations |
 
-All four bugs have runtime workarounds already in place. The compiler fixes are the proper long-term solution.
+All bugs have runtime workarounds in place. The compiler fixes are the proper long-term solution.
