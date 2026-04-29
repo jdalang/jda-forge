@@ -1,12 +1,18 @@
 <% fn view_posts_index(ctx: i64, posts: &ForgeResult) %>
 <%layout "Posts" %>
 <%== tmpl_flash(ctx) %>
-<h1>Blog Posts</h1>
-<a href="<%== new_post_path %>">New Post</a>
-<hr>
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h1 class="mb-0">Blog Posts</h1>
+  <a href="<%== new_post_path %>" class="btn btn-primary">+ New Post</a>
+</div>
 <% if posts.count == 0 { %>
-<p>No posts yet. <a href="<%== new_post_path %>">Write the first one.</a></p>
+<div class="text-center py-5 text-muted">
+  <p class="fs-5">No posts yet.</p>
+  <a href="<%== new_post_path %>" class="btn btn-outline-primary">Write the first one</a>
+</div>
 <% } %>
+<div class="row g-4">
 <% loop r in 0..posts.count { %>
 <%== tmpl_post_row(post_row(posts, r)) %>
 <% } %>
+</div>

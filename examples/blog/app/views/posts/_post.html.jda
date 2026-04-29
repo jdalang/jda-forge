@@ -1,6 +1,17 @@
 <% fn tmpl_post_row(post: &PostRow) %>
-<div class="post">
-  <h2><a href="<%== post_path(post.id) %>"><%= post.title %></a></h2>
-  <p class="meta">by <%= post.author %> on <%== post.created_at %> &mdash; <%== post.comments_count %> comment(s)</p>
-  <p class="excerpt"><%== forge_excerpt(post.body, post.body, 120) %></p>
+<div class="col-md-6">
+  <div class="card h-100 shadow-sm border-0">
+    <div class="card-body d-flex flex-column">
+      <h5 class="card-title">
+        <a href="<%== post_path(post.id) %>" class="text-decoration-none stretched-link"><%= post.title %></a>
+      </h5>
+      <p class="card-text text-muted small mb-2">
+        by <strong><%= post.author %></strong> &middot; <%== post.created_at %>
+      </p>
+      <p class="card-text text-secondary flex-grow-1"><%== forge_excerpt(post.body, post.body, 120) %></p>
+    </div>
+    <div class="card-footer bg-transparent border-0 pt-0">
+      <span class="badge bg-secondary">Read more &rarr;</span>
+    </div>
+  </div>
 </div>

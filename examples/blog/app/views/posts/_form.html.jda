@@ -1,9 +1,20 @@
 <% fn render_post_form(action: []i8, title_val: []i8, body_val: []i8, tok: []i8, submit_label: []i8) %>
 <form method="POST" action="<%== action %>">
-  <%== forge_field_tag("title", "Title", title_val) %>
-  <%== forge_textarea_field_tag("body", "Body", body_val, 10, 60) %>
-  <%== forge_field_tag("author", "Author", "") %>
+  <div class="mb-3">
+    <label class="form-label fw-semibold">Title</label>
+    <input class="form-control form-control-lg" name="title" value="<%= title_val %>" placeholder="Post title" required>
+  </div>
+  <div class="mb-3">
+    <label class="form-label fw-semibold">Body</label>
+    <textarea class="form-control" name="body" rows="12" placeholder="Write your post…" required><%= body_val %></textarea>
+  </div>
+  <div class="mb-4">
+    <label class="form-label fw-semibold">Author</label>
+    <input class="form-control" name="author" placeholder="Your name" required>
+  </div>
   <input type="hidden" name="_csrf" value="<%= tok %>">
-  <button><%== submit_label %></button>
-  <a href="<%== posts_path %>">Cancel</a>
+  <div class="d-flex gap-2">
+    <button class="btn btn-primary px-4"><%== submit_label %></button>
+    <a href="<%== posts_path %>" class="btn btn-outline-secondary">Cancel</a>
+  </div>
 </form>

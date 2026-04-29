@@ -2,8 +2,14 @@
 <% let notice = ctx_flash_get(ctx, "notice") %>
 <% let alert  = ctx_flash_get(ctx, "alert") %>
 <% if notice.len > 0 { %>
-<div class="flash-notice"><%== notice %></div>
+<div class="alert alert-success alert-dismissible fade show" role="alert">
+  <%== notice %>
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
 <% } %>
 <% if alert.len > 0 { %>
-<div class="flash-alert"><%== alert %></div>
+<div class="alert alert-danger alert-dismissible fade show" role="alert">
+  <%== alert %>
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
 <% } %>

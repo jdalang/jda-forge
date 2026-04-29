@@ -1,20 +1,37 @@
-// Blog application JavaScript
+// Forge Blog — application JavaScript
 
 document.addEventListener("DOMContentLoaded", function () {
-  // Auto-dismiss flash messages after 4 seconds
-  var flashes = document.querySelectorAll(".flash-notice, .flash-alert");
-  flashes.forEach(function (el) {
+
+  // Auto-dismiss success alerts after 4 s
+  document.querySelectorAll(".alert-success").forEach(function (el) {
     setTimeout(function () {
-      el.style.transition = "opacity 0.4s";
-      el.style.opacity = "0";
-      setTimeout(function () { el.remove(); }, 400);
+      var bsAlert = bootstrap.Alert.getOrCreateInstance(el);
+      bsAlert.close();
     }, 4000);
   });
 
-  // Confirm before delete
+  // Confirm before delete forms
   document.querySelectorAll("form[data-confirm]").forEach(function (form) {
     form.addEventListener("submit", function (e) {
-      if (!confirm(form.dataset.confirm)) { e.preventDefault(); }
+      if (!confirm(form.dataset.confirm || "Are you sure?")) {
+        e.preventDefault();
+      }
     });
+  });
+
+  // Auto-grow textareas
+  document.querySelectorAll("textarea").forEach(function (ta) {
+    ta.addEventListener("input", function () {
+      ta.style.height = "auto";
+      ta.style.height = (ta.scrollHeight + 2) + "px";
+    });
+  });
+
+  // Highlight active nav link
+  var path = window.location.pathname;
+  document.querySelectorAll(".navbar-nav .nav-link").forEach(function (a) {
+    if (a.getAttribute("href") === path) {
+      a.classList.add("active", "fw-semibold");
+    }
   });
 });

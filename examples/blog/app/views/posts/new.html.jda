@@ -1,5 +1,14 @@
 <% fn view_posts_new(ctx: i64) %>
 <%layout "New Post" %>
 <%== tmpl_flash(ctx) %>
-<h1>New Post</h1>
-<%== render_post_form(posts_path, "", "", forge_csrf_token(ctx), "Publish") %>
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <h1 class="mb-0">New Post</h1>
+      <a href="<%== posts_path %>" class="text-muted text-decoration-none">&larr; Back</a>
+    </div>
+    <div class="card border-0 shadow-sm p-4">
+      <%== render_post_form(posts_path, "", "", forge_csrf_token(ctx), "Publish Post") %>
+    </div>
+  </div>
+</div>

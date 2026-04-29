@@ -1,104 +1,101 @@
-/* Blog application styles */
+/* Forge Blog — custom layer on top of Bootstrap 5 */
 
-*, *::before, *::after { box-sizing: border-box; }
+/* ── Brand tokens ─────────────────────────────────── */
+:root {
+  --forge-accent:   #6366f1;   /* indigo */
+  --forge-accent-h: #4f46e5;
+  --forge-muted:    #6b7280;
+  --forge-surface:  #f9fafb;
+  --forge-border:   #e5e7eb;
+}
 
+/* ── Base ─────────────────────────────────────────── */
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  max-width: 860px;
-  margin: 40px auto;
-  padding: 0 20px;
-  color: #1a1a1a;
-  line-height: 1.6;
+  background: var(--forge-surface);
+  color: #111827;
 }
 
-a { color: #0070f3; text-decoration: none; }
-a:hover { text-decoration: underline; }
-
-h1 { margin-top: 0; font-size: 1.8rem; }
-h2 { font-size: 1.3rem; }
-
-/* Nav */
-nav { margin-bottom: 28px; padding-bottom: 12px; border-bottom: 1px solid #eee; }
-nav a { margin-right: 16px; font-weight: 500; }
-
-/* Flash messages */
-.flash-notice {
-  background: #d4edda;
-  border: 1px solid #c3e6cb;
-  color: #155724;
-  padding: 10px 14px;
-  border-radius: 4px;
-  margin-bottom: 16px;
+/* ── Navbar override ──────────────────────────────── */
+.navbar.bg-dark {
+  background: #0f172a !important;
+  border-bottom: 1px solid #1e293b;
 }
-.flash-alert {
-  background: #f8d7da;
-  border: 1px solid #f5c6cb;
-  color: #721c24;
-  padding: 10px 14px;
-  border-radius: 4px;
-  margin-bottom: 16px;
+.navbar-brand {
+  letter-spacing: 0.02em;
+  font-size: 1.15rem;
+  color: #e2e8f0 !important;
+}
+.navbar-nav .nav-link {
+  color: #94a3b8 !important;
+  transition: color 0.15s;
+}
+.navbar-nav .nav-link:hover { color: #fff !important; }
+.navbar-nav .btn-outline-light {
+  border-color: #334155;
+  color: #cbd5e1 !important;
+}
+.navbar-nav .btn-outline-light:hover {
+  background: var(--forge-accent);
+  border-color: var(--forge-accent);
+  color: #fff !important;
 }
 
-/* Posts */
-.post {
-  border-bottom: 1px solid #eee;
-  padding-bottom: 20px;
-  margin-bottom: 20px;
+/* ── Cards ────────────────────────────────────────── */
+.card {
+  border-radius: 12px;
+  transition: transform 0.15s, box-shadow 0.15s;
 }
-.post:last-child { border-bottom: none; }
+.card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.08) !important; }
+.card-title a { color: #111827; }
+.card-title a:hover { color: var(--forge-accent); }
 
-.meta { color: #888; font-size: 0.85em; margin: 4px 0 12px; }
-
-/* Comments */
-.comment {
-  background: #f9f9f9;
-  border-radius: 4px;
-  padding: 12px 16px;
-  margin: 8px 0;
+/* ── Buttons ──────────────────────────────────────── */
+.btn-primary {
+  background: var(--forge-accent);
+  border-color: var(--forge-accent);
 }
-.comment .meta { margin-bottom: 4px; }
-
-/* Forms */
-label { display: block; font-weight: 500; margin-bottom: 4px; margin-top: 14px; }
-input[type="text"],
-input[type="email"],
-textarea {
-  width: 100%;
-  padding: 8px 10px;
-  border: 1px solid #ccc;
-  border-radius: 4px;
-  font-size: 1rem;
-  font-family: inherit;
+.btn-primary:hover, .btn-primary:focus {
+  background: var(--forge-accent-h);
+  border-color: var(--forge-accent-h);
 }
-textarea { min-height: 120px; resize: vertical; }
 
-/* Buttons */
-.button,
-input[type="submit"],
-button {
-  display: inline-block;
-  padding: 8px 16px;
-  background: #0070f3;
-  color: #fff;
-  border: none;
-  border-radius: 4px;
-  font-size: 0.9rem;
+/* ── Post body (show page) ────────────────────────── */
+.post-body {
+  font-size: 1.1rem;
+  line-height: 1.8;
+  color: #374151;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Article typography ───────────────────────────── */
+article h1 { font-size: 2rem; font-weight: 700; }
+
+/* ── Forms ────────────────────────────────────────── */
+.form-control:focus {
+  border-color: var(--forge-accent);
+  box-shadow: 0 0 0 3px rgba(99,102,241,0.15);
+}
+
+/* ── Footer ───────────────────────────────────────── */
+footer { color: var(--forge-muted); background: var(--forge-surface); }
+footer a { color: var(--forge-muted); }
+footer a:hover { color: var(--forge-accent); }
+
+/* ── Delete link (forge_link_to_delete renders a form+button) ── */
+.forge-delete-btn,
+form.delete-form button {
+  background: none;
+  border: 1px solid #dc2626;
+  color: #dc2626;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 0.875rem;
   cursor: pointer;
-  text-decoration: none;
+  transition: background 0.15s, color 0.15s;
 }
-.button:hover,
-input[type="submit"]:hover,
-button:hover { background: #005bb5; text-decoration: none; }
-
-.button.secondary { background: #6c757d; }
-.button.danger    { background: #dc3545; }
-
-/* Errors */
-.errors {
-  background: #fff3cd;
-  border: 1px solid #ffc107;
-  border-radius: 4px;
-  padding: 10px 16px;
-  margin-bottom: 16px;
+.forge-delete-btn:hover,
+form.delete-form button:hover {
+  background: #dc2626;
+  color: #fff;
 }
-.errors ul { margin: 4px 0 0; padding-left: 20px; }

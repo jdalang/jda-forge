@@ -7552,8 +7552,8 @@ fn forge_link_to_delete(text: []i8, url: []i8, csrf: []i8) -> []i8 {
     let buf: &i8 = alloc_pages(1)
     let pos = 0i64
     let p1 = "<form action=\""
-    let p2 = "\" method=\"post\"><input type=\"hidden\" name=\"_method\" value=\"DELETE\"><input type=\"hidden\" name=\"_csrf\" value=\""
-    let p3 = "\"><button type=\"submit\">"
+    let p2 = "\" method=\"post\" class=\"d-inline\" data-confirm=\"Are you sure?\"><input type=\"hidden\" name=\"_method\" value=\"DELETE\"><input type=\"hidden\" name=\"_csrf\" value=\""
+    let p3 = "\"><button type=\"submit\" class=\"btn btn-sm btn-outline-danger\">"
     let p4 = "</button></form>"
     loop i in 0..p1.len  { buf[pos] = p1[i]   pos = pos + 1 }
     loop i in 0..url.len  { buf[pos] = url[i]   pos = pos + 1 }

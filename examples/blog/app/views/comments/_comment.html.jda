@@ -1,5 +1,10 @@
 <% fn tmpl_comment_row(comment: &CommentRow) %>
-<div class="comment">
-  <strong><%= comment.author %></strong> <span class="meta"><%== comment.created_at %></span>
-  <p><%= comment.body %></p>
+<div class="card border-0 bg-light mb-3">
+  <div class="card-body py-3">
+    <div class="d-flex justify-content-between align-items-center mb-1">
+      <strong class="text-dark"><%= comment.author %></strong>
+      <small class="text-muted"><%== comment.created_at %></small>
+    </div>
+    <p class="mb-0 text-secondary"><%= comment.body %></p>
+  </div>
 </div>

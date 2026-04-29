@@ -9,11 +9,15 @@ fn on_job_after(arg: i64) {
 }
 
 fn main() {
+    forge_log_level_set(FORGE_LOG_DEBUG)
     load_env()
     // forge_jobs_start disabled: spawn{} is inline on this platform — workers loop forever
     // forge_jobs_start(4)
     // forge_job_before_perform(fn_addr(on_job_before))
     // forge_job_after_perform (fn_addr(on_job_after))
+
+    let db_url = forge_env_get("DATABASE_URL")
+    if db_url.len > 0 { forge_db_add("primary", db_url) }
 
     let app = app_new_config(app_config())
     app_use(app, fn_addr(forge_logger))
@@ -22,7 +26,7 @@ fn main() {
     app_use(app, fn_addr(forge_session_start))
     app_use(app, fn_addr(forge_csrf))
 
-    app_static(app, "/static", "./public")
+    app_static(app, "/", "./public")
 
     post_model_init()
     comment_model_init()
