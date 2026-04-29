@@ -1,5 +1,5 @@
 <% fn view_posts_edit(ctx: i64, post: &ForgeResult) %>
-<% let p = post_row(post, 0) %>
+<% let p: &PostRow = post_row(post, 0) %>
 <%layout "Edit Post" %>
 <h1>Edit Post</h1>
 <form method="POST" action="<%== post_path(p.id) %>">

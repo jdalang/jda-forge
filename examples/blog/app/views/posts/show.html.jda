@@ -1,5 +1,5 @@
 <% fn view_posts_show(ctx: i64, post: &ForgeResult, comments: &ForgeResult) %>
-<% let p   = post_row(post, 0) %>
+<% let p: &PostRow   = post_row(post, 0) %>
 <% let tok = forge_csrf_token(ctx) %>
 <%layout p.title %>
 <%== tmpl_flash(ctx) %>

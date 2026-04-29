@@ -2546,8 +2546,6 @@ fn forge_csrf(ctx_ptr: i64) {
     let token = ctx_header(ctx_ptr, "X-CSRF-Token")
     if token.len == 0 { token = ctx_form(ctx_ptr, "_csrf") }
     let expected = ctx_session_get(ctx_ptr, "_csrf")
-    forge_log_tagged("csrf", FORGE_LOG_DEBUG, token)
-    forge_log_tagged("csrf_expected", FORGE_LOG_DEBUG, expected)
     if expected.len == 0 or not forge_slice_eq(token, expected) {
         ctx_json(ctx_ptr, 403, "{\"error\":\"invalid CSRF token\"}")
     }
@@ -3778,7 +3776,16 @@ fn forge_pg_query(host: []i8, port: i32, user: []i8, pass: []i8, dbname: []i8, s
         } else if mtype == 'Z' {
             break   // ReadyForQuery -- done
         } else if mtype == 'E' {
-            break   // ErrorResponse
+            // Drain remaining messages until ReadyForQuery so the connection
+            // stays in sync for the next query.
+            loop {
+                if not forge_db_recv_n(fd, hdr, 5) { g_forge_pg_fd = -1  break }
+                let drain_mtype = hdr[0]
+                let drain_mlen  = forge_db_read_i32(hdr, 1) - 4
+                if drain_mlen > 0 { forge_db_recv_n(fd, body, drain_mlen) }
+                if drain_mtype == 'Z' { break }
+            }
+            break
         }
     }
 
@@ -4046,7 +4053,9 @@ fn forge_result_col(res: &ForgeResult, row_i: i64, col: []i8) -> []i8 {
             loop j in 0..col.len {
                 if cn.name[j] != col[j] { keq = false  break }
             }
-            if keq { ret forge_row_col(res, row_i, ci) }
+            if keq {
+                ret forge_row_col(res, row_i, ci)
+            }
         }
     }
     ret ""
@@ -6421,6 +6430,13 @@ fn forge_tx_query(fd: i32, sql: []i8) -> &ForgeResult {
         } else if mtype == 'Z' {
             break
         } else if mtype == 'E' {
+            loop {
+                if not forge_db_recv_n(fd, hdr, 5) { break }
+                let dm = hdr[0]
+                let dl = forge_db_read_i32(hdr, 1) - 4
+                if dl > 0 { forge_db_recv_n(fd, body, dl) }
+                if dm == 'Z' { break }
+            }
             break
         }
     }
