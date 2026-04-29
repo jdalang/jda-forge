@@ -1,6 +1,6 @@
-# JDA Compiler Bugs
+# JDA Compiler & Runtime Documentation
 
-This document tracks known bugs in the JDA compiler (`~/.jda/bin/jda`) discovered during development of the Forge runtime. For each bug: what it is, where it lives, what it breaks, and what the fix looks like.
+This document tracks known bugs and ARM64 code-generation quirks in the JDA compiler (`~/.jda/bin/jda`) discovered during development of the Forge runtime. For each issue: what it is, where it lives, what it breaks, the runtime workaround applied in `forge.jda`, and the proper compiler fix.
 
 ---
 
@@ -306,6 +306,144 @@ This also fixes Bug 3's need for UFCS shims, since the receiver type would be co
 
 ---
 
+## Bug 6 — Embedded array field slice reads slot as pointer, not inline data
+
+### What happens
+
+In JDA ARM64 structs, an array field declared as `[N]i8` is stored **inline** — its bytes start at the field's offset. However, when you write `struct.array[0..n]` (a slice expression on a struct field), the compiler:
+
+1. Loads the 8 bytes at the field's offset into a register — interpreting those 8 bytes as a **pointer**.
+2. Applies the slice from that pointer value.
+
+Because the inline bytes are raw character data (not a heap address), the result is a nonsense pointer → crash on any dereference.
+
+The same problem applies to field accesses like `row.cols` where `cols` is a `[N]SomeStruct` array declared inline at offset 0: the compiler reads 8 bytes and treats them as a pointer.
+
+### What breaks
+
+Any code that reads an embedded array field with a slice expression:
+
+```jda
+struct ForgeDbRow {
+    cols: [FORGE_DB_MAX_COLS]ForgeDbCell   // inline at offset 0
+    count: i64
+}
+
+let row: &ForgeDbRow = ...
+let cell = row.cols[2]          // BUG — reads 8 bytes at offset 0 as pointer
+let slice = row.cols[0..n]      // BUG — same
+```
+
+Broken patterns in `forge.jda` before the fix:
+- `row.cols as i64 + c * FORGE_DB_COL_STRIDE` — `row.cols` read the 8 inline bytes as an address → always 0 for a zero-initialized alloc → SIGSEGV
+- `cell.data[0..cell.len]` in `forge_row_col` — `cell.data` treated as pointer → crashed in `forge_sql_write`
+- `e.child[0..e.clen]` in `forge__cc_after_create` — same
+
+### Runtime workaround applied
+
+Cast the struct pointer to `&i8` first, then slice from the raw address:
+
+```jda
+// Before (broken):
+let slice = row.cols[0..n]
+let addr  = row.cols as i64 + n * STRIDE
+
+// After (correct):
+let base: &i8 = (row as i64) as &i8     // cols is at offset 0
+let slice = base[0..n]
+let addr  = (row as i64) + n * STRIDE
+```
+
+For a field at a non-zero offset, add the offset explicitly:
+
+```jda
+// fk_col is at offset 16 in ForgeCounterCacheEntry:
+let efk: &i8 = (e as i64 + 16) as &i8
+let fk_slice = efk[0..e.flen]
+```
+
+Applied in:
+- `forge_db_query` D-branch: `row as i64` instead of `row.cols as i64`
+- `forge_row_col`: `(cell as i64) as &i8` then `cptr[0..cell.len]`
+- `forge__cc_after_create`: `(e as i64) as &i8` for child and `(e as i64 + 16) as &i8` for fk_col
+
+### Compiler fix
+
+The code generator for `struct.field_name` on an embedded-array field must emit the **address** of the field slot, not a load from it. When the field type is `[N]T` (a fixed-size inline array), the postfix pass should:
+
+1. Compute `base + field_offset` as the result (no load).
+2. Leave `LAST_TYPE = "array"` (or the element type) so a subsequent `[i]` subscript emits `base + field_offset + i * sizeof(T)`.
+3. For a slice `[a..b]`, emit `base + field_offset + a` with length `b - a` (once fat pointer/null-terminator is in place).
+
+Currently the same `ldr x0, [x0, #offset]` is emitted for both pointer fields and inline-array fields, which is correct only for pointers.
+
+---
+
+## Bug 7 — `bl` overwrites `lr` (x30); functions without prologue corrupt callers' return address
+
+### What happens
+
+On ARM64, the `bl` (branch-with-link) instruction writes the return address into `x30` (the link register). JDA emits a function prologue (`stp x29, x30, [sp, #-16]!`) only for functions that need a stack frame (i.e., those with local variables that spill). Functions with few or no locals get no prologue/epilog.
+
+When a callee with no prologue calls further functions via `bl`, `x30` is overwritten. On return (`ret`), the processor uses the current (corrupted) `x30` — jumping to wherever the last `bl` pointed, not back to the original caller.
+
+### What breaks
+
+Any function that:
+1. Has few enough locals that JDA doesnits not emit `stp x29, x30, [sp, #-16]!`, AND
+2. Calls another function via `bl` before its own `ret`.
+
+Examples hit during Forge development:
+
+| Function | Symptom | Root cause |
+|----------|---------|------------|
+| `forge__cc_after_create` | Infinite loop / crash after checking `g_forge_cc_count` | `bl forge_cc_init` clobbered `lr`; `ret` jumped back into the loop |
+| `forge_instrument` | Infinite loop after `[FI2]` debug print | `bl forge_instr_init` clobbered `lr`; `if _ic == 0 { ret }` returned to wrong address |
+| `post_after_create` | Crash at `call_fn` | `bl forge_instrument` clobbered `lr`; `ret true` jumped to garbage |
+
+### Runtime workaround applied
+
+Restructure the function so the first thing checked is a global flag — **before** any `bl` instruction. If the guard condition is false, `ret` early while `lr` is still valid:
+
+```jda
+// Before (broken — bl overwrites lr before the check):
+fn forge_instrument(event: []i8, payload: i64) {
+    forge_instr_init()           // bl clobbers x30
+    let _ic = g_forge_instr_count
+    if _ic == 0 { ret }          // ret uses corrupted x30
+    ...
+}
+
+// After (correct — ret fires before any bl):
+fn forge_instrument(event: []i8, payload: i64) {
+    if g_forge_instr_count == 0 { ret }   // pure register check, no bl
+    forge_instr_init()
+    ...
+}
+```
+
+Applied in:
+- `forge__cc_after_create`: `if g_forge_cc_count == 0 { ret }` before `forge_cc_init()`
+- `forge_instrument`: `if g_forge_instr_count == 0 { ret }` before `forge_instr_init()`
+- `post_after_create` (blog example): `if g_forge_instr_count > 0 { forge_instrument(...) }` so `bl` is never reached when count is 0
+
+### Compiler fix
+
+Every function that contains a `bl` instruction must save and restore `lr`. The prologue/epilog should be emitted unconditionally for any function that calls another, regardless of local variable count:
+
+```awk
+# In arm64_gen_fn, always emit prologue when function body contains any bl:
+emit("  stp x29, x30, [sp, #-16]!")
+emit("  mov x29, sp")
+# ... body ...
+emit("  ldp x29, x30, [sp], #16")
+emit("  ret")
+```
+
+A simpler rule: emit prologue/epilog for every non-leaf function (any function that contains a `bl`). The performance cost is two extra memory operations per call, which is negligible.
+
+---
+
 ## Summary
 
 | # | Bug | Severity | Status |
@@ -315,5 +453,7 @@ This also fixes Bug 3's need for UFCS shims, since the receiver type would be co
 | 3 | Missing UFCS shims cause linker errors for unknown method names | Medium | Worked around in forge.jda |
 | 4 | `if cond { loop { ... } }` does not trap child in loop — all code paths fall through | High | Blocks pre-fork worker model; workaround: run multiple server processes manually |
 | 5 | Function call clears `LAST_TYPE` — untyped call results get wrong struct field offsets | High | Worked around with explicit type annotations |
+| 6 | Embedded array field slice/load reads slot as pointer, not inline data | Critical | **Fixed in forge.jda** — use `(struct as i64) as &i8` pattern |
+| 7 | `bl` clobbers `lr`; functions without prologue/epilog corrupt return address | Critical | **Fixed in forge.jda** — guard with global flag check before any `bl` |
 
-All bugs have runtime workarounds in place. The compiler fixes are the proper long-term solution.
+Bugs 1–5 have runtime workarounds in place. Bugs 6–7 are fully fixed in forge.jda with the patterns documented above. The compiler fixes are the proper long-term solution for all seven.

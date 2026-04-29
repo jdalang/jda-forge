@@ -40,3 +40,4 @@
 | [advanced.md](advanced.md) | ctx_head, signed cookies, pessimistic locking, enum helpers, current attributes, rescue handler, delayed jobs, backoff retry |
 | [libraries.md](libraries.md) | Forgefile, version pinning, Forgefile.lock, writing libraries |
 | [overriding.md](overriding.md) | Monkey patching, patch files, middleware override |
+| [compiler-docs.md](compiler-docs.md) | JDA compiler & ARM64 code-generation quirks, workarounds, and compiler fixes |
