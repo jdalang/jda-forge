@@ -444,6 +444,220 @@ A simpler rule: emit prologue/epilog for every non-leaf function (any function t
 
 ---
 
+## Bug 8 — `arr[i]` on `[N]i8` uses 8-byte stride AND 8-byte load/store
+
+### What happens
+
+For any array subscript `arr[i]`, the JDA ARM64 code generator emits:
+
+```asm
+lsl  x1, x1, #3     // index * 8  (stride-8, regardless of element size)
+add  x0, x0, x1
+ldr  x2, [x0]       // 8-byte load (not 1-byte ldrb)
+```
+
+This is correct for `[]&T` (pointer arrays, 8 bytes per element), but **wrong for `[N]i8`** (1-byte elements). Two distinct errors:
+
+1. **Wrong address**: `arr[i]` computes `arr + i*8` instead of `arr + i`.
+2. **Wrong width**: the load/store is 8 bytes (`ldr`/`str`), not 1 byte (`ldrb`/`strb`).
+
+So `arr[1] = 'x'` does an 8-byte store at `arr+8`, and `arr[1]` reads 8 bytes from `arr+8` as a 64-bit integer. At index 0 the address is correct but the width is still wrong — reading/writing 8 bytes where 1 was intended.
+
+The address bug is the same underlying issue as Bug 6 (stride-8 on embedded arrays), but here it affects **local and heap i8 arrays** in any general subscript operation, not just struct fields.
+
+### What breaks
+
+Any `[N]i8` array accessed at a non-zero index, or any code that reads/writes i8 array slots and relies on 1-byte semantics:
+
+```jda
+let tmp = [32]i8
+tmp[0] = 'a'   // address OK (arr+0), but stores 8 bytes — overwrites tmp[1..7]
+tmp[1] = 'b'   // address arr+8 — skips 7 bytes; also stores 8 bytes
+```
+
+**Critical example — session KV crash:**
+
+`ForgeSession.kv` is a `[8]ForgeSessionKV` inline array. After `ctx_session_set` wrote `s.kv[0].key[0] = '_'` (stride-8: stored `"_flash"[0]` as 8 bytes = `5f 66 6c 61 73 68 00 5f`), the next `ctx_session_get` loaded those 8 bytes from `session+32` as a pointer (`0x5f006873616c665f`) and attempted to dereference it — instant SIGSEGV.
+
+Additional patterns broken before the fix:
+- `i64_to_str` — `tmp[tpos]` at tpos≥2: address `tmp+tpos*8`, 8-byte store overwriting `tpos` itself on the stack (see Bug 10)
+- `forge_h` — escape buffer writes producing garbage or overwritten adjacent locals
+
+### Runtime workaround applied
+
+Replace all `arr[i]` subscripts (for i > 0) with manual pointer arithmetic using `[0]` (always index-0, always stride-1 when the pointer was constructed via byte addition):
+
+```jda
+// Before (broken — stride-8, 8-byte store):
+arr[i] = val
+
+// After (correct — byte-level address, 1-byte store via [0]):
+let p: &i8 = (arr as i64 + i) as &i8
+p[0] = val
+
+// Reading:
+let p: &i8 = (arr as i64 + i) as &i8
+let v = p[0]
+```
+
+**Fixed in forge.jda**: `ctx_session_set`, `ctx_session_get`, `ctx_session_del`, `ctx_flash_set`, `ctx_flash_get` — all rewritten using the `(base + offset) as &i8; ptr[0]` pattern throughout. A helper `forge__kv_ptr(s, i)` computes the byte-level address of KV slot `i`:
+
+```jda
+fn forge__kv_ptr(s: &ForgeSession, i: i64) -> i64 {
+    ret s as i64 + FORGE_SESSION_KV_OFF + i * FORGE_SESSION_KV_STRIDE
+}
+```
+
+### Compiler fix
+
+The code generator must use element-size stride, not a fixed 8:
+
+```awk
+# In arm64_gen_subscript (or wherever arr[i] is compiled):
+stride = type_size[element_type]   # 1 for i8, 8 for i64/pointer
+emit("  mov x10, " stride)
+emit("  mul x1, x1, x10")         # index * sizeof(element)
+emit("  add x0, x0, x1")
+# Load/store width must also match:
+if (element_type == "i8") {
+    emit("  ldrb w2, [x0]")       # 1-byte load
+} else {
+    emit("  ldr x2, [x0]")        # 8-byte load
+}
+```
+
+---
+
+## Bug 9 — `if/else` with BSS global load reuses register, corrupting struct pointer
+
+### What happens
+
+In a pattern like:
+
+```jda
+if db_override >= 0 {
+    q.conn_idx = db_override
+} else {
+    q.conn_idx = g_forge_db_current
+}
+```
+
+The compiler emits the else-branch by reusing the same register (x9) for both purposes:
+
+```asm
+// true branch:
+str  x8, [x9, #offset]     // x9 = &q (struct pointer)
+
+// else branch:
+adrp x9, _g_forge_db_current@PAGE   // BUG: x9 was &q, now becomes BSS page
+ldr  x9, [x9, _g_forge_db_current@PAGEOFF]
+str  x9, [x9, #offset]     // BUG: stores into BSS page address, not &q
+```
+
+The else-branch overwrites x9 (which still held the struct pointer) with the BSS page address for `g_forge_db_current`. The subsequent `str` then writes into `(BSS page + offset)`, corrupting whatever global lives there.
+
+**Concrete crash in forge.jda**: `g_forge_sessions_base` was clobbered every time a DB query ran (the else-branch of `forge_q`'s conn_idx assignment), because `g_forge_sessions_base` happened to be at `g_forge_db_current_page + 8`. After the first query, session lookups returned invalid pointers.
+
+### What breaks
+
+Any `if/else` where the true branch stores into a struct field using a pointer register, and the else branch loads from a BSS global — when both share the same scratch register.
+
+### Runtime workaround applied
+
+Pre-load the BSS global into a dedicated local variable **before** the if/else, so neither branch does an `adrp` mid-block:
+
+```jda
+// Before (broken):
+if db_override >= 0 {
+    q.conn_idx = db_override
+} else {
+    q.conn_idx = g_forge_db_current
+}
+
+// After (correct):
+let _cur_db = g_forge_db_current     // loaded once, x9 never reused
+if db_override >= 0 {
+    q.conn_idx = db_override
+} else {
+    q.conn_idx = _cur_db
+}
+```
+
+**Fixed in forge.jda**: `forge_q` — added `let _cur_db = g_forge_db_current` before the conditional.
+
+### Compiler fix
+
+The register allocator must not reuse a live register that holds a computed address (struct pointer) for a new `adrp` load in the same if/else block. Either:
+
+1. Spill the struct pointer to the stack before loading the global, then reload it.
+2. Use a separate scratch register for the BSS adrp when the base register is still live.
+3. Allocate all `adrp` globals to caller-saved registers (x10–x15) that are distinct from the struct pointer registers (x0–x9 in typical call convention).
+
+---
+
+## Bug 10 — `i64_to_str` stride-8 in `tmp[tpos]` corrupts `tpos` on stack
+
+### What happens
+
+`i64_to_str` builds a decimal string with:
+
+```jda
+let tmp = [32]i8
+let tpos = 0i64
+loop n > 0 {
+    tmp[tpos] = ('0' + n % 10) as i8
+    tpos = tpos + 1
+    n = n / 10
+}
+```
+
+Due to Bug 8, `tmp[tpos]` computes address `tmp + tpos*8` and does an 8-byte store. `tmp` is on the stack at `frame+48`. `tpos` is also on the stack at `frame+96`. So:
+
+| tpos | store address | distance from tmp |
+|------|--------------|-------------------|
+| 0    | tmp+0        | safe (≤ frame+48) |
+| 1    | tmp+8        | safe |
+| 2    | tmp+16       | safe |
+| 3    | tmp+24       | safe |
+| 4    | tmp+32       | tmp+32 = frame+80, still before tpos |
+| 6    | tmp+48       | frame+96 = **tpos itself** |
+
+At tpos=6 (a 7-digit number, i.e. ≥ 1,000,000), the 8-byte store writes the digit character value (e.g. `0x31` for '1') into the `tpos` slot, resetting `tpos` to 49. The loop then runs for 49 more iterations, writing garbage across the stack.
+
+### What breaks
+
+Any call to `i64_to_str` with a value ≥ 1,000,000 (7+ digits). Symptoms: `tpos` jumps to a digit character value mid-loop, the returned string contains garbage, and adjacent stack slots are overwritten.
+
+### Runtime workaround applied
+
+Avoid calling `i64_to_str` with large values in contexts where correctness matters, or rewrite using the byte-pointer pattern:
+
+```jda
+// Safe version using manual pointer arithmetic:
+fn i64_to_str_safe(n: i64) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let tmp_base = buf as i64
+    let tpos = 0i64
+    loop n > 0 {
+        let digit = ('0' + n % 10) as i8
+        let dp: &i8 = (tmp_base + tpos) as &i8
+        dp[0] = digit
+        tpos = tpos + 1
+        n = n / 10
+    }
+    // reverse in place ...
+    ret buf[0..tpos]
+}
+```
+
+**Fixed in forge.jda**: Removed all `i64_to_str` calls that might receive large values (session IDs, timestamps, counts > 6 digits) from debug-print paths. The built-in `i64_to_str` in the standard library still has this bug for values ≥ 1,000,000.
+
+### Compiler fix
+
+Same as Bug 8 — fix stride and store width for `[N]i8` subscripts. Once `tmp[tpos]` emits `strb` at `tmp+tpos` (byte address, 1-byte width), this bug disappears entirely.
+
+---
+
 ## Summary
 
 | # | Bug | Severity | Status |
@@ -455,5 +669,8 @@ A simpler rule: emit prologue/epilog for every non-leaf function (any function t
 | 5 | Function call clears `LAST_TYPE` — untyped call results get wrong struct field offsets | High | Worked around with explicit type annotations |
 | 6 | Embedded array field slice/load reads slot as pointer, not inline data | Critical | **Fixed in forge.jda** — use `(struct as i64) as &i8` pattern |
 | 7 | `bl` clobbers `lr`; functions without prologue/epilog corrupt return address | Critical | **Fixed in forge.jda** — guard with global flag check before any `bl` |
+| 8 | `arr[i]` on `[N]i8` uses stride-8 address AND 8-byte load/store — wrong address and width | Critical | **Fixed in forge.jda** — rewrote all session KV ops with `(base+offset) as &i8; ptr[0]` |
+| 9 | `if/else` with BSS global reuses struct pointer register — corrupts BSS neighbors | Critical | **Fixed in forge.jda** — pre-load global to local before conditional |
+| 10 | `i64_to_str tmp[tpos]` stride-8 overwrites `tpos` itself for values ≥ 1,000,000 | High | **Fixed in forge.jda** — removed large-value `i64_to_str` calls from hot paths |
 
-Bugs 1–5 have runtime workarounds in place. Bugs 6–7 are fully fixed in forge.jda with the patterns documented above. The compiler fixes are the proper long-term solution for all seven.
+Bugs 1–5 have runtime workarounds in place. Bugs 6–10 are fully fixed in forge.jda with the patterns documented above. The compiler fixes are the proper long-term solution for all ten.

@@ -531,7 +531,10 @@ compile_models() {
             printf 'fn %s_row(result: &ForgeResult, r: i64) -> &%sRow {\n' "$ssing" "$spascal"
             printf '    let row: &%sRow = alloc_pages(1)\n' "$spascal"
             for scol in "${scols[@]}"; do
-                printf '    row.%s = forge_result_col(result, r, "%s")\n' "$scol" "$scol"
+                printf '    let v_%s: []i8 = forge_result_col(result, r, "%s")\n' "$scol" "$scol"
+            done
+            for scol in "${scols[@]}"; do
+                printf '    row.%s = v_%s\n' "$scol" "$scol"
             done
             printf '    ret row\n}\n\n'
         done
