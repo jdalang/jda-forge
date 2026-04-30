@@ -343,8 +343,14 @@ struct ForgeBuf {
 }
 
 fn forge_buf_new(pages: i64) -> &ForgeBuf {
-    let b: &ForgeBuf = alloc_pages(1)
-    b.data = alloc_pages(pages)
+    // Do both alloc_pages calls first and store results as i64 on the stack.
+    // The JDA compiler loads struct pointers into caller-saved registers before
+    // function calls and doesn't reload them after — splitting the allocations
+    // avoids any function call between loading `b` and writing to it.
+    let b_addr:    i64 = alloc_pages(1)     as i64
+    let data_addr: i64 = alloc_pages(pages) as i64
+    let b: &ForgeBuf = b_addr as &ForgeBuf
+    b.data = data_addr as &i8
     b.pos  = 0
     b.cap  = pages * 4096
     ret b
@@ -1004,6 +1010,7 @@ fn forge_effective_method(ctx_ptr: i64) -> []i8 {
     let ctx: &ForgeCtx = ctx_ptr
     if forge_slice_eq(ctx.req.method, "POST") {
         let mo = ctx_form(ctx_ptr, "_method")
+        if mo.len == 0 { mo = ctx_query(ctx_ptr, "_method") }
         if forge_slice_eq(mo, "PUT")    { ret "PUT" }
         if forge_slice_eq(mo, "PATCH")  { ret "PATCH" }
         if forge_slice_eq(mo, "DELETE") { ret "DELETE" }
@@ -1127,6 +1134,79 @@ fn forge_hdr_has_close(ctx_ptr: i64) -> bool {
     ret (c0[0] and 0xFF) == 'c' and (c1[0] and 0xFF) == 'l' and (c2[0] and 0xFF) == 'o' and (c3[0] and 0xFF) == 's' and (c4[0] and 0xFF) == 'e'
 }
 
+// Parse a decimal integer from a null-terminated C string using pointer arithmetic.
+fn forge_raw_atoi(buf: &i8) -> i64 {
+    let result = 0i64
+    let i = 0i64
+    loop {
+        let p: &i8 = buf + i
+        let c = p[0] and 0xFF
+        if c == 0 { break }
+        if c < 48 or c > 57 { break }
+        result = result * 10 + (c - 48)
+        i = i + 1
+    }
+    ret result
+}
+
+// Extract an arbitrary header value from a raw HTTP request buffer.
+// hdr_name must include the trailing ": " (e.g. "Content-Type: ").
+// Copies the value into out[0..cap-1], null-terminated.
+fn forge_extract_raw_header(buf: &i8, n: i64, hdr_name: &i8, hdr_name_len: i64, out: &i8, cap: i64) {
+    let term: &i8 = out + 0
+    term[0] = 0
+    if n == 0 or cap <= 1 { ret }
+    let i = 0i64
+    loop i < n {
+        let p: &i8 = buf + i
+        if (p[0] and 0xFF) == '\r' and i + 1 < n {
+            let p2: &i8 = buf + i + 1
+            if (p2[0] and 0xFF) == '\n' { i = i + 2  break }
+        }
+        i = i + 1
+    }
+    loop i < n {
+        let lc: &i8 = buf + i
+        if (lc[0] and 0xFF) == '\r' and i + 1 < n {
+            let lc2: &i8 = buf + i + 1
+            if (lc2[0] and 0xFF) == '\n' { ret }
+        }
+        let found = true
+        let j = 0i64
+        loop j < hdr_name_len {
+            if i + j >= n { found = false  break }
+            let hp: &i8 = buf + i + j
+            let kp: &i8 = hdr_name + j
+            let hc = hp[0] and 0xFF
+            let kc = kp[0] and 0xFF
+            if hc >= 'A' and hc <= 'Z' { hc = hc + 32 }
+            if kc >= 'A' and kc <= 'Z' { kc = kc + 32 }
+            if hc != kc { found = false  break }
+            j = j + 1
+        }
+        if found {
+            let vs = i + hdr_name_len
+            let vl = 0i64
+            loop vs + vl < n and vl < cap - 1 {
+                let vp: &i8 = buf + vs + vl
+                let ch = vp[0] and 0xFF
+                if ch == '\r' or ch == '\n' or ch == 0 { break }
+                let dst: &i8 = out + vl
+                dst[0] = vp[0]
+                vl = vl + 1
+            }
+            let nt: &i8 = out + vl
+            nt[0] = 0
+            ret
+        }
+        loop i < n {
+            let lc: &i8 = buf + i
+            i = i + 1
+            if (lc[0] and 0xFF) == '\n' { break }
+        }
+    }
+}
+
 // Extract the "Cookie: " header value from a raw HTTP request buffer before
 // parse_request null-terminates the header tokens. Copies the value string
 // (everything after "Cookie: " up to \r or \n) into out[0..cap-1], null-terminated.
@@ -1202,6 +1282,57 @@ fn forge_handle_fd(fd: i32) {
         // Extract Cookie header BEFORE parse_request null-terminates the buffer tokens
         let cookie_buf: &i8 = forge_scratch_alloc(1024)
         forge_extract_cookie_hdr(req_buf, n, cookie_buf, 1024)
+        // Extract Content-Type and Content-Length before parse_request
+        let ct_label = "Content-Type: "
+        let cl_label = "Content-Length: "
+        let ct_lp: &i8 = ct_label as i64 as &i8
+        let cl_lp: &i8 = cl_label as i64 as &i8
+        let raw_ct_buf: &i8 = forge_scratch_alloc(512)
+        let raw_cl_buf: &i8 = forge_scratch_alloc(64)
+        forge_extract_raw_header(req_buf, n, ct_lp, strlen(ct_lp), raw_ct_buf, 512)
+        forge_extract_raw_header(req_buf, n, cl_lp, strlen(cl_lp), raw_cl_buf, 64)
+        // Extract raw query string from first line (e.g. "POST /path?k=v HTTP/1.1")
+        // Do this before parse_request mutates the buffer
+        let raw_query_ptr: &i8 = 0 as &i8
+        let rqi = 0i64
+        // Skip method (up to first space)
+        loop rqi < n {
+            let rqp: &i8 = req_buf + rqi
+            if (rqp[0] and 0xFF) == ' ' { rqi = rqi + 1  break }
+            rqi = rqi + 1
+        }
+        // Find '?' or ' ' in the URL
+        let url_start = rqi
+        loop rqi < n {
+            let rqp: &i8 = req_buf + rqi
+            let rqc = rqp[0] and 0xFF
+            if rqc == '?' {
+                // Found query string start; copy until ' ' or end of line
+                rqi = rqi + 1
+                let qs_start = rqi
+                loop rqi < n {
+                    let rqp2: &i8 = req_buf + rqi
+                    let rqc2 = rqp2[0] and 0xFF
+                    if rqc2 == ' ' or rqc2 == '\r' or rqc2 == '\n' { break }
+                    rqi = rqi + 1
+                }
+                let qs_len = rqi - qs_start
+                let qs_buf: &i8 = forge_scratch_alloc(qs_len + 1)
+                let qsi = 0i64
+                loop qsi < qs_len {
+                    let src: &i8 = req_buf + qs_start + qsi
+                    let dst: &i8 = qs_buf + qsi
+                    dst[0] = src[0]
+                    qsi = qsi + 1
+                }
+                let qterm: &i8 = qs_buf + qs_len
+                qterm[0] = 0
+                raw_query_ptr = qs_buf
+                break
+            }
+            if rqc == ' ' or rqc == '\r' or rqc == '\n' { break }
+            rqi = rqi + 1
+        }
         // Find body start (after \r\n\r\n) in raw buffer before parse_request mutates it
         let raw_body_ptr: &i8 = 0 as &i8
         let rbi = 0i64
@@ -1231,6 +1362,17 @@ fn forge_handle_fd(fd: i32) {
                 let ctx_p = (&ctx) as i64
                 ctx_set(ctx_p, "_raw_cookie", cookie_buf as i64)
                 ctx_set(ctx_p, "_raw_body", raw_body_ptr as i64)
+                ctx_set(ctx_p, "_raw_query", raw_query_ptr as i64)
+                ctx_set(ctx_p, "_raw_ct", raw_ct_buf as i64)
+                ctx_set(ctx_p, "_raw_cl", raw_cl_buf as i64)
+                let body_len: i64 = 0
+                if raw_body_ptr != 0 as &i8 {
+                    body_len = n - (raw_body_ptr as i64 - req_buf as i64)
+                    if body_len < 0 { body_len = 0 }
+                }
+                ctx_set(ctx_p, "_raw_body_len", body_len)
+                ctx_set(ctx_p, "_dbg_n", n)
+                ctx_set(ctx_p, "_dbg_rbi", rbi)
                 let app2: &ForgeApp = g_forge_app
                 forge_dispatch(app2, &ctx)
                 if ctx.is_ws { ret }   // WebSocket owns the fd now
@@ -1345,36 +1487,88 @@ fn ctx_param(ctx_ptr: i64, key: []i8) -> []i8 {
 
 
 fn ctx_query(ctx_ptr: i64, key: []i8) -> []i8 {
-    let c: &ForgeCtx = ctx_ptr
-    let q = c.req.query
-    if q.len == 0 { ret "" }
+    let qbase = ctx_get(ctx_ptr, "_raw_query")
+    if qbase == 0 { ret "" }
+    let q: &i8 = qbase as &i8
+    let qlen = strlen(q)
+    if qlen == 0 { ret "" }
+    let kbase = key as i64
+    let klen2 = key.len
     let pos = 0i64
-    loop pos < q.len {
+    loop pos < qlen {
         let ks = pos
-        loop pos < q.len and q[pos] != '=' { pos = pos + 1 }
+        loop pos < qlen {
+            let bp: &i8 = (qbase + pos) as &i8
+            if (bp[0] and 0xFF) == '=' or (bp[0] and 0xFF) == '&' { break }
+            pos = pos + 1
+        }
         let klen = pos - ks
-        if pos < q.len { pos = pos + 1 }
+        if pos < qlen {
+            let bp: &i8 = (qbase + pos) as &i8
+            if (bp[0] and 0xFF) == '=' { pos = pos + 1 }
+        }
         let vs = pos
-        loop pos < q.len and q[pos] != '&' { pos = pos + 1 }
+        loop pos < qlen {
+            let bp: &i8 = (qbase + pos) as &i8
+            if (bp[0] and 0xFF) == '&' { break }
+            pos = pos + 1
+        }
         let vlen = pos - vs
-        if pos < q.len { pos = pos + 1 }
-        if klen == key.len {
+        if pos < qlen { pos = pos + 1 }
+        if klen == klen2 {
             let keq = true
-            loop ii in 0..klen { if q[ks + ii] != key[ii] { keq = false  break } }
+            loop ii in 0..klen {
+                let qp: &i8 = (qbase + ks + ii) as &i8
+                let kp: &i8 = (kbase + ii) as &i8
+                if (qp[0] and 0xFF) != (kp[0] and 0xFF) { keq = false  break }
+            }
             if keq {
                 let vbuf: &i8 = forge_scratch_alloc(vlen + 1)
-                loop ii in 0..vlen { vbuf[ii] = q[vs + ii] }
-                vbuf[vlen] = 0
-                ret vbuf
+                let vbufbase = vbuf as i64
+                loop ii in 0..vlen {
+                    let src: &i8 = (qbase + vs + ii) as &i8
+                    let dst: &i8 = (vbufbase + ii) as &i8
+                    dst[0] = src[0]
+                }
+                let term: &i8 = (vbufbase + vlen) as &i8
+                term[0] = 0
+                ret vbuf[0..vlen]
             }
         }
     }
     ret ""
 }
 
+fn forge__hdr_name_eq(name: []i8, lit: []i8) -> bool {
+    if name.len != lit.len { ret false }
+    let nb = name as i64
+    let lb = lit as i64
+    let i = 0i64
+    loop i < name.len {
+        let np: &i8 = (nb + i) as &i8
+        let lp: &i8 = (lb + i) as &i8
+        let nc = np[0] and 0xFF
+        let lc = lp[0] and 0xFF
+        if nc >= 'A' and nc <= 'Z' { nc = nc + 32 }
+        if lc >= 'A' and lc <= 'Z' { lc = lc + 32 }
+        if nc != lc { ret false }
+        i = i + 1
+    }
+    ret true
+}
+
+fn forge__raw_str_to_slice(ctx_ptr: i64, key: []i8) -> []i8 {
+    let p = ctx_get(ctx_ptr, key)
+    if p == 0 { ret "" }
+    let sp: &i8 = p as &i8
+    let slen = strlen(sp)
+    ret sp[0..slen]
+}
+
 fn ctx_header(ctx_ptr: i64, name: []i8) -> []i8 {
-    let c: &ForgeCtx = ctx_ptr
-    ret c.req.header(name)
+    if forge__hdr_name_eq(name, "content-type")   { ret forge__raw_str_to_slice(ctx_ptr, "_raw_ct") }
+    if forge__hdr_name_eq(name, "content-length") { ret forge__raw_str_to_slice(ctx_ptr, "_raw_cl") }
+    ret ""
 }
 
 fn ctx_ip(ctx_ptr: i64) -> []i8 {
@@ -1506,7 +1700,7 @@ fn ctx_cookie(ctx_ptr: i64, name: []i8) -> []i8 {
                     }
                     let nt: &i8 = vbuf + vl
                     nt[0] = 0
-                    ret vbuf
+                    ret vbuf[0..vl]
                 }
             }
         }
@@ -3173,6 +3367,7 @@ fn forge_csrf(ctx_ptr: i64) {
        forge_slice_eq(method, "OPTIONS") { ret }
     let token = ctx_header(ctx_ptr, "X-CSRF-Token")
     if token.len == 0 { token = ctx_form(ctx_ptr, "_csrf") }
+    if token.len == 0 { token = ctx_query(ctx_ptr, "_csrf") }
     let s: &ForgeSession = forge_session_get(ctx_ptr)
     if s == 0 {
         ctx_json(ctx_ptr, 403, "{\"error\":\"invalid CSRF token\"}")
@@ -10333,13 +10528,29 @@ fn forge_log_write(level: i64, prefix: []i8, msg: []i8) {
     if level < g_forge_log_level { ret }
     let buf: &i8 = alloc_pages(1)
     let pos = 0i64
-    buf[pos] = '['  pos = pos + 1
-    loop i in 0..prefix.len { buf[pos] = prefix[i]  pos = pos + 1 }
-    buf[pos] = ']'  pos = pos + 1
-    buf[pos] = ' '  pos = pos + 1
-    loop i in 0..msg.len { buf[pos] = msg[i]  pos = pos + 1 }
-    buf[pos] = '\n'  pos = pos + 1
-
+    let bbase = buf as i64
+    // Use pointer arithmetic (dst[0]) to avoid JDA stride-8 array indexing bug.
+    let _d: &i8 = (bbase + pos) as &i8; _d[0] = '[';  pos = pos + 1
+    let pbase = prefix as i64
+    let i = 0i64
+    loop i < prefix.len {
+        let _s: &i8 = (pbase + i) as &i8
+        let _d: &i8 = (bbase + pos) as &i8
+        _d[0] = _s[0]
+        pos = pos + 1;  i = i + 1
+    }
+    let _d: &i8 = (bbase + pos) as &i8; _d[0] = ']';  pos = pos + 1
+    let _d: &i8 = (bbase + pos) as &i8; _d[0] = ' ';  pos = pos + 1
+    let mbase = msg as i64
+    let j = 0i64
+    loop j < msg.len {
+        let _s: &i8 = (mbase + j) as &i8
+        let _d: &i8 = (bbase + pos) as &i8
+        _d[0] = _s[0]
+        pos = pos + 1;  j = j + 1
+    }
+    let _d: &i8 = (bbase + pos) as &i8; _d[0] = '\n';  pos = pos + 1
+    syscall(FORGE_SYS_WRITE, 1, buf, pos, 0, 0)
 }
 
 fn forge_log_debug(msg: []i8) { forge_log_write(FORGE_LOG_DEBUG, "DEBUG", msg) }
@@ -10637,127 +10848,254 @@ struct ForgeUpload {
 
 fn forge_multipart_boundary(ctx: i64, dst: &i8) -> i64 {
     let ct = ctx_header(ctx, "Content-Type")
+    let ct_base = ct as i64
+    let ct_len  = strlen(ct as &i8)
     let marker = "boundary="
-    loop i in 0..ct.len {
-        if i + marker.len > ct.len { break }
+    let marker_base = marker as i64
+    let marker_len  = strlen(marker as &i8)
+    let dst_base    = dst as i64
+    let i = 0i64
+    loop i < ct_len {
+        if i + marker_len > ct_len { break }
         let keq = true
-        loop j in 0..marker.len {
-            if ct[i + j] != marker[j] { keq = false  break }
+        let j = 0i64
+        loop j < marker_len {
+            let ctp: &i8 = (ct_base + i + j) as &i8
+            let mkp: &i8 = (marker_base + j) as &i8
+            if (ctp[0] and 0xFF) != (mkp[0] and 0xFF) { keq = false  break }
+            j = j + 1
         }
         if keq {
-            let start = i + marker.len
+            let start = i + marker_len
             let blen = 0i64
-            loop k in start..ct.len {
-                let c = ct[k]
+            let k = start
+            loop k < ct_len {
+                let cp: &i8 = (ct_base + k) as &i8
+                let c = cp[0] and 0xFF
                 if c == ';' or c == ' ' or c == '\r' or c == '\n' { break }
-                dst[blen] = c
+                let dstp: &i8 = (dst_base + blen) as &i8
+                dstp[0] = c
                 blen = blen + 1
+                k = k + 1
             }
             ret blen
         }
+        i = i + 1
     }
     ret 0
 }
 
 fn forge_multipart_parse(ctx: i64, field: []i8, upload: &ForgeUpload) -> bool {
-    let body = ctx_body(ctx)
-    let bnd_buf = [256]i8
+    let body_base = ctx_get(ctx, "_raw_body")
+    if body_base == 0 { ret false }
+    let cl_raw = ctx_get(ctx, "_raw_cl")
+    let body_len: i64 = 0
+    if cl_raw != 0 { body_len = forge_raw_atoi(cl_raw as &i8) }
+    if body_len <= 0 {
+        let stored_len = ctx_get(ctx, "_raw_body_len")
+        if stored_len > 0 { body_len = stored_len } else { ret false }
+    }
+    let bnd_buf: &i8 = alloc_pages(1)
     let bnd_len = forge_multipart_boundary(ctx, bnd_buf)
     if bnd_len == 0 { ret false }
-    let boundary = bnd_buf[0..bnd_len]
+    let bnd_base  = bnd_buf as i64
+    let field_base = field as i64
+    let field_len  = field.len
     let i = 0i64
-    loop i < body.len {
-        // Find "--boundary"
-        if body[i] == '-' and i + 2 + bnd_len <= body.len {
-            let is_bnd = body[i+1] == '-'
-            if is_bnd {
-                loop j in 0..bnd_len {
-                    if body[i + 2 + j] != boundary[j] { is_bnd = false  break }
+    loop i < body_len {
+        let bp0: &i8 = (body_base + i) as &i8
+        if (bp0[0] and 0xFF) == '-' and i + 2 + bnd_len <= body_len {
+            let bp1: &i8 = (body_base + i + 1) as &i8
+            if (bp1[0] and 0xFF) == '-' {
+                let is_bnd = true
+                let j = 0i64
+                loop j < bnd_len {
+                    let bp2: &i8 = (body_base + i + 2 + j) as &i8
+                    let bnp: &i8 = (bnd_base + j) as &i8
+                    if (bp2[0] and 0xFF) != (bnp[0] and 0xFF) { is_bnd = false  break }
+                    j = j + 1
                 }
-            }
-            if is_bnd {
-                i = i + 2 + bnd_len
-                if i < body.len and body[i] == '\r' { i = i + 1 }
-                if i < body.len and body[i] == '\n' { i = i + 1 }
-                // Parse headers until blank line
-                let part_name   = ""
-                let part_file   = ""
-                let part_ct     = "application/octet-stream"
-                loop i < body.len {
-                    let hdr_start = i
-                    loop i < body.len and body[i] != '\r' and body[i] != '\n' { i = i + 1 }
-                    let hdr_line = body[hdr_start..i]
-                    if i < body.len and body[i] == '\r' { i = i + 1 }
-                    if i < body.len and body[i] == '\n' { i = i + 1 }
-                    if hdr_line.len == 0 { break }
-                    let cd = "Content-Disposition:"
-                    let ctype = "Content-Type:"
-                    if forge_starts_with(hdr_line, cd) {
-                        let nm_marker = "name=\""
-                        loop k in 0..hdr_line.len {
-                            if k + nm_marker.len > hdr_line.len { break }
-                            let m2 = true
-                            loop j in 0..nm_marker.len {
-                                if hdr_line[k+j] != nm_marker[j] { m2 = false  break }
-                            }
-                            if m2 {
-                                let ns = k + nm_marker.len
-                                let ne = ns
-                                loop ne < hdr_line.len and hdr_line[ne] != '"' { ne = ne + 1 }
-                                part_name = hdr_line[ns..ne]
-                                break
-                            }
-                        }
-                        let fn_marker = "filename=\""
-                        loop k in 0..hdr_line.len {
-                            if k + fn_marker.len > hdr_line.len { break }
-                            let m3 = true
-                            loop j in 0..fn_marker.len {
-                                if hdr_line[k+j] != fn_marker[j] { m3 = false  break }
-                            }
-                            if m3 {
-                                let ns2 = k + fn_marker.len
-                                let ne2 = ns2
-                                loop ne2 < hdr_line.len and hdr_line[ne2] != '"' { ne2 = ne2 + 1 }
-                                part_file = hdr_line[ns2..ne2]
-                                break
-                            }
-                        }
-                    } else if forge_starts_with(hdr_line, ctype) {
-                        let vs = ctype.len
-                        loop vs < hdr_line.len and hdr_line[vs] == ' ' { vs = vs + 1 }
-                        part_ct = hdr_line[vs..hdr_line.len]
+                if is_bnd {
+                    i = i + 2 + bnd_len
+                    // Check for terminal "--boundary--"
+                    if i + 2 <= body_len {
+                        let ep0: &i8 = (body_base + i) as &i8
+                        let ep1: &i8 = (body_base + i + 1) as &i8
+                        if (ep0[0] and 0xFF) == '-' and (ep1[0] and 0xFF) == '-' { ret false }
                     }
-                }
-                // Find end of part: next "--boundary"
-                let data_start = i
-                let data_end   = body.len
-                let ki = i
-                loop ki < body.len {
-                    if body[ki] == '\r' and ki + 4 + bnd_len <= body.len {
-                        let is_b2 = body[ki+1] == '\n' and body[ki+2] == '-' and body[ki+3] == '-'
-                        if is_b2 {
-                            loop j in 0..bnd_len {
-                                if body[ki + 4 + j] != boundary[j] { is_b2 = false  break }
+                    // Skip \r\n after boundary
+                    if i < body_len { let rp: &i8 = (body_base + i) as &i8  if (rp[0] and 0xFF) == '\r' { i = i + 1 } }
+                    if i < body_len { let rp: &i8 = (body_base + i) as &i8  if (rp[0] and 0xFF) == '\n' { i = i + 1 } }
+                    // Parse MIME headers
+                    let part_name_base = 0i64  let part_name_len = 0i64
+                    let part_file_base = 0i64  let part_file_len = 0i64
+                    let dct_str = "application/octet-stream"
+                    let part_ct_base = dct_str as i64  let part_ct_len = 24i64
+                    let cd_str  = "Content-Disposition:"   let cd_len  = 20i64
+                    let ct_str  = "Content-Type:"          let ct_len  = 13i64
+                    let nm_str  = "name=\""                let nm_len  = 6i64
+                    let fn_str  = "filename=\""            let fn_len  = 10i64
+                    loop i < body_len {
+                        let hdr_start = i
+                        loop i < body_len {
+                            let lp: &i8 = (body_base + i) as &i8
+                            let lc = lp[0] and 0xFF
+                            if lc == '\r' or lc == '\n' { break }
+                            i = i + 1
+                        }
+                        let hdr_len = i - hdr_start
+                        if i < body_len { let rp: &i8 = (body_base + i) as &i8  if (rp[0] and 0xFF) == '\r' { i = i + 1 } }
+                        if i < body_len { let rp: &i8 = (body_base + i) as &i8  if (rp[0] and 0xFF) == '\n' { i = i + 1 } }
+                        if hdr_len == 0 { break }
+                        let hdr_base2 = body_base + hdr_start
+                        // Content-Disposition?
+                        if hdr_len >= cd_len {
+                            let is_cd = true
+                            let j = 0i64
+                            loop j < cd_len {
+                                let hp: &i8 = (hdr_base2 + j) as &i8
+                                let cp2: &i8 = (cd_str as i64 + j) as &i8
+                                if (hp[0] and 0xFF) != (cp2[0] and 0xFF) { is_cd = false  break }
+                                j = j + 1
+                            }
+                            if is_cd {
+                                let k = cd_len
+                                loop k + nm_len <= hdr_len {
+                                    let m2 = true
+                                    let j = 0i64
+                                    loop j < nm_len {
+                                        let hp: &i8 = (hdr_base2 + k + j) as &i8
+                                        let mkp: &i8 = (nm_str as i64 + j) as &i8
+                                        if (hp[0] and 0xFF) != (mkp[0] and 0xFF) { m2 = false  break }
+                                        j = j + 1
+                                    }
+                                    if m2 {
+                                        let ns = k + nm_len
+                                        let ne = ns
+                                        loop ne < hdr_len {
+                                            let qp: &i8 = (hdr_base2 + ne) as &i8
+                                            if (qp[0] and 0xFF) == '"' { break }
+                                            ne = ne + 1
+                                        }
+                                        part_name_base = hdr_base2 + ns
+                                        part_name_len  = ne - ns
+                                        break
+                                    }
+                                    k = k + 1
+                                }
+                                let k2 = cd_len
+                                loop k2 + fn_len <= hdr_len {
+                                    let m3 = true
+                                    let j = 0i64
+                                    loop j < fn_len {
+                                        let hp: &i8 = (hdr_base2 + k2 + j) as &i8
+                                        let mkp: &i8 = (fn_str as i64 + j) as &i8
+                                        if (hp[0] and 0xFF) != (mkp[0] and 0xFF) { m3 = false  break }
+                                        j = j + 1
+                                    }
+                                    if m3 {
+                                        let ns2 = k2 + fn_len
+                                        let ne2 = ns2
+                                        loop ne2 < hdr_len {
+                                            let qp: &i8 = (hdr_base2 + ne2) as &i8
+                                            if (qp[0] and 0xFF) == '"' { break }
+                                            ne2 = ne2 + 1
+                                        }
+                                        part_file_base = hdr_base2 + ns2
+                                        part_file_len  = ne2 - ns2
+                                        break
+                                    }
+                                    k2 = k2 + 1
+                                }
                             }
                         }
-                        if is_b2 { data_end = ki  break }
+                        // Content-Type?
+                        if hdr_len >= ct_len {
+                            let is_ct = true
+                            let j = 0i64
+                            loop j < ct_len {
+                                let hp: &i8 = (hdr_base2 + j) as &i8
+                                let cp2: &i8 = (ct_str as i64 + j) as &i8
+                                if (hp[0] and 0xFF) != (cp2[0] and 0xFF) { is_ct = false  break }
+                                j = j + 1
+                            }
+                            if is_ct {
+                                let vs = ct_len
+                                loop vs < hdr_len {
+                                    let sp: &i8 = (hdr_base2 + vs) as &i8
+                                    if (sp[0] and 0xFF) != ' ' { break }
+                                    vs = vs + 1
+                                }
+                                part_ct_base = hdr_base2 + vs
+                                part_ct_len  = hdr_len - vs
+                            }
+                        }
                     }
-                    ki = ki + 1
+                    // Find end of part: \r\n--boundary
+                    let data_start = i
+                    let data_end   = body_len
+                    let ki = i
+                    loop ki < body_len {
+                        let rp0: &i8 = (body_base + ki) as &i8
+                        if (rp0[0] and 0xFF) == '\r' and ki + 4 + bnd_len <= body_len {
+                            let rp1: &i8 = (body_base + ki + 1) as &i8
+                            let rp2: &i8 = (body_base + ki + 2) as &i8
+                            let rp3: &i8 = (body_base + ki + 3) as &i8
+                            if (rp1[0] and 0xFF) == '\n' and (rp2[0] and 0xFF) == '-' and (rp3[0] and 0xFF) == '-' {
+                                let is_b2 = true
+                                let j = 0i64
+                                loop j < bnd_len {
+                                    let bp2: &i8 = (body_base + ki + 4 + j) as &i8
+                                    let bnp: &i8 = (bnd_base + j) as &i8
+                                    if (bp2[0] and 0xFF) != (bnp[0] and 0xFF) { is_b2 = false  break }
+                                    j = j + 1
+                                }
+                                if is_b2 { data_end = ki  break }
+                            }
+                        }
+                        ki = ki + 1
+                    }
+                    // Field name match?
+                    if part_name_len == field_len {
+                        let nm_eq = true
+                        let j = 0i64
+                        loop j < field_len {
+                            let np: &i8 = (part_name_base + j) as &i8
+                            let fp: &i8 = (field_base + j) as &i8
+                            if (np[0] and 0xFF) != (fp[0] and 0xFF) { nm_eq = false  break }
+                            j = j + 1
+                        }
+                        if nm_eq {
+                            let data_len = data_end - data_start
+                            // Copy field data into scratch buffer so we null-terminate without
+                            // corrupting the request body (which would break subsequent field parses).
+                            // forge_scratch_alloc does not call alloc_pages when the slab is warm,
+                            // so it does not clobber caller-saved registers holding our locals.
+                            let copy_buf: &i8 = forge_scratch_alloc(data_len + 1)
+                            let copy_base = copy_buf as i64
+                            let src_base  = body_base + data_start
+                            let j = 0i64
+                            loop j < data_len {
+                                let src_p: &i8 = (src_base + j) as &i8
+                                let dst_p: &i8 = (copy_base + j) as &i8
+                                dst_p[0] = src_p[0]
+                                j = j + 1
+                            }
+                            let null_p: &i8 = (copy_base + data_len) as &i8
+                            null_p[0] = 0
+                            // The slice expression `copy_buf[0..data_len]` clobbers x9 (the upload
+                            // pointer) via an intermediate pop. Using a temp local fd forces the
+                            // compiler to load upload fresh when doing upload.file_data = fd,
+                            // guaranteeing no register clobbering between load and store.
+                            let fd: []i8 = copy_buf[0..data_len]
+                            upload.file_data = fd
+                            upload.size      = data_len
+                            ret true
+                        }
+                    }
+                    i = data_end
+                    continue
                 }
-                if forge_slice_eq(part_name, field) {
-                    let data_slice = body[data_start..data_end]
-                    let data_copy: &i8 = alloc_pages(((data_slice.len / 4096) + 1) as i64)
-                    loop j in 0..data_slice.len { data_copy[j] = data_slice[j] }
-                    upload.field_name   = part_name
-                    upload.filename     = part_file
-                    upload.content_type = part_ct
-                    upload.file_data    = data_copy[0..data_slice.len]
-                    upload.size         = data_slice.len
-                    ret true
-                }
-                i = data_end
-                continue
             }
         }
         i = i + 1
