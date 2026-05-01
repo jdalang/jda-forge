@@ -134,7 +134,7 @@ const FORGE_MAX_HDRS     = 32
 const FORGE_MAX_STORE    = 16
 const FORGE_MAX_STATIC   = 8
 const FORGE_MAX_GRP_MW   = 4
-const FORGE_REQ_SIZE     = 8192
+const FORGE_REQ_SIZE     = 65536
 const FORGE_STATIC_BUF   = 1048576   // 1 MB max static file
 
 const FORGE_SYS_WRITE    = 4    // macOS BSD: write
@@ -1275,7 +1275,7 @@ fn forge_handle_fd(fd: i32) {
     let max = app.config.max_body
     if max <= 0 { max = 1048576 }
     if max > FORGE_REQ_SIZE { max = FORGE_REQ_SIZE }
-    let req_buf: &i8 = alloc_pages(4)
+    let req_buf: &i8 = alloc_pages(16)
     loop {
         let n = syscall(FORGE_SYS_RECVFROM, fd, req_buf, max, 0, 0, 0) as i64
         if n <= 0 { break }

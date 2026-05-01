@@ -973,7 +973,7 @@ def compile_tpl(src, hint):
         break
     if fn_sig is None:
         fn_sig = hint + '()'
-    out  = [f'fn {fn_sig} -> []i8 {{', '    let buf = forge_buf_new(8)']
+    out  = [f'fn {fn_sig} -> []i8 {{', '    let buf = forge_buf_new(64)']
     html = []
     def flush():
         if html:
