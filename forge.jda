@@ -11145,16 +11145,35 @@ fn forge_upload_save(upload: &ForgeUpload, dir: []i8) -> []i8 {
 }
 
 fn forge_validate_upload_type(upload: &ForgeUpload, allowed: []i8) -> bool {
+    let ct   = upload.content_type
+    let clen = ct.len
+    let alen = allowed.len
     let start = 0i64
-    loop i in 0..allowed.len {
+    loop i in 0..alen {
         if allowed[i] == ',' {
-            let seg = allowed[start..i]
-            if forge_slice_eq(seg, upload.content_type) { ret true }
+            let slen = i - start
+            if slen == clen {
+                let ok = true
+                let j  = 0i64
+                loop j < slen {
+                    if allowed[start + j] != ct[j] { ok = false }
+                    j = j + 1
+                }
+                if ok { ret true }
+            }
             start = i + 1
         }
     }
-    let seg = allowed[start..allowed.len]
-    if forge_slice_eq(seg, upload.content_type) { ret true }
+    let slen = alen - start
+    if slen == clen {
+        let ok = true
+        let j  = 0i64
+        loop j < slen {
+            if allowed[start + j] != ct[j] { ok = false }
+            j = j + 1
+        }
+        if ok { ret true }
+    }
     ret false
 }
 
