@@ -11090,6 +11090,33 @@ fn forge_multipart_parse(ctx: i64, field: []i8, upload: &ForgeUpload) -> bool {
                             let fd: []i8 = copy_buf[0..data_len]
                             upload.file_data = fd
                             upload.size      = data_len
+                            // Copy content_type into scratch so we can sub-slice without hitting
+                            // __TEXT null-termination (part_ct_base may point to a string literal).
+                            let ct_buf: &i8 = forge_scratch_alloc(part_ct_len + 1)
+                            let cj = 0i64
+                            loop cj < part_ct_len {
+                                let ctsrc: &i8 = (part_ct_base + cj) as &i8
+                                let ctdst: &i8 = (ct_buf as i64 + cj) as &i8
+                                ctdst[0] = ctsrc[0]
+                                cj = cj + 1
+                            }
+                            let ct_nul: &i8 = (ct_buf as i64 + part_ct_len) as &i8
+                            ct_nul[0] = 0
+                            let ctfat: []i8 = ct_buf[0..part_ct_len]
+                            upload.content_type = ctfat
+                            // Copy filename (may be 0-length when no file selected).
+                            let fn_buf: &i8 = forge_scratch_alloc(part_file_len + 1)
+                            let fi = 0i64
+                            loop fi < part_file_len {
+                                let fnsrc: &i8 = (part_file_base + fi) as &i8
+                                let fndst: &i8 = (fn_buf as i64 + fi) as &i8
+                                fndst[0] = fnsrc[0]
+                                fi = fi + 1
+                            }
+                            let fn_nul: &i8 = (fn_buf as i64 + part_file_len) as &i8
+                            fn_nul[0] = 0
+                            let fnfat: []i8 = fn_buf[0..part_file_len]
+                            upload.filename = fnfat
                             ret true
                         }
                     }
@@ -11145,6 +11172,9 @@ fn forge_upload_save(upload: &ForgeUpload, dir: []i8) -> []i8 {
 }
 
 fn forge_validate_upload_type(upload: &ForgeUpload, allowed: []i8) -> bool {
+    // content_type.base is at struct offset 32. Guard against null (un-parsed upload).
+    let ct_guard: &i64 = (upload as i64 + 32) as &i64
+    if ct_guard[0] == 0 { ret false }
     let ct   = upload.content_type
     let clen = ct.len
     let alen = allowed.len
