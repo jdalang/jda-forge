@@ -11141,7 +11141,12 @@ fn ctx_multipart_field(ctx: i64, field: []i8) -> []i8 {
     if forge_multipart_parse(ctx, field, up) {
         ret up.file_data
     }
-    ret ""
+    // Return a heap-allocated empty string, not a "" literal in __TEXT.
+    // The view does p[0..strlen(p)] which null-terminates the source —
+    // that write would fault on a read-only string literal.
+    let empty: &i8 = forge_scratch_alloc(1)
+    empty[0] = 0
+    ret empty[0..0]
 }
 
 fn forge_upload_save(upload: &ForgeUpload, dir: []i8) -> []i8 {
