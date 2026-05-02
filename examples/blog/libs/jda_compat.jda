@@ -1,0 +1,450 @@
+// jda_compat.jda — macOS ARM64 runtime shims for JDA/Forge
+
+// ============================================================
+// HTTP structs (defined after forge.jda to preserve ForgeCtx layout,
+// but pre-scan still collects them so field offsets resolve correctly)
+// ============================================================
+
+struct HttpRequest {
+    method:      []i8    // offset 0
+    path:        []i8    // offset 8
+    body:        []i8    // offset 16 — matches HttpResponse.body offset
+    query:       []i8    // offset 24
+    raw_headers: []i8    // offset 32
+}
+
+struct HttpResponse {
+    status:  i64         // offset 0
+    headers: []i8        // offset 8
+    body:    []i8        // offset 16 — matches HttpRequest.body offset
+}
+
+struct TcpStreamBuf {
+    pad: i64   // offset 0 — unused, keeps fd at offset 8
+    fd:  i32   // offset 8 — matches ForgeCtx.fd and find_field_off("fd","")=8
+}
+
+// ============================================================
+// Memory allocation
+// ============================================================
+
+fn alloc_pages(n: i64) -> &i8 {
+    let size = n * 4096
+    ret syscall(197, 0, size, 3, 0x1002, -1, 0) as &i8
+}
+
+// ============================================================
+// ForgeBuf helpers
+// ============================================================
+
+fn forge_buf_append(b: &ForgeBuf, s: []i8) -> &ForgeBuf {
+    ret forge_buf_write(b, s)
+}
+
+fn forge_buf_str(b: &ForgeBuf) -> &i8 {
+    let dp = *(b as i64)
+    let pos = b.pos
+    dp[pos] = 0
+    ret dp
+}
+
+fn str__write(b: &ForgeBuf, s: []i8) -> &ForgeBuf { ret forge_buf_write(b, s) }
+fn write(b: &ForgeBuf, s: []i8) -> &ForgeBuf { ret forge_buf_write(b, s) }
+fn done(b: &ForgeBuf) -> []i8 { ret forge_buf_done(b) }
+
+// ============================================================
+// String utilities
+// ============================================================
+
+fn str_eq(a: []i8, b: []i8) -> bool {
+    if a.len != b.len { ret false }
+    loop i in 0..a.len {
+        if a[i] != b[i] { ret false }
+    }
+    ret true
+}
+
+fn str_to_i32(s: []i8) -> i32 {
+    let n = 0i64
+    let neg = false
+    let start = 0i64
+    if s.len > 0 and s[0] == '-' { neg = true  start = 1 }
+    loop i in start..s.len {
+        let c = s[i] as i64
+        if c < 48 or c > 57 { break }
+        n = n * 10 + (c - 48)
+    }
+    if neg { n = 0 - n }
+    ret n as i32
+}
+
+fn str_to_i64(s: []i8) -> i64 {
+    let n = 0i64
+    let neg = false
+    let start = 0i64
+    if s.len > 0 and s[0] == '-' { neg = true  start = 1 }
+    loop i in start..s.len {
+        let c = s[i] as i64
+        if c < 48 or c > 57 { break }
+        n = n * 10 + (c - 48)
+    }
+    if neg { n = 0 - n }
+    ret n
+}
+
+fn fmt_i64(buf: &i8, n: i64) -> i64 {
+    if n == 0 { buf[0] = '0'  ret 1 }
+    let tmp = [24]i8
+    let pos = 0i64
+    let neg = n < 0
+    let v = n
+    if neg { v = 0 - v }
+    loop v > 0 {
+        tmp[pos] = ('0' as i64 + (v mod 10)) as i8
+        v = v / 10
+        pos = pos + 1
+    }
+    if neg { tmp[pos] = '-'  pos = pos + 1 }
+    loop i in 0..pos {
+        buf[i] = tmp[pos - 1 - i]
+    }
+    ret pos
+}
+
+fn print_int(n: i64) {
+    let buf = [24]i8
+    let len = fmt_i64(buf, n)
+    syscall(4, 1, buf, len, 0, 0, 0)
+}
+
+fn as_str(val: i64) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let len = fmt_i64(buf, val)
+    ret buf[0..len]
+}
+
+fn nl(ctx: i64) {
+    let s = "\n"
+    syscall(4, 1, s, 1, 0, 0, 0)
+}
+
+// ============================================================
+// Time
+// ============================================================
+
+fn time_now_ms() -> i64 {
+    let tv: &i64 = alloc_pages(1)
+    syscall(116, tv, 0, 0, 0, 0, 0)
+    let sec  = tv[0]
+    let usec = tv[1]
+    ret sec * 1000 + usec / 1000
+}
+
+// ============================================================
+// Atomic ops (single-threaded stubs)
+// ============================================================
+
+fn atomic_fetch_add(ptr: &i64, val: i64) -> i64 {
+    let old = ptr[0]
+    ptr[0] = old + val
+    ret old
+}
+
+fn atomic_load(ptr: &i64) -> i64 { ret ptr[0] }
+fn atomic_store(ptr: &i64, val: i64) { ptr[0] = val }
+
+// ============================================================
+// Channels — simple ring buffer (single-threaded)
+// ============================================================
+
+fn chan_new(cap: i64) -> i64 {
+    let pages = (cap * 8 + 4096 + 23) / 4096 + 1
+    let ch: &i64 = alloc_pages(pages)
+    ch[0] = 0
+    ch[1] = 0
+    ch[2] = cap
+    ret ch as i64
+}
+
+fn chan_send(ch_i64: i64, val: i64) {
+    let ch: &i64 = ch_i64
+    let cap  = ch[2]
+    let tail = ch[1]
+    let next_tail = (tail + 1) mod cap
+    loop next_tail == ch[0] { next_tail = (ch[1] + 1) mod cap }
+    ch[3 + tail] = val
+    ch[1] = next_tail
+}
+
+fn chan_recv(ch_i64: i64) -> i64 {
+    let ch: &i64 = ch_i64
+    let cap  = ch[2]
+    loop ch[0] == ch[1] {}
+    let head = ch[0]
+    let val  = ch[3 + head]
+    ch[0] = (head + 1) mod cap
+    ret val
+}
+
+// ============================================================
+// TCP
+// ============================================================
+
+fn TcpListener__bind(host: []i8, port: i32) -> i32 {
+    let fd = syscall(97, 2, 1, 6, 0, 0, 0) as i32
+    if fd < 0 { ret -1 }
+
+    let optval: &i8 = alloc_pages(1)
+    optval[0] = 1
+    syscall(105, fd, 0xffff, 4, optval, 4, 0)
+
+    let sa: &i8 = alloc_pages(1)
+    sa[0] = 16
+    sa[1] = 2
+    let p = port as i64
+    sa[2] = ((p >> 8) and 0xFF) as i8
+    sa[3] = (p and 0xFF) as i8
+    sa[4] = 0  sa[5] = 0  sa[6] = 0  sa[7] = 0
+
+    let r = syscall(104, fd, sa, 16, 0, 0, 0) as i32
+    if r < 0 { syscall(6, fd, 0, 0, 0, 0, 0)  ret -1 }
+
+    let r2 = syscall(106, fd, 256, 0, 0, 0, 0) as i32
+    if r2 < 0 { syscall(6, fd, 0, 0, 0, 0, 0)  ret -1 }
+
+    ret fd
+}
+
+// TcpListener.accept(): returns conn with fd at offset 8 (matches ForgeCtx.fd layout)
+fn TcpListener__accept(listener_fd: i32) -> i64 {
+    let sa: &i8 = alloc_pages(1)
+    let salen: &i32 = alloc_pages(1)
+    salen[0] = 16
+    let conn_fd = syscall(30, listener_fd, sa, salen, 0, 0, 0) as i32
+    if conn_fd < 0 { ret -1 }
+    let stream: &TcpStreamBuf = alloc_pages(1)
+    stream.fd = conn_fd
+    ret stream as i64
+}
+
+fn TcpStream__connect(host: []i8, port: i32) -> i32 {
+    let fd = syscall(97, 2, 1, 6, 0, 0, 0) as i32
+    if fd < 0 { ret -1 }
+    let sa: &i8 = alloc_pages(1)
+    sa[0] = 16  sa[1] = 2
+    let p = port as i64
+    sa[2] = ((p >> 8) and 0xFF) as i8
+    sa[3] = (p and 0xFF) as i8
+    sa[4] = 127  sa[5] = 0  sa[6] = 0  sa[7] = 1
+    let r = syscall(98, fd, sa, 16, 0, 0, 0) as i32
+    if r < 0 { syscall(6, fd, 0, 0, 0, 0, 0)  ret -1 }
+    ret fd
+}
+
+fn unwrap_or_else(val: i64, handler: i64) -> i64 {
+    if val < 0 { call_fn(handler, val)  ret 0 }
+    ret val
+}
+
+fn ptr__unwrap_or_else(val: i64, handler: i64) -> i64 {
+    ret unwrap_or_else(val, handler)
+}
+
+// ============================================================
+// HTTP — parse_request
+// ============================================================
+
+fn parse_request(buf: []i8) -> i64 {
+    let req: &HttpRequest = alloc_pages(1)
+    let n = buf.len
+    if n <= 0 { ret 0 }
+    let i = 0i64
+
+    // Method: scan to space, null-terminate
+    loop i < n and buf[i] != ' ' { i = i + 1 }
+    buf[i] = 0
+    req.method = buf
+    i = i + 1
+
+    // Path: scan to space, '?', CR, or LF
+    let pstart = i
+    loop i < n and buf[i] != ' ' and buf[i] != '?' and buf[i] != '\r' and buf[i] != 10 { i = i + 1 }
+    buf[i] = 0
+    req.path = buf[pstart..pstart]
+    i = i + 1
+
+    // Skip to end of first line
+    loop i < n and buf[i] != 10 { i = i + 1 }
+    if i < n { i = i + 1 }
+
+    // Headers section: scan for blank line
+    let hdr_start = i
+    loop i < n {
+        if buf[i] == 10 {
+            let i2 = i + 1
+            if i2 < n and buf[i2] == '\r' { i2 = i2 + 1 }
+            if i2 < n and buf[i2] == 10 {
+                buf[i] = 0
+                i = i2 + 1
+                break
+            }
+        }
+        i = i + 1
+    }
+    req.raw_headers = buf[hdr_start..hdr_start]
+
+    if i < n {
+        req.body = buf[i..i]
+    } else {
+        req.body = ""
+    }
+    req.query = ""
+
+    ret req as i64
+}
+
+// ============================================================
+// HTTP — send_response (matches forge.jda's HttpResponse struct)
+// ============================================================
+
+fn send_response(fd: i32, resp: i64) {
+    let r: &HttpResponse = resp
+    let scode = r.status
+    let hdrs  = r.headers
+    let body  = r.body
+
+    let buf: &i8 = alloc_pages(2)
+    let pos = 0i64
+
+    let sl = "HTTP/1.1 "
+    loop k in 0..sl.len { buf[pos] = sl[k]   pos = pos + 1 }
+
+    let sc_buf = [8]i8
+    let sc_len = fmt_i64(sc_buf, scode)
+    loop k in 0..sc_len { buf[pos] = sc_buf[k]   pos = pos + 1 }
+
+    let sr = " OK\r\n"
+    loop k in 0..sr.len { buf[pos] = sr[k]   pos = pos + 1 }
+
+    let hlen = hdrs.len
+    loop k in 0..hlen { buf[pos] = hdrs[k]   pos = pos + 1 }
+
+    let cl = "Content-Length: "
+    loop k in 0..cl.len { buf[pos] = cl[k]   pos = pos + 1 }
+
+    let body_len = body.len
+    let cl_buf = [16]i8
+    let cl_len = fmt_i64(cl_buf, body_len)
+    loop k in 0..cl_len { buf[pos] = cl_buf[k]   pos = pos + 1 }
+
+    buf[pos] = '\r'   pos = pos + 1
+    buf[pos] = '\n'   pos = pos + 1
+    buf[pos] = '\r'   pos = pos + 1
+    buf[pos] = '\n'   pos = pos + 1
+
+    forge_tcp_write_all(fd, buf, pos)
+    forge_tcp_write_all(fd, body, body_len)
+}
+
+// ============================================================
+// HttpRequest::header — scan raw_headers for "Name: value\r\n"
+// ============================================================
+
+fn HttpRequest__header(req: &HttpRequest, name: []i8) -> []i8 {
+    let req_i64 = req as i64
+    let hdrs = *(req_i64 + 32)
+    let nlen = name.len
+    let i = 0i64
+    loop hdrs[i] != 0 {
+        let found = true
+        let j = 0i64
+        loop j < nlen {
+            if hdrs[i + j] != name[j] { found = false   break }
+            j = j + 1
+        }
+        if found and hdrs[i + nlen] == ':' {
+            let k = i + nlen + 1
+            loop hdrs[k] == ' ' { k = k + 1 }
+            let vstart = k
+            loop hdrs[k] != '\r' and hdrs[k] != 10 and hdrs[k] != 0 { k = k + 1 }
+            hdrs[k] = 0
+            ret hdrs[vstart..vstart]
+        }
+        loop hdrs[i] != 10 and hdrs[i] != 0 { i = i + 1 }
+        if hdrs[i] == 10 { i = i + 1 }
+    }
+    ret ""
+}
+
+fn str__header(req: &HttpRequest, name: []i8) -> []i8 {
+    ret HttpRequest__header(req, name)
+}
+
+fn header(req: &HttpRequest, name: []i8) -> []i8 {
+    ret HttpRequest__header(req, name)
+}
+
+fn str__get(req: &HttpRequest, key: []i8) -> []i8 { ret "" }
+fn get(obj: i64, key: []i8) -> []i8 { ret "" }
+
+// ============================================================
+// Crypto stubs
+// ============================================================
+
+fn sha1(data: &i8, len: i64, out: &i8) { loop i in 0..20 { out[i] = 0 } }
+
+fn b64_encode(data: &i8, len: i64, out: &i8) -> i64 { ret 0 }
+fn b64_decode(data: &i8, len: i64, out: &i8) -> i64 { ret 0 }
+
+fn hmac_sha256(key: &i8, klen: i64, data: &i8, dlen: i64, out: &i8) {
+    loop i in 0..32 { out[i] = 0 }
+}
+
+fn forge_bcrypt_hash(pw: []i8, out: &i8) -> i64 { ret 0 }
+fn forge_bcrypt_verify(pw: []i8, hash: []i8) -> bool { ret false }
+
+// ============================================================
+// ERB template rendering stub
+// ============================================================
+
+fn erb_render(tmpl: &i8, tmpl_len: i64, vars: &i64, out: &i8, out_size: i64) -> i64 {
+    let n = tmpl_len
+    if n > out_size { n = out_size - 1 }
+    loop i in 0..n { out[i] = tmpl[i] }
+    out[n] = 0
+    ret n
+}
+
+// ============================================================
+// JSON stub
+// ============================================================
+
+fn json_parse(body: []i8) -> i64 { ret 0 }
+
+// ============================================================
+// DB stubs
+// ============================================================
+
+fn forge_col_index(name: []i8) -> i64 { ret 0 }
+
+// ============================================================
+// File system
+// ============================================================
+
+fn fs_read_file(path: &i8, buf: &i8, max: i64) -> i64 {
+    let fd = syscall(5, path, 0, 0, 0, 0, 0) as i32
+    if fd < 0 { ret 0 }
+    let n = syscall(3, fd, buf, max, 0, 0, 0) as i64
+    syscall(6, fd, 0, 0, 0, 0, 0)
+    if n < 0 { ret 0 }
+    ret n
+}
+
+fn path_join(a: []i8, b: []i8) -> []i8 {
+    let buf: &i8 = alloc_pages(1)
+    let pos = 0i64
+    loop i in 0..a.len { buf[pos] = a[i]  pos = pos + 1 }
+    if pos > 0 and buf[pos - 1] != '/' { buf[pos] = '/'  pos = pos + 1 }
+    loop i in 0..b.len { buf[pos] = b[i]  pos = pos + 1 }
+    ret buf[0..pos]
+}
