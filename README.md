@@ -15,13 +15,13 @@ A full-stack web framework for the [Jda language](https://github.com/jdalang/jda
 curl -fsSL https://raw.githubusercontent.com/jdalang/jda-forge/main/install.sh | sh
 
 # Specific version
-curl -fsSL https://raw.githubusercontent.com/jdalang/jda-forge/main/install.sh | sh -s -- --version v3.0.0
+curl -fsSL https://raw.githubusercontent.com/jdalang/jda-forge/main/install.sh | sh -s -- --version v1.0.0
 ```
 
 Installs to `~/.jda/forge/`, links `forge` CLI to `~/.jda/bin/`.
 
 ```bash
-forge version          # JDA Forge CLI v3.0.0
+forge version          # JDA Forge CLI v1.0.0
 forge self-update      # upgrade to latest
 ```
 
@@ -169,8 +169,8 @@ forge compile-models                         # regenerate _build/models.jda from
 forge compile-assets                         # copy assets to public/assets/ (dev, no fingerprint)
 forge assets:precompile                      # fingerprint CSS/JS for production deploy
 
-forge release v3.1.0                         # tag + push + GitHub release
-forge self-update [--version v3.1.0]         # update the CLI itself
+forge release v1.0.0                         # tag + push + GitHub release
+forge self-update [--version v1.0.0]         # update the CLI itself
 ```
 
 ---

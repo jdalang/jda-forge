@@ -18,7 +18,7 @@ A complete multi-file Forge application demonstrating:
 
 ```
 examples/blog/
-  Forgefile                         # dependency declaration (pinned to forge v3.0.0)
+  Forgefile                         # dependency declaration (pinned to forge v1.0.0)
   Forgefile.lock                    # exact resolved versions (commit this)
   Makefile                          # build pipeline
   main.jda                          # app wiring

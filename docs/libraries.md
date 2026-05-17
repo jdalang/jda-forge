@@ -12,7 +12,7 @@ Every Forge project has a `Forgefile` at the root. `forge new` creates one autom
 # Forgefile
 
 # The framework itself
-forge "github.com/jdalang/jda-forge" version "3.0.0"
+forge "github.com/jdalang/jda-forge" version "1.0.0"
 
 # Third-party libraries
 lib "github.com/jdalang/forge-markdown" version "1.2.0"
@@ -96,7 +96,7 @@ After `forge install`, a `Forgefile.lock` is written:
 
 ```
 # Forgefile.lock — commit this file
-forge jda-forge       github.com/jdalang/jda-forge         v3.0.0  abc1234
+forge jda-forge       github.com/jdalang/jda-forge         v1.0.0  abc1234
 lib   forge-markdown  github.com/jdalang/forge-markdown     v1.2.0  def5678
 lib   forge-slugify   github.com/jdalang/forge-slugify      v1.0.0  9a8b7c6
 lib   jda-payments    github.com/myorg/jda-payments         latest  1f2e3d4
@@ -190,7 +190,7 @@ Installed libraries (libs/*.jda):
   forge-slugify                  48 lines   libs/forge-slugify.jda
 
 Forgefile.lock:
-  forge   jda-forge      v3.0.0   abc1234
+  forge   jda-forge      v1.0.0   abc1234
   lib     forge-markdown v1.2.0   def5678
   lib     forge-slugify  v1.0.0   9a8b7c6
 ```

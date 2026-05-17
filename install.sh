@@ -4,13 +4,13 @@
 #
 # Via JDA package manager (recommended):
 #   jda install forge                     # latest
-#   jda install forge@3.0.0              # specific version
+#   jda install forge@1.0.0              # specific version
 #   jda install github.com/jdalang/jda-forge
-#   jda install github.com/jdalang/jda-forge@3.0.0
+#   jda install github.com/jdalang/jda-forge@1.0.0
 #
 # Via curl (bootstrap / CI):
 #   curl -fsSL https://raw.githubusercontent.com/jdalang/jda-forge/main/install.sh | sh
-#   curl -fsSL .../install.sh | sh -s -- --version v3.0.0
+#   curl -fsSL .../install.sh | sh -s -- --version v1.0.0
 # =============================================================================
 
 set -euo pipefail
@@ -36,7 +36,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --version|-v)
             VERSION="${2:-}"
-            [ -z "$VERSION" ] && err "--version requires a value (e.g. --version v3.0.0)"
+            [ -z "$VERSION" ] && err "--version requires a value (e.g. --version v1.0.0)"
             shift 2
             ;;
         --dir)
@@ -47,10 +47,10 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         --help|-h)
-            echo "Usage: install.sh [--version v3.0.0] [--dir /path]"
+            echo "Usage: install.sh [--version v1.0.0] [--dir /path]"
             echo ""
             echo "Environment variables (set by 'jda install'):"
-            echo "  JDA_PKG_VERSION  version to install (e.g. 3.0.0 or v3.0.0)"
+            echo "  JDA_PKG_VERSION  version to install (e.g. 1.0.0 or v1.0.0)"
             echo "  JDA_PKG_SOURCE   alternate git URL"
             exit 0
             ;;
@@ -58,7 +58,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Normalise version: accept "3.0.0" or "v3.0.0"
+# Normalise version: accept "1.0.0" or "v1.0.0"
 if [ -n "$VERSION" ]; then
     [[ "$VERSION" == v* ]] || VERSION="v${VERSION}"
 fi
@@ -158,4 +158,4 @@ echo -e "  ${BOLD}source ~/.zshrc${NC}  (or .bashrc)"
 echo ""
 echo "Create a project:   ${BOLD}forge new myapp${NC}"
 echo "Upgrade later:      ${BOLD}forge self-update${NC}"
-echo "Install a version:  ${BOLD}forge self-update --version v3.1.0${NC}"
+echo "Install a version:  ${BOLD}forge self-update --version v1.0.0${NC}"

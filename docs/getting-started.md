@@ -101,14 +101,14 @@ export PATH="$HOME/.local/bin:$PATH"
 ### Installing a specific version
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jdalang/jda-forge/main/install.sh | sh -s -- --version v3.0.0
+curl -fsSL https://raw.githubusercontent.com/jdalang/jda-forge/main/install.sh | sh -s -- --version v1.0.0
 ```
 
 ### Verifying the install
 
 ```bash
 forge version
-# JDA Forge CLI v3.0.0
+# JDA Forge CLI v1.0.0
 ```
 
 ### Upgrading
